@@ -294,6 +294,7 @@ cmd_token() {
 # Code restricted, entered through a root-owned launcher.
 cmd_think() {
   local room=/opt/kuggis-thinker
+  cd / # the thinker user can't enter your folders; don't start it in one
   case ${1:-} in
     --setup)
       local bin token
@@ -305,7 +306,8 @@ cmd_think() {
     --check)
       sudo -u thinker "$room/check" "$USER" || true
       echo
-      echo "kuggis: now the tool-level half. Paste this into a Thinker session (kuggis think):"
+      echo "kuggis: now the tool-level half. Paste this into a Thinker session (kuggis think);"
+      echo "        it should report each step as expected, refusals included:"
       echo
       sed "s|/Users/OWNER|/Users/$USER|" "$room/check-prompt.md"
       ;;

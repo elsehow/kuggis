@@ -4,8 +4,9 @@
 # Then paste check-prompt.md into a Thinker session for the tool-level half.
 owner=${1:?owner}
 fails=0
-ok() { echo "  ok    $*"; }
-bad() { echo "  FAIL  $*"; fails=$((fails + 1)); }
+if [ -t 1 ]; then G=$'\e[32m' R=$'\e[31m' B=$'\e[1m' N=$'\e[0m'; else G='' R='' B='' N=''; fi
+ok() { echo "  ${G}✓${N} $*"; }
+bad() { echo "  ${R}✗ $*${N}"; fails=$((fails + 1)); }
 [ "$(id -un)" = thinker ] || { echo "check.sh: run as thinker" >&2; exit 2; }
 
 echo "The owner's files are out of reach:"
@@ -28,5 +29,5 @@ t=/Users/thinker/.config/claude-token
 if [ "$(stat -f %Lp "$t" 2>/dev/null)" = 600 ]; then ok "$t is 600"; else bad "$t isn't 600"; fi
 
 echo
-[ "$fails" = 0 ] && echo "All OS-level checks pass." || echo "$fails check(s) FAILED."
+if [ "$fails" = 0 ]; then echo "${G}${B}✓ All OS-level checks pass.${N}"; else echo "${R}${B}✗ $fails check(s) failed.${N}"; fi
 exit "$fails"
