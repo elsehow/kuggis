@@ -39,6 +39,33 @@ person before doing.
   person is shown each one.
 - One brief per file. Don't rewrite a brief after writing it; write a new one.
 
+## Reviews: how PRs get merged
+
+Every open PR's diff is in `inbox/prs/`, and `inbox/status.md` gives each
+PR's head commit and checks. To review one, write
+`outbox/review-<repo>-<number>.md`:
+
+```
+---
+review: elsehow/BigBrain#307
+head: 6867a9ebb406
+verdict: merge
+---
+What the PR does, whether it does what its issue asked, what you checked,
+and the risks. For `changes`, say exactly what to fix: this text goes to the
+session that wrote the PR.
+```
+
+- `head`: the head commit from `inbox/status.md` that you reviewed. A newer
+  push makes your review stale, and the person sees that.
+- `verdict`: `merge` (you'd merge it as it is), `changes` (it needs work;
+  the person can send your review to its session), or `hold` (wait, and say
+  for what).
+- The person merges; you advise. A PR to `elsehow/kuggis` runs as the person
+  on their laptop the next time they use kuggis: review those line by line,
+  and call out anything touching sudo, the room, keys or the network.
+- One review per file; for a re-review, write a new file with the new head.
+
 ## Your inbox
 
 `inbox/status.md` lists every kuggis session and each project's open PRs.

@@ -31,8 +31,27 @@ in `~/.config/kuggis/dispatch.log` with the brief's hash; a brief that
 changes after you saw it shows up again.
 
 The other direction: each run writes `inbox/status.md` (every session, each
-project's open PRs) and `inbox/prs/*.diff` into the Thinker's workspace. The
-inbox is yours; the Thinker only reads it.
+project's open PRs with head commit and checks) and `inbox/prs/*.diff` into
+the Thinker's workspace. The inbox is yours; the Thinker only reads it.
+
+## Reviews and merges
+
+The Thinker reviews PRs from those diffs and writes
+`outbox/review-<repo>-<n>.md` (front matter: `review: owner/repo#N`, `head`,
+`verdict: merge | changes | hold`). `kuggis` lists open PRs with their checks
+and its verdict, marked stale if the PR moved on since. Pick one to see its
+files and the review, then:
+
+- **m** merges, after a y/N. It approves first if a VM session wrote it, and
+  uses your admin bypass if you did. Only the commit you saw merges
+  (`--match-head-commit`). A PR others are stacked on merges as a merge
+  commit, and they move to its base before its branch goes.
+- **c** sends the review to the session that wrote the PR (its branch is its
+  session's name): it addresses it, pushes, and the Thinker re-reviews.
+- **v** shows the diff, **o** opens it on GitHub, **s** skips.
+
+Merging is yours because it decides what code runs later, often as you. Read
+kuggis PRs yourself before you press m.
 
 ## What holds it
 
