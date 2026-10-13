@@ -1,0 +1,21 @@
+#!/bin/zsh -f
+# The Thinker's room: Claude Code as the thinker user, in restricted mode.
+# Root-owned in /opt/kuggis-thinker; `kuggis think` runs it through sudo, and
+# nothing the Thinker can write changes how it starts.
+#
+# --restricted ignores user, project and local settings, keeps the file tools
+# inside the workspace and refuses bypassPermissions. --tools leaves no shell.
+# Settings, the WebFetch guard and MCP servers come only from this directory.
+set -eu
+room=/opt/kuggis-thinker home=/Users/thinker
+cd "$home/workspace"
+export HOME=$home USER=thinker LOGNAME=thinker SHELL=/bin/zsh PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export TERM=xterm-256color COLORTERM=truecolor LANG=${LANG:-en_US.UTF-8}
+export DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1
+export CLAUDE_CODE_OAUTH_TOKEN="$(<"$home/.config/claude-token")"
+exec "$room/claude" --restricted \
+  --tools "Read,Edit,Write,Glob,Grep,WebSearch,WebFetch" \
+  --settings "$room/settings.json" \
+  --strict-mcp-config --mcp-config "$room/mcp.json" \
+  --append-system-prompt "$(<"$room/prompt.md")" \
+  "$@"

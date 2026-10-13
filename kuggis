@@ -20,6 +20,8 @@
 #                                    (~/.config/kuggis/secrets/<project>.env) again
 #   kuggis sh <project> [cmd...]     plain ssh to the VM
 #   kuggis token                     mint a Claude token into the keychain
+#   kuggis think [--setup|--check]   the Thinker: Claude Code in a contained room
+#                                    on this laptop (think/README.md)
 set -euo pipefail
 
 CONF=${KUGGIS_CONFIG:-$HOME/.config/kuggis}
@@ -288,6 +290,32 @@ cmd_token() {
   echo "kuggis: stored. Push it to your VMs with: kuggis sync"
 }
 
+# The Thinker's room (think/README.md): a separate macOS user running Claude
+# Code restricted, entered through a root-owned launcher.
+cmd_think() {
+  local room=/opt/kuggis-thinker
+  case ${1:-} in
+    --setup)
+      local bin token
+      bin=$(readlink -f "$(command -v claude)") || die "no claude on PATH"
+      token=$(security find-generic-password -s "$KEYCHAIN_SERVICE" -w 2>/dev/null) || die "no Claude token yet: kuggis token"
+      echo "kuggis: building the Thinker's room (sudo asks for your password)"
+      printf '%s' "$token" | sudo "$HERE/think/setup.sh" "$USER" "$bin"
+      ;;
+    --check)
+      sudo -u thinker "$room/check" "$USER" || true
+      echo
+      echo "kuggis: now the tool-level half. Paste this into a Thinker session (kuggis think):"
+      echo
+      sed "s|/Users/OWNER|/Users/$USER|" "$room/check-prompt.md"
+      ;;
+    "" | -*)
+      [ -x "$room/launch" ] || die "no Thinker room yet: kuggis think --setup"
+      exec sudo -u thinker "$room/launch" "$@" ;;
+    *) die "usage: kuggis think [--setup|--check|<claude flags>]" ;;
+  esac
+}
+
 case ${1:-ls} in
   ls) cmd_ls ;;
   new) shift; cmd_new "$@" ;;
@@ -296,6 +324,7 @@ case ${1:-ls} in
   put) shift; cmd_put "$@" ;;
   sh) shift; [ $# -ge 1 ] || die "usage: kuggis sh <project> [cmd...]"; cmd_sh "$@" ;;
   token) cmd_token ;;
+  think) shift; cmd_think "$@" ;;
   help | -h | --help) sed -n '2,/^set -e/p' "$SELF" | sed '$d; s/^# \{0,1\}//' ;;
   --codex | --claude) cmd_attach "$@" ;;
   -*) die "unknown flag $1 (kuggis help)" ;;

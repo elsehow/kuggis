@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": ["WebSearch", "WebFetch"],
+    "deny": ["Edit(**/.claude/**)", "Edit(**/.mcp.json)"],
+    "disableBypassPermissionsMode": "disable"
+  },
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "WebFetch", "hooks": [{ "type": "command", "command": "/opt/kuggis-thinker/fetch-guard" }] }
+    ]
+  }
+}
