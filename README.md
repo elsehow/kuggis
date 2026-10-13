@@ -13,7 +13,7 @@ Setup on the laptop, once:
    --openai-account=<name> --anthropic=disabled --fireworks=disabled
    --attach tag:box`. Codex then runs on your ChatGPT plan with no OpenAI
    credential on the VM.
-5. Optional: put an ntfy topic in `~/.config/box/ntfy` and subscribe to it
+5. Optional: put an ntfy topic in `~/.config/kuggis/ntfy` and subscribe to it
    on your phone, to get pinged when a session waits on you.
 
 Then `kuggis new <project> <owner/repo>` and `kuggis <project> <session>`.
@@ -25,10 +25,10 @@ integration handles git and `gh` for one repo), your SSH keys, API keys.
 `vm/` is copied to `~/.box` on each VM by `kuggis sync`; `profiles/<project>.sh`
 holds per-project setup (`box_setup` once, `box_worktree` per session).
 
-The command, the config dir (`~/.config/box`), the on-VM dir (`~/.box`), the
-`BOX_*` variables and the `box` VM tag are deliberately unrelated names: the
-tool is `kuggis`, its plumbing kept the `box` prefix so the two live VMs
-weren't disturbed by the rename.
+The tool and its laptop config (`~/.config/kuggis`) are `kuggis`. The on-VM
+plumbing deliberately kept the `box` prefix — the on-VM dir (`~/.box`), the
+`BOX_*` session variables and the `box` VM tag — because renaming those would
+have disturbed VMs that already exist. It's invisible from the laptop.
 
 ## Recovery
 

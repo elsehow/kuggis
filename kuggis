@@ -17,12 +17,12 @@
 #           [--cpu N] [--memory M] [--disk D]
 #                                    create the VM, grant it the repo, set it up
 #   kuggis sync [project]            push scripts, token, settings and secrets
-#                                    (~/.config/box/secrets/<project>.env) again
+#                                    (~/.config/kuggis/secrets/<project>.env) again
 #   kuggis sh <project> [cmd...]     plain ssh to the VM
 #   kuggis token                     mint a Claude token into the keychain
 set -euo pipefail
 
-CONF=${BOX_CONFIG:-$HOME/.config/box}
+CONF=${KUGGIS_CONFIG:-$HOME/.config/kuggis}
 MAP=$CONF/vms # one line per project: <project> <vm> <owner/repo> <profile|->
 SELF=$0
 [ -L "$SELF" ] && SELF=$(readlink "$SELF")
@@ -211,6 +211,10 @@ cmd_new() {
   # As exe.dev's bot, not as you: with main protected, the VM can push branches
   # and open PRs but can't approve or merge its own.
   remote exe.dev "integrations add github --name=gh-$vm --repository=$repo --attach=vm:$vm"
+  # Shut the VM's outbound email gateway: a box must not be able to mail anyone,
+  # owner included (no phishing channel). Inbound was already off (--no-email).
+  echo "shutting outbound email on ${vm}…"
+  remote exe.dev "share receive-email $vm --reply-policy=none" >/dev/null
   mkdir -p "$CONF"
   echo "$p $vm $repo $profile" >>"$MAP"
   wait_ssh "$vm.exe.xyz"
