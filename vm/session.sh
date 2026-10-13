@@ -10,6 +10,7 @@ REPO=$HOME/${BOX_REPO##*/}
 WT=$REPO/.claude/worktrees
 STATE=$HOME/.box/state
 AGENT=$HOME/.box/agent # claude | codex, per session; absent means claude
+FIRST=$HOME/.box/first # a first message for a session's next start, read once by run.sh
 
 die() { echo "box: $*" >&2; exit 1; }
 alive() { tmux has-session -t "=$1" 2>/dev/null; }
@@ -65,7 +66,8 @@ ensure_server() {
     "${cmd[@]}"
 }
 
-attach() {
+# Start a session's agent in tmux if it isn't running.
+launch() {
   local name=$1 want=${2:-} wt=$WT/$1 fresh=0 agent
   mkdir -p "$STATE" "$AGENT"
   agent=$(agent_of "$name")
@@ -83,8 +85,32 @@ attach() {
     ensure_server
     tmux new-session -d -s "$name" -c "$wt" "$HOME/.box/run.sh $name $agent $fresh"
   fi
+}
+
+attach() {
+  launch "$1" "${2:-}"
   # -d drops any other client, such as one left by a laptop that went to sleep.
-  exec tmux attach-session -d -t "=$name"
+  exec tmux attach-session -d -t "=$1"
+}
+
+# Hand a session a brief (kuggis dispatch): a running session gets it typed in
+# as its next message; a stopped or new one starts with it.
+deliver() {
+  local name=$1 want=$2 brief=$3
+  local msg="Read $brief: a brief from the Thinker that the owner reviewed and dispatched. Then begin."
+  [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || die "bad session name '$name'"
+  [ -f "$brief" ] || die "no brief at $brief"
+  if alive "$name"; then
+    tmux send-keys -t "=$name:" -l -- "$msg"
+    sleep 0.3
+    tmux send-keys -t "=$name:" Enter
+    echo "delivered to running session $name ($(agent_of "$name"))"
+  else
+    mkdir -p "$FIRST"
+    printf '%s\n' "$msg" >"$FIRST/$name"
+    launch "$name" "$want"
+    echo "started $name ($(agent_of "$name")) with the brief"
+  fi
 }
 
 finish() {
@@ -112,6 +138,7 @@ finish() {
 case ${1:-} in
   status) status ;;
   attach) attach "$2" "${3:-}" ;;
+  deliver) deliver "$2" "$3" "$4" ;;
   done) finish "$2" "${3:-}" ;;
-  *) die "usage: session.sh status | attach <name> [claude|codex] | done <name> [--force]" ;;
+  *) die "usage: session.sh status | attach <name> [claude|codex] | deliver <name> <claude|codex> <brief> | done <name> [--force]" ;;
 esac

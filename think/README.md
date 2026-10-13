@@ -8,6 +8,31 @@ outbox for you to read.
     kuggis think --setup     build or update the room (asks for your password)
     kuggis think --check     the boundary check: OS level, then a prompt to paste
     kuggis think             enter the room
+    kuggis                   briefs waiting for you, and every session
+    kuggis dispatch          review the waiting briefs one by one
+
+## From thinking to sessions
+
+The Thinker can't reach a VM. It writes **briefs** to its outbox, each one
+with a small header (`project`, `session`, `agent`) and a body. `kuggis` (or
+`kuggis dispatch`) shows each waiting brief in full, plus anything in it that
+could carry data out: URLs, long opaque strings, invisible characters, an odd
+size. Then:
+
+- **d** dispatches it: the brief is uploaded to the project's VM and the
+  session starts with it as its first message. If that session is already
+  running, the brief becomes its next message. You attach whenever you like.
+- **e** edits a copy first; your copy is what goes.
+- **s** skips it for now; **r** rejects it for good.
+
+A brief is the one way anything leaves the room, and the VMs have open
+internet and no vault, so your read is the check. Every decision is logged
+in `~/.config/kuggis/dispatch.log` with the brief's hash; a brief that
+changes after you saw it shows up again.
+
+The other direction: each run writes `inbox/status.md` (every session, each
+project's open PRs) and `inbox/prs/*.diff` into the Thinker's workspace. The
+inbox is yours; the Thinker only reads it.
 
 ## What holds it
 

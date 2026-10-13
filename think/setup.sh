@@ -40,6 +40,8 @@ echo "room: $room ($("$room/claude" --version 2>/dev/null | head -1))"
 #    no first-run login picker (token auth).
 chmod 711 "$home"
 install -d -o "$user" -g staff -m 755 "$home/workspace" "$home/workspace/outbox"
+# Its inbox is yours: kuggis writes session and PR status there; it only reads.
+install -d -o "$owner" -g staff -m 755 "$home/workspace/inbox"
 install -d -o "$user" -g staff -m 700 "$home/.config"
 (umask 077; printf '%s\n' "$token" >"$home/.config/claude-token")
 chown "$user:staff" "$home/.config/claude-token"

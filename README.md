@@ -17,6 +17,10 @@ Setup on the laptop, once:
    on your phone, to get pinged when a session waits on you.
 
 Then `kuggis new <project> <owner/repo>` and `kuggis <project> <session>`.
+`kuggis` on its own shows what's waiting on you (sessions, and briefs from the
+Thinker); pick one to attach to it or review it. The Thinker, an agent that
+reads your vault and the web from a contained room on the laptop, is in
+`think/README.md`.
 
 What lands on a VM: the Claude token (model requests only; claude.ai
 connectors stay off). What never does: a GitHub token (exe.dev's GitHub

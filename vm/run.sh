@@ -39,6 +39,20 @@ case $agent in
     fi ;;
 esac
 
+# A brief from kuggis dispatch is the session's first message, given once.
+first=~/.box/first/$name
+if [ -f "$first" ]; then
+  msg=$(cat "$first")
+  rm -f "$first"
+  if [ "${1:-} ${2:-}" = "codex resume" ]; then
+    # `codex resume --last` reads a trailing argument as a session name, so the
+    # brief is typed in once its screen is up.
+    (sleep 8 && tmux send-keys -t "=$name:" -l -- "$msg" && sleep 0.3 && tmux send-keys -t "=$name:" Enter) &
+  else
+    set -- "$@" "$msg"
+  fi
+fi
+
 "$@"
 rc=$?
 if [ $rc -ne 0 ]; then

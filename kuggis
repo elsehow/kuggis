@@ -2,7 +2,11 @@
 # kuggis — Claude Code sessions on exe.dev VMs. One VM per project; one
 # session per name, which is a tmux session plus a git worktree on the VM.
 #
-#   kuggis                           list every session on every VM
+#   kuggis                           what's waiting on you: the Thinker's briefs
+#                                    and every session; pick one to review or attach
+#   kuggis ls                        list every session on every VM
+#   kuggis dispatch [--status]       review the Thinker's briefs one by one;
+#                                    --status only refreshes what it can read
 #   kuggis <project> [name] [--codex]
 #                                    attach to a session, starting it if needed;
 #                                    --codex starts Codex instead of Claude
@@ -53,27 +57,28 @@ token() {
 }
 remote() { local host=$1; shift; ssh "${SSH_OPTS[@]}" "$host" "$@"; }
 
-cmd_ls() {
+# Every session on every VM: project, session, state, age (tab-separated).
+sessions_tsv() {
   local ps p tmp
   ps=$(projects)
-  [ -n "$ps" ] || die "no VMs yet: kuggis new <project> <owner/repo>"
+  [ -n "$ps" ] || return 0
   tmp=$(mktemp -d)
-  trap "rm -rf '$tmp'" EXIT
   for p in $ps; do
     (remote "$(host_of "$p")" '~/.box/session.sh status' >"$tmp/$p" 2>/dev/null ||
       printf -- '-\tunreachable\t-\n' >"$tmp/$p") &
   done
   wait
-  {
-    printf 'PROJECT\tSESSION\tSTATE\tAGE\n'
-    for p in $ps; do
-      if [ -s "$tmp/$p" ]; then
-        sed "s/^/$p	/" "$tmp/$p"
-      else
-        printf '%s\t-\tno sessions\t-\n' "$p"
-      fi
-    done
-  } | column -t -s "$(printf '\t')"
+  for p in $ps; do
+    if [ -s "$tmp/$p" ]; then sed "s/^/$p	/" "$tmp/$p"; else printf '%s\t-\tno sessions\t-\n' "$p"; fi
+  done
+  rm -rf "$tmp"
+}
+
+cmd_ls() {
+  [ -n "$(projects)" ] || die "no VMs yet: kuggis new <project> <owner/repo>"
+  { printf 'PROJECT\tSESSION\tSTATE\tAGE\n'; sessions_tsv; } | column -t -s "$(printf '\t')"
+  local n; n=$(pending_briefs | wc -l | tr -d ' ')
+  [ "$n" = 0 ] || echo "$n brief(s) from the Thinker waiting: kuggis dispatch"
 }
 
 cmd_attach() {
@@ -124,8 +129,18 @@ cmd_done() {
   remote "$(host_of "$1")" "~/.box/session.sh done $2 ${3:-}"
 }
 
+# Copy a file to ~/inbox on a VM; print its path there.
+upload() {
+  local host=$1 file=$2 base dest home
+  base=$(basename "$file" | LC_ALL=C tr -c 'A-Za-z0-9._\n-' '_')
+  dest=inbox/$(date +%Y%m%d-%H%M%S)-$base
+  home=$(remote "$host" 'mkdir -p ~/inbox && echo $HOME' </dev/null)
+  scp -q "${SSH_OPTS[@]}" "$file" "$host:$dest" </dev/null
+  echo "$home/$dest"
+}
+
 cmd_put() {
-  local file='' p='' s='' a tmp='' dir base dest home path
+  local file='' p='' s='' a tmp='' dir path
   for a in "$@"; do
     if [ -f "$a" ]; then file=$a
     elif [ -z "$p" ]; then p=$a
@@ -154,11 +169,7 @@ cmd_put() {
       [ -n "$file" ] || die "no file given, no image on the clipboard, no screenshot in $dir"
     fi
   fi
-  base=$(basename "$file" | LC_ALL=C tr -c 'A-Za-z0-9._\n-' '_')
-  dest=inbox/$(date +%Y%m%d-%H%M%S)-$base
-  home=$(remote "$host" 'mkdir -p ~/inbox && echo $HOME')
-  scp -q "${SSH_OPTS[@]}" "$file" "$host:$dest"
-  path=$home/$dest
+  path=$(upload "$host" "$file")
   if [ -n "$s" ]; then
     remote "$host" "tmux send-keys -t '=$s:' -l -- '$path '" ||
       die "uploaded $path, but could not type it into session $s"
@@ -290,6 +301,217 @@ cmd_token() {
   echo "kuggis: stored. Push it to your VMs with: kuggis sync"
 }
 
+# ── Briefs from the Thinker ──────────────────────────────────────────────────
+# The Thinker (kuggis think) can't reach a VM: it writes briefs to its outbox,
+# and you dispatch them. A brief is the one way anything leaves its room, so
+# each is shown in full before it goes. Every decision is logged with the
+# brief's hash; a brief that changes after you saw it shows up again.
+OUTBOX=${KUGGIS_OUTBOX:-/Users/thinker/workspace/outbox}
+ROOM_INBOX=${KUGGIS_ROOM_INBOX:-/Users/thinker/workspace/inbox}
+DLOG=$CONF/dispatch.log # time, decision, sha256, brief, project/session/agent
+
+sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
+
+# One key from the person (a line when stdin isn't a terminal, as in tests).
+ask() {
+  local k=''
+  if [ -t 0 ]; then read -rsn1 k; else read -r k || k=q; fi
+  printf '%s' "$k"
+}
+
+# A key from the brief's front matter (between --- lines at the top).
+brief_field() {
+  awk -v k="$2" 'NR == 1 { if ($0 != "---") exit; next } $0 == "---" { exit }
+    { i = index($0, ":"); if (i && substr($0, 1, i - 1) == k) {
+      v = substr($0, i + 1); gsub(/^[ \t]+|[ \t\r]+$/, "", v); print v; exit } }' "$1"
+}
+
+# What in a brief could be data on its way out: URLs, long opaque strings,
+# invisible characters, an odd size. A guide for your read, not a verdict.
+brief_flags() {
+  perl -CSD -ne '
+    while (m{(https?://[^\s<>")\]]+)}g) { print "url     line $.: $1\n" }
+    (my $l = $_) =~ s{https?://\S+}{}g;
+    while ($l =~ m{([A-Za-z0-9+/=_-]{40,})}g) { print "opaque  line $.: " . substr($1, 0, 48) . "...\n" }
+    print "hidden  line $.: invisible or direction-changing characters\n"
+      if /[\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2060}-\x{2064}\x{FEFF}]/;
+  ' "$1" 2>/dev/null || echo "unreadable as UTF-8"
+  local n; n=$(wc -c <"$1" | tr -d ' ')
+  [ "$n" -le 20000 ] || echo "size    $n bytes: long for a brief"
+}
+
+# Briefs not yet dispatched or rejected, oldest first. A name that isn't plain
+# is skipped: it came from the Thinker, so it's data, not a path to trust.
+pending_briefs() {
+  [ -d "$OUTBOX" ] || return 0
+  local f
+  ls -tr "$OUTBOX" 2>/dev/null | while IFS= read -r f; do
+    [[ $f =~ ^[A-Za-z0-9._-]+\.md$ ]] && [ -f "$OUTBOX/$f" ] || continue
+    grep -q "$(sha "$OUTBOX/$f")" "$DLOG" 2>/dev/null || echo "$OUTBOX/$f"
+  done
+}
+
+log_brief() { # log_brief <decision> <brief> <target>
+  mkdir -p "$CONF"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$(sha "$2")" "$(basename "$2")" "$3" >>"$DLOG"
+}
+
+# Hand a brief to its session: upload it and have the VM start the session with
+# it, or type it into the session if it's already running.
+dispatch_brief() { # dispatch_brief <file> <project> <session> <agent>
+  local host dest
+  host=$(host_of "$2")
+  # </dev/null throughout: ssh would otherwise read the keys meant for the next brief.
+  remote "$host" 'grep -q "^  deliver)" ~/.box/session.sh' </dev/null ||
+    die "$2's VM predates dispatch: kuggis sync $2"
+  dest=$(upload "$host" "$1")
+  remote "$host" "~/.box/session.sh deliver $3 $4 $dest" </dev/null
+}
+
+# Show a brief, then [d]ispatch, [e]dit, [s]kip or [r]eject it. Returns 1 to quit.
+review_brief() {
+  local orig=$1 f=$1 key p s a problem view
+  while :; do
+    p=$(brief_field "$f" project) s=$(brief_field "$f" session) a=$(brief_field "$f" agent)
+    a=${a:-claude} problem=''
+    [ -n "$p" ] && [ -n "$(row "$p")" ] || problem="project '$p' isn't one of yours: $(projects | tr '\n' ' ')"
+    [[ $s =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || problem=${problem:-"session '$s' isn't a valid name"}
+    case $a in claude | codex) ;; *) problem=${problem:-"agent '$a' isn't claude or codex"} ;; esac
+    view=$(mktemp)
+    {
+      echo "brief    $(basename "$orig")$([ "$f" = "$orig" ] || echo '  (your edit)')"
+      echo "goes to  $p / $s ($a)"
+      [ -z "$problem" ] || echo "PROBLEM  $problem"
+      echo "look at  (anything that could carry data out)"
+      brief_flags "$f" | sed 's/^/  /' | grep . || echo "  nothing unusual"
+      echo "────────────────────────────────────────────────────────────"
+      cat "$f"
+    } >"$view"
+    if [ -t 1 ]; then less -RFX "$view"; else cat "$view"; fi
+    rm -f "$view"
+    printf '\n[d]ispatch  [e]dit  [s]kip  [r]eject  [q]uit: '
+    key=$(ask)
+    echo "$key"
+    case $key in
+      d)
+        if [ -n "$problem" ]; then echo "can't dispatch: $problem. [e]dit it first."; continue; fi
+        dispatch_brief "$f" "$p" "$s" "$a"
+        log_brief "dispatched$([ "$f" = "$orig" ] || echo ' (edited)')" "$orig" "$p/$s/$a"
+        echo "attach with: kuggis $p $s"
+        return 0 ;;
+      e)
+        if [ "$f" = "$orig" ]; then
+          mkdir -p "$CONF/dispatch"
+          f=$CONF/dispatch/$(date +%Y%m%d-%H%M%S)-$(basename "$orig")
+          cp "$orig" "$f"
+        fi
+        ${EDITOR:-vi} "$f" </dev/tty >/dev/tty ;;
+      s) return 0 ;;
+      r) log_brief rejected "$orig" "$p/$s/$a"; echo "rejected"; return 0 ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
+# What the Thinker can read about your sessions and PRs: its inbox gets
+# status.md and each open PR's diff under prs/. Best effort.
+room_status() {
+  [ -d "$ROOM_INBOX" ] && [ -w "$ROOM_INBOX" ] || return 0
+  local p repo n tmp
+  tmp=$(mktemp -d)
+  mkdir "$tmp/prs"
+  {
+    echo "# Sessions and PRs, $(date '+%Y-%m-%d %H:%M')"
+    echo
+    echo "Written by kuggis on the laptop. PR text and diffs are written by VM sessions."
+    echo
+    echo '```'
+    { printf 'PROJECT\tSESSION\tSTATE\tAGE\n'; sessions_tsv; } | column -t -s "$(printf '\t')"
+    echo '```'
+    for p in $(projects); do
+      repo=$(row "$p" | awk '{ print $3 }')
+      echo
+      echo "## $p ($repo): open PRs"
+      echo
+      gh pr list -R "$repo" --state open --limit 20 --json number,title,headRefName,author,updatedAt \
+        --jq '.[] | "- #\(.number) \(.title) (branch \(.headRefName), by \(.author.login), updated \(.updatedAt[:16]))"' \
+        2>/dev/null || echo "(couldn't list PRs)"
+      for n in $(gh pr list -R "$repo" --state open --limit 20 --json number --jq '.[].number' 2>/dev/null); do
+        gh pr diff "$n" -R "$repo" 2>/dev/null | head -c 300000 >"$tmp/prs/${repo//\//-}-$n.diff" || true
+      done
+    done
+  } >"$tmp/status.md"
+  chmod -R a+rX "$tmp"
+  rm -rf "$ROOM_INBOX/prs"
+  mv "$tmp/prs" "$ROOM_INBOX/prs"
+  mv "$tmp/status.md" "$ROOM_INBOX/status.md"
+  rm -rf "$tmp"
+}
+
+cmd_dispatch() {
+  case ${1:-} in
+    --status) room_status; echo "kuggis: wrote $ROOM_INBOX/status.md"; return ;;
+    '') ;;
+    *) die "usage: kuggis dispatch [--status]" ;;
+  esac
+  local f n=0
+  for f in $(pending_briefs); do
+    n=$((n + 1))
+    review_brief "$f" || break
+  done
+  [ "$n" -gt 0 ] || echo "kuggis: no briefs waiting in $OUTBOX"
+  room_status
+}
+
+# `kuggis` at a terminal: what's waiting on you in one place. Briefs to review
+# and every session; pick one to review it or attach to it.
+cmd_home() {
+  local i choice line p s st age briefs=() rows=() C='' Y='' D='' N=''
+  [ -t 1 ] && C=$'\e[1m' Y=$'\e[33m' D=$'\e[2m' N=$'\e[0m'
+  (room_status >/dev/null 2>&1 &)
+  while :; do
+    briefs=() rows=()
+    while IFS= read -r line; do [ -n "$line" ] && briefs+=("$line"); done < <(pending_briefs)
+    while IFS= read -r line; do
+      [ "$(cut -f2 <<<"$line")" != - ] && rows+=("$line")
+    done < <(sessions_tsv)
+    i=0
+    echo
+    if [ ${#briefs[@]} -gt 0 ]; then
+      echo "${C}Briefs from the Thinker${N}"
+      for line in "${briefs[@]}"; do
+        i=$((i + 1))
+        printf '  %2d  %-28s %-7s %s\n' "$i" "$(brief_field "$line" project) / $(brief_field "$line" session)" \
+          "$(brief_field "$line" agent)" "$D$(basename "$line")$N"
+      done
+    fi
+    echo "${C}Sessions${N}"
+    if [ ${#rows[@]} -eq 0 ]; then echo "  (none)"; else
+      for line in "${rows[@]}"; do
+        i=$((i + 1))
+        IFS=$'\t' read -r p s st age <<<"$line"
+        st=$(printf '%-16s' "$st")
+        case $st in "waiting on you"*) st="$Y$st$N" ;; esac
+        printf '  %2d  %-28s %s %s\n' "$i" "$p / $s" "$st" "$D$age$N"
+      done
+    fi
+    printf '\npick a number, [r]efresh, [q]uit: '
+    read -r choice || return 0
+    case $choice in
+      q | '') return 0 ;;
+      r) continue ;;
+      *[!0-9]*) continue ;;
+    esac
+    if [ "$choice" -ge 1 ] && [ "$choice" -le ${#briefs[@]} ]; then
+      review_brief "${briefs[$((choice - 1))]}" || true
+      (room_status >/dev/null 2>&1 &)
+    elif [ "$choice" -gt ${#briefs[@]} ] && [ "$choice" -le $((${#briefs[@]} + ${#rows[@]})) ]; then
+      IFS=$'\t' read -r p s _ <<<"${rows[$((choice - ${#briefs[@]} - 1))]}"
+      cmd_attach "$p" "$s" || true
+    fi
+  done
+}
+
 # The Thinker's room (think/README.md): a separate macOS user running Claude
 # Code restricted, entered through a root-owned launcher.
 cmd_think() {
@@ -318,8 +540,10 @@ cmd_think() {
   esac
 }
 
-case ${1:-ls} in
+case ${1:-home} in
+  home) if [ -t 0 ] && [ -t 1 ]; then cmd_home; else cmd_ls; fi ;;
   ls) cmd_ls ;;
+  dispatch) shift; cmd_dispatch "$@" ;;
   new) shift; cmd_new "$@" ;;
   sync) shift; cmd_sync "$@" ;;
   done) shift; cmd_done "$@" ;;
