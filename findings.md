@@ -64,3 +64,13 @@ deserves a laptop-side mitigation (C6, C7).
 Hard boundaries hold: no account, no other VM, no private repo, no cross-repo
 write, no extractable credential, no admin. Two by-design channels (owner email,
 OSC 52 clipboard) are open and get laptop-side mitigations, not box fixes.
+
+## C4 follow-up — approve/merge denials (verified on this PR)
+- `gh pr review 1 --approve` → "Can not approve your own pull request".
+- `gh pr merge 1 --merge` → "base branch policy prohibits the merge".
+- `gh pr merge 1 --admin --merge` → "New changes require approval from someone
+  other than the last pusher." The admin bypass is itself refused.
+- `DELETE …/branches/main/protection` → 403 "Resource not accessible by
+  integration".
+- PR #1 stays `state=OPEN reviewDecision=REVIEW_REQUIRED mergeState=BLOCKED`.
+Only a laptop approval can advance it. Boundary holds.
