@@ -551,6 +551,23 @@ send_review() { # send_review <project> <repo> <n> <head-branch> <review-file>
   if [ -n "${KUGGIS_DRY_RUN:-}" ]; then echo "would send to $1/$4:"; cat "$f"; return 0; fi
   dispatch_brief "$f" "$1" "$4" "$(remote "$(host_of "$1")" "cat ~/.box/agent/$4 2>/dev/null || echo claude" </dev/null)"
   log_brief "review sent" "$5" "$1/$4 for $2#$3"
+  mkdir -p "$THINKING"
+  brief_field "$5" head >"$THINKING/$(ask_key "$2" "$3").sent" # for auto_rereview
+}
+
+# A review you sent back gets the Thinker again once the worker has pushed
+# past the commit it reviewed and stopped working. Once per send.
+auto_rereview() { # auto_rereview <prs_tsv rows> <sessions_tsv rows>
+  local row p repo n head sha f st
+  while IFS= read -r row; do
+    IFS=$'\t' read -r p repo n head sha _ <<<"$row"
+    f=$THINKING/$(ask_key "$repo" "$n").sent
+    [ -n "$p" ] && [ -s "$f" ] && [[ $sha != "$(cat "$f")"* ]] || continue
+    st=$(awk -F'\t' -v p="$p" -v s="$head" '$1 == p && $2 == s { print $3 }' <<<"$2")
+    case $st in starting* | working*) continue ;; esac
+    mv "$f" "$f.$$" 2>/dev/null || continue # another refresh took it
+    if ask_thinker "$row" </dev/null >/dev/null 2>&1; then rm -f "$f.$$"; else mv "$f.$$" "$f"; fi
+  done <<<"$1"
 }
 
 # A review without its front matter.
@@ -1052,10 +1069,13 @@ pr_row() { prs_tsv | awk -F'\t' -v r="$1" -v n="$2" 'tolower($2) == tolower(r) &
 # Projects (with their tmux colour), open PRs with the Thinker's word on each,
 # and every session.
 web_state() {
-  local p repo n head sha base author checks title rev v stale t0 empty
+  local p repo n head sha base author checks title rev v stale t0 empty prs sessions
+  prs=$(prs_tsv) sessions=$(sessions_tsv)
+  auto_rereview "$prs" "$sessions"
   {
     for p in $(projects); do printf 'project\t%s\t%s\n' "$p" "$(project_colour "$p")"; done
-    prs_tsv | while IFS=$'\t' read -r p repo n head sha base author checks title; do
+    while IFS=$'\t' read -r p repo n head sha base author checks title; do
+      [ -n "$p" ] || continue
       rev=$(review_for "$repo" "$n") v='' stale='' empty=''
       t0=$(thinker_reviewing "$repo" "$n") || t0=''
       [ -z "$rev" ] || v=$(brief_field "$rev" verdict) stale=$(review_stale "$rev" "$sha")
@@ -1063,8 +1083,8 @@ web_state() {
       printf 'pr'
       printf '\t%s' "$p" "$repo" "$n" "$head" "$sha" "$base" "$author" "$checks" "$title" "$v" "$stale" "$t0" "$empty"
       echo
-    done
-    sessions_tsv | sed 's/^/session	/'
+    done <<<"$prs"
+    [ -z "$sessions" ] || sed 's/^/session	/' <<<"$sessions"
   } | room_text | jq -Rn '[inputs | split("\t")] | {
     projects: [.[] | select(.[0] == "project") | {name: .[1], colour: (.[2] | tonumber)}],
     prs: [.[] | select(.[0] == "pr") | {project: .[1], repo: .[2], n: (.[3] | tonumber), head: .[4],

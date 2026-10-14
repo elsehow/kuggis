@@ -286,12 +286,15 @@ function button(label, key, on, why) {
 // The PR's details (review, files, log), once they've loaded.
 const loaded = pr => (detail?.key === prKey(pr) ? detail.data : null);
 
+// The open PR this one is stacked on: it merges first.
+const parentOf = pr => state.prs.find(p => p.repo === pr.repo && p.head === pr.base);
+
 // What blocks an action on this PR, or null.
 function blockers(pr) {
-  const d = loaded(pr), loading = 'still loading this PR';
+  const d = loaded(pr), up = parentOf(pr), loading = 'still loading this PR';
   return {
     ask: pr.reviewing_since ? 'the Thinker is reviewing it now' : null,
-    merge: !d ? loading : pr.base !== d.default_branch ? `stacked on ${pr.base}: merge that one first` : null,
+    merge: up ? `merge #${up.n} first` : !d ? loading : pr.base !== d.default_branch ? `merge ${pr.base} first` : null,
     send: !d ? loading : !d.review ? 'no review to send yet' : null,
   };
 }
@@ -302,7 +305,7 @@ function renderDetail() {
   if (!r) return pane.replaceChildren(el('p', 'empty', 'Pick a PR or a session.'));
   if (r.kind === 'session') return pane.replaceChildren(sessionDetail(r.s));
   if (r.kind === 'vm') return pane.replaceChildren(el('div', 'banner bad', `${r.project}'s VM didn't answer ssh. It may be asleep or rebooting.`));
-  const pr = r.pr, d = loaded(pr), b = blockers(pr);
+  const pr = r.pr, d = loaded(pr), b = blockers(pr), up = parentOf(pr);
   const frag = document.createDocumentFragment();
   frag.append(
     el('div', 'label', visible(`${pr.repo} · #${pr.n}`)),
@@ -310,7 +313,7 @@ function renderDetail() {
     el('div', 'meta', visible(`by ${pr.author} · ${pr.head} → ${pr.base} · head ${pr.sha.slice(0, 12)} · `), checksPill(pr.checks)),
     el('div', 'actions',
       button(pr.verdict || pr.empty ? 'Review again' : 'Ask the Thinker', 't', () => ask(pr), b.ask),
-      button('Merge', 'm', () => mergeDialog(pr), b.merge),
+      button(up ? `Merge after #${up.n}` : 'Merge', 'm', () => mergeDialog(pr), b.merge),
       button('Send review to its session', 's', () => sendDialog(pr), b.send),
       button('GitHub', 'o', () => openPr(pr))));
   if (pr.reviewing_since) {
@@ -417,8 +420,7 @@ function confirmDialog(title, body, ok, run) {
 
 function mergeDialog(pr) {
   const b = blockers(pr);
-  if (!loaded(pr)) return toast(b.merge);
-  if (b.merge) return confirmDialog(`Can't merge #${pr.n} yet`, el('p', null, visible(`It's ${b.merge}.`)));
+  if (b.merge) return toast(b.merge);
   const warn = [];
   if (pr.checks === 'failing') warn.push('Checks are failing.');
   if (pr.checks === 'pending') warn.push('Checks are still running.');
