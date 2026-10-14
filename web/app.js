@@ -173,6 +173,27 @@ function badge(pr) {
 
 const checksPill = c => el('span', `pill ci-${c}`, `ci ${c}`);
 
+// The open PR this one is stacked on: it merges first.
+const parentOf = pr => state.prs.find(p => p.repo === pr.repo && p.head === pr.base);
+
+// A PR's worker is the session named for its branch. While it or the Thinker
+// is busy, or a ready PR waits for the one it's stacked on, you're waiting;
+// otherwise it's your move.
+const workerOf = pr => state.sessions.find(s => s.project === pr.project && s.name === pr.head);
+const atWork = s => /^(starting|working|running)/.test(s?.state || '');
+const yourTurn = pr => !pr.reviewing_since && !atWork(workerOf(pr)) &&
+  !(parentOf(pr) && pr.verdict === 'merge' && !pr.stale);
+
+function workerChip(pr) {
+  const w = workerOf(pr);
+  if (!w) return el('span', 'badge worker none');
+  const waiting = w.state.startsWith('waiting');
+  const e = el('span', `badge worker ${atWork(w) ? 'busy' : waiting ? 'waiting' : 'none'}`,
+    atWork(w) ? el('span', 'spin') : waiting ? '⚑' : '·', ' ', visible(w.name));
+  e.title = `${w.name}: ${w.state}`;
+  return e;
+}
+
 const SESSION_RANK = s => (s.state.startsWith('waiting') ? 0 : s.state.startsWith('working') ? 1 : 2);
 
 function buildRows() {
@@ -201,7 +222,7 @@ function renderList() {
       e.firstChild.style.background = xterm(r.project.colour);
     } else if (r.kind === 'pr') {
       const pr = r.pr;
-      e = el('div', 'row pr', el('span', 'num', `#${pr.n}`), badge(pr), checksPill(pr.checks),
+      e = el('div', `row pr ${yourTurn(pr) ? 'yours' : 'waiting'}`, el('span', 'num', `#${pr.n}`), badge(pr), workerChip(pr), checksPill(pr.checks),
         el('span', 'title', visible(pr.title)));
     } else if (r.kind === 'session') {
       const s = r.s, waiting = s.state.startsWith('waiting');
@@ -286,9 +307,6 @@ function button(label, key, on, why) {
 // The PR's details (review, files, log), once they've loaded.
 const loaded = pr => (detail?.key === prKey(pr) ? detail.data : null);
 
-// The open PR this one is stacked on: it merges first.
-const parentOf = pr => state.prs.find(p => p.repo === pr.repo && p.head === pr.base);
-
 // What blocks an action on this PR, or null.
 function blockers(pr) {
   const d = loaded(pr), up = parentOf(pr), loading = 'still loading this PR';
@@ -310,7 +328,7 @@ function renderDetail() {
   frag.append(
     el('div', 'label', visible(`${pr.repo} · #${pr.n}`)),
     el('h1', null, visible(pr.title)),
-    el('div', 'meta', visible(`by ${pr.author} · ${pr.head} → ${pr.base} · head ${pr.sha.slice(0, 12)} · `), checksPill(pr.checks)),
+    el('div', 'meta', visible(`by ${pr.author} · ${pr.head} → ${pr.base} · head ${pr.sha.slice(0, 12)} · `), checksPill(pr.checks), workerOf(pr) && workerChip(pr)),
     el('div', 'actions',
       button(pr.verdict || pr.empty ? 'Review again' : 'Ask the Thinker', 't', () => ask(pr), b.ask),
       button(up ? `Merge after #${up.n}` : 'Merge', 'm', () => mergeDialog(pr), b.merge),

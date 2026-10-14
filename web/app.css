@@ -31,6 +31,11 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .row.selected .title { color: var(--fg); }
 .row .age { margin-left: auto; font: var(--type-meta); color: var(--text-faint); }
 .row.vm .badge { min-width: 0; }
+/* your move: an ink dot; waiting on the Thinker or the worker: faded */
+.row.pr .num { width: 4.4em; }
+.row.pr .num::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; vertical-align: 1px; }
+.row.yours .num::before { background: var(--fg); }
+.row.waiting .num, .row.waiting .title { opacity: .45; }
 .empty { padding: var(--sp-6) 12px; color: var(--text-muted); }
 
 /* ── the Thinker's word, sessions' states ── */
@@ -42,7 +47,9 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .badge.none { background: none; color: var(--text-faint); }
 .badge.stale { background: none; box-shadow: none; color: var(--text-faint); font-weight: 500; }
 .badge.bad { background: color-mix(in srgb, #c33 16%, transparent); }
-.badge.reviewing { background: var(--activity); color: var(--bg); font-weight: 600; }
+.badge.reviewing, .badge.busy { background: var(--activity); color: var(--bg); font-weight: 600; }
+.badge.worker { min-width: 8.5em; max-width: 12em; overflow: hidden; text-overflow: ellipsis; }
+.meta .badge.worker { min-width: 0; }
 .badge.waiting { min-width: 0; background: var(--fg); color: var(--bg); font-weight: 600; }
 .badge.working { min-width: 0; background: none; color: var(--text-muted); }
 .row.session .badge.none { min-width: 0; }
