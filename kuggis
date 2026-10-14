@@ -354,6 +354,7 @@ pending_briefs() {
 }
 
 log_brief() { # log_brief <decision> <brief> <target>
+  [ -z "${KUGGIS_DRY_RUN:-}" ] || return 0
   mkdir -p "$CONF"
   printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$(sha "$2")" "$(basename "$2")" "$3" >>"$DLOG"
 }
@@ -510,15 +511,16 @@ act() { if [ -n "${KUGGIS_DRY_RUN:-}" ]; then echo "would run: $*"; else "$@"; f
 # admin bypass if you did. Only the commit you saw merges (--match-head-commit).
 # A PR others are stacked on merges as a merge commit, and they move to its
 # base before its branch is deleted: deleting a base branch closes its PRs.
+# Callers run this under || (so set -e is off): every step checks the last.
 merge_pr() { # merge_pr <repo> <n> <head-branch> <head-commit> <base> <author>
   local repo=$1 n=$2 head=$3 sha=$4 base=$5 author=$6 me how=--squash admin='' kids c
   me=$(gh api user -q .login)
   kids=$(gh pr list -R "$repo" --state open --base "$head" --json number -q '.[].number')
   [ -z "$kids" ] || how=--merge
   if [ "$author" = "$me" ]; then admin=--admin
-  else act gh pr review "$n" -R "$repo" --approve -b "Reviewed with the Thinker; merged from kuggis."
+  else act gh pr review "$n" -R "$repo" --approve -b "Reviewed with the Thinker; merged from kuggis." || return 1
   fi
-  act gh pr merge "$n" -R "$repo" "$how" ${admin:+"$admin"} --match-head-commit "$sha"
+  act gh pr merge "$n" -R "$repo" "$how" ${admin:+"$admin"} --match-head-commit "$sha" || return 1
   for c in $kids; do act gh api -X PATCH "repos/$repo/pulls/$c" -f base="$base" --silent; done
   act gh api -X DELETE "repos/$repo/git/refs/heads/$head" --silent || true
 }
@@ -591,8 +593,18 @@ pr_screen() { # pr_screen <tsv row>
         printf 'merge %s#%s at %s into %s? [y/N] ' "$repo" "$n" "${sha:0:12}" "$base"
         [ "$(ask)" = y ] || { echo; continue; }
         echo
-        merge_pr "$repo" "$n" "$head" "$sha" "$base" "$author"
+        if ! merge_pr "$repo" "$n" "$head" "$sha" "$base" "$author"; then
+          printf '\nnot merged; its branch and stacked PRs are untouched. any key: '
+          ask >/dev/null
+          echo
+          continue
+        fi
         log_brief merged "${rev:-/dev/null}" "$repo#$n at ${sha:0:12}"
+        # Its session (named for the branch) is usually finished now.
+        if [ -n "$(row "$p")" ] &&
+          remote "$(host_of "$p")" '~/.box/session.sh status' </dev/null 2>/dev/null | cut -f1 | grep -qxF -- "$head"; then
+          close_session "$p" "$head"
+        fi
         return 0 ;;
       c)
         [ -n "$rev" ] || { echo "no review to send yet"; continue; }
@@ -632,6 +644,25 @@ cmd_dispatch() {
 # your localhost, and must not be able to drive this.
 
 # The list: kind, what you see, then the item's data (tab-separated).
+# Close a session: kuggis done, which refuses to throw work away (uncommitted
+# changes, or commits on no remote without a merged PR). --force stays a
+# command you type.
+close_session() { # close_session <project> <session>
+  printf 'close %s / %s? [y/N] ' "$1" "$2"
+  [ "$(ask)" = y ] || { echo; return 0; }
+  echo
+  act cmd_done "$1" "$2" </dev/null && return 0
+  printf '\nleft open (kuggis done %s %s --force discards its work). any key: ' "$1" "$2"
+  ask >/dev/null
+  echo
+}
+
+home_close() { # home_close <item line>
+  local kind _ p s
+  IFS=$'\t' read -r kind _ p s <<<"$1"
+  [ "$kind" != session ] || close_session "$p" "$s"
+}
+
 home_items() {
   local f a p repo n head sha base author checks title rev v c s st age
   local B=$'\e[1m' Y=$'\e[33m' R=$'\e[31m' G=$'\e[32m' D=$'\e[2m' N=$'\e[0m' T=$'\t'
@@ -700,14 +731,16 @@ cmd_fzf_home() {
   ) &
   tick=$!
   disown "$tick" 2>/dev/null || true
+  # shellcheck disable=SC2064 # expand now: these are locals
+  trap "kill $tick 2>/dev/null; rm -rf '$dir'" EXIT
+  trap 'exit 129' HUP TERM # a closed terminal still cleans up
   "$self" _items | fzf --ansi --listen="$sock" --delimiter=$'\t' --with-nth=2 --id-nth=1,3,4,5 \
     --layout=reverse --no-sort --info=hidden --prompt='kuggis › ' \
-    --header='enter: open · ctrl-r: refresh · esc: quit · refreshes every 15s' \
+    --header='enter: open · ctrl-x: close session · ctrl-r: refresh · esc: quit' \
     --preview="$self _preview {}" --preview-window='right,60%,wrap' \
     --bind="enter:execute($self _act {})+reload-sync($self _items)+refresh-preview" \
+    --bind="ctrl-x:execute($self _close {})+reload-sync($self _items)+refresh-preview" \
     --bind="ctrl-r:reload-sync($self _items)+refresh-preview" || true
-  kill "$tick" 2>/dev/null || true
-  rm -rf "$dir"
 }
 
 # `kuggis` at a terminal: what's waiting on you in one place. Briefs to review,
@@ -758,14 +791,21 @@ cmd_home() {
         printf '  %2d  %-28s %s %s\n' "$i" "$p / $s" "$st" "$D$age$N"
       done
     fi
-    printf '\npick a number, [r]efresh, [q]uit: '
+    printf '\npick a number, x<number> to close a session, [r]efresh, [q]uit: '
     read -r choice || return 0
+    local nb=${#briefs[@]} np=${#prs[@]} ns=${#rows[@]}
     case $choice in
       q | '') return 0 ;;
       r) continue ;;
+      x[0-9]*)
+        choice=${choice#x}
+        [[ $choice != *[!0-9]* ]] && [ "$choice" -gt $((nb + np)) ] && [ "$choice" -le $((nb + np + ns)) ] ||
+          { echo "x takes a session's number"; continue; }
+        IFS=$'\t' read -r p s _ <<<"${rows[$((choice - nb - np - 1))]}"
+        close_session "$p" "$s" || true
+        continue ;;
       *[!0-9]*) continue ;;
     esac
-    local nb=${#briefs[@]} np=${#prs[@]} ns=${#rows[@]}
     if [ "$choice" -ge 1 ] && [ "$choice" -le "$nb" ]; then
       review_brief "${briefs[$((choice - 1))]}" || true
       (room_status >/dev/null 2>&1 &)
@@ -816,6 +856,7 @@ case ${1:-home} in
   _items) home_items ;;
   _preview) home_preview "$2" ;;
   _act) home_act "$2" ;;
+  _close) home_close "$2" ;;
   ls) cmd_ls ;;
   dispatch) shift; cmd_dispatch "$@" ;;
   new) shift; cmd_new "$@" ;;

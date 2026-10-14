@@ -19,7 +19,9 @@ Setup on the laptop, once:
 Then `kuggis new <project> <owner/repo>` and `kuggis <project> <session>`.
 `kuggis` on its own shows what's waiting on you: briefs from the Thinker, open
 PRs with its reviews, and every session, with a live preview of the highlighted
-one (a session's current screen). Enter opens it; the list refreshes itself.
+one (a session's current screen). Enter opens it, ctrl-x closes a session
+(`kuggis done`), and the list refreshes itself. Detach from a session with
+`C-b d` to come back to it. Merging a PR offers to close its session.
 It uses [fzf](https://github.com/junegunn/fzf) when installed (`brew install
 fzf`), and a numbered menu otherwise. The Thinker, an agent that
 reads your vault and the web from a contained room on the laptop, is in
