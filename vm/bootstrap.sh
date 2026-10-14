@@ -4,7 +4,7 @@
 set -euo pipefail
 . ~/.box/config
 REPO=$HOME/${BOX_REPO##*/}
-chmod +x ~/.box/*.sh ~/.box/git-hooks/*
+chmod +x ~/.box/*.sh ~/.box/needs-you ~/.box/git-hooks/*
 
 need=''
 for c in tmux jq git curl; do command -v $c >/dev/null || need="$need $c"; done
@@ -41,9 +41,9 @@ if [ ! -d "$REPO/.git" ]; then
 fi
 grep -qxF '.claude/worktrees/' "$REPO/.git/info/exclude" 2>/dev/null ||
   echo '.claude/worktrees/' >>"$REPO/.git/info/exclude"
-mkdir -p "$REPO/.claude/worktrees" ~/.box/state ~/inbox ~/.claude
+mkdir -p "$REPO/.claude/worktrees" ~/.box/state ~/.box/needs ~/inbox ~/.claude
 
-# User settings: box owns these keys and the four hook events. The theme
+# User settings: box owns these keys and the five hook events. The theme
 # follows the laptop terminal's light/dark mode.
 s=~/.claude/settings.json
 [ -s "$s" ] || echo '{}' >"$s"
@@ -54,11 +54,12 @@ jq --arg h "$HOME/.box/hook.sh" --arg mode "$BOX_MODE" --argjson prefs "${BOX_CL
   | .disableClaudeAiConnectors = true
   | .theme = "auto"
   | .permissions.defaultMode = $mode
-  | .hooks.UserPromptSubmit = hook("working")
+  | .permissions.allow = ((.permissions.allow // []) - ["Bash(~/.box/needs-you:*)"] + ["Bash(~/.box/needs-you:*)"])
+  | .hooks.UserPromptSubmit = hook("prompt")
+  | .hooks.PreToolUse = [{matcher: "AskUserQuestion", hooks: hook("waiting")[0].hooks}]
   | .hooks.PostToolUse = hook("working")
   | .hooks.Stop = hook("idle")
-  | .hooks.Notification = [{matcher: "permission_prompt|idle_prompt|elicitation_dialog",
-                            hooks: hook("waiting")[0].hooks}]
+  | .hooks.Notification = [{matcher: "permission_prompt|elicitation_dialog", hooks: hook("waiting")[0].hooks}]
 ' "$s" >"$s.tmp" && mv "$s.tmp" "$s"
 
 # Trust is keyed on the main checkout, so this covers every worktree.

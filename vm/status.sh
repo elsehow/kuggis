@@ -26,7 +26,7 @@ ago() {
 }
 
 left() {
-  local self=$1 f name live now
+  local self=$1 f name live now st
   printf '#[fg=colour16,bg=%s,bold] %s · %s #[default]' "$(colour "${BOX_PROJECT:-box}")" "${BOX_PROJECT:-box}" "$self"
   live=$(tmux list-sessions -F '#{session_name}' 2>/dev/null)
   now=$(date +%s)
@@ -36,7 +36,8 @@ left() {
     [ "$name" != "$self" ] || continue
     grep -qxF "$name" <<<"$live" || continue
     [ "$(cat "$AGENT/$name" 2>/dev/null || echo claude)" = claude ] || continue
-    [ "$(cat "$f")" = waiting ] || continue
+    st=$(cat "$f")
+    [ "$st" = waiting ] || { [ "$st" = idle ] && [ -f ~/.box/needs/"$name" ]; } || continue
     printf ' #[fg=colour16,bg=colour214] ⚑ %s %s #[default]' "$name" "$(ago $((now - $(stat -c %Y "$f"))))"
   done
 }

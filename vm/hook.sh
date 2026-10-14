@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # Agent hook. For Claude (wired in ~/.claude/settings.json): records the
 # session's state (working | idle | waiting) for `box` and pings ntfy when
-# it waits on you. For Codex (`notify` in ~/.codex/config.toml, invoked as
+# it waits on you: a permission prompt or a question it asks with
+# AskUserQuestion. A finished turn is idle; an agent that needs you after
+# one says so with needs-you. For Codex (`notify` in ~/.codex/config.toml, invoked as
 # `hook.sh ping <json>` after each finished turn): pings only.
 # Pings are skipped while you're typing in the session. Prints nothing; exits 0.
 name=${BOX_SESSION:-}
 [ -n "$name" ] || exit 0
 state=$1
+
+# The user typed into the session: whatever it needed from them (needs-you), it has.
+if [ "$state" = prompt ]; then
+  rm -f ~/.box/needs/"$name"
+  state=working
+fi
 
 if [ "$state" = ping ]; then
   input=${2:-}

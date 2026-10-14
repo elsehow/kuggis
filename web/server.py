@@ -31,6 +31,7 @@ REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 NUMBER = re.compile(r"[0-9]{1,7}\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 HASH = re.compile(r"[0-9a-f]{64}\Z")
+PLAIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")  # a project or session name
 HEADERS = {
     "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; "
     "img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; "
@@ -129,6 +130,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if not SHA.match(str(q.get("sha", ""))):
                     raise ValueError("bad commit")
                 return self.kuggis("merge", *pr_args(q), q["sha"], action=True)
+            if path == "/api/close":
+                project, session = str(q.get("project", "")), str(q.get("session", ""))
+                if not PLAIN.match(project) or not PLAIN.match(session):
+                    raise ValueError("bad session")
+                return self.kuggis("close", project, session, action=True)
             if path == "/api/send":
                 if not HASH.match(str(q.get("hash", ""))):
                     raise ValueError("bad review hash")

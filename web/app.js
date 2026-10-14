@@ -53,7 +53,7 @@ let rows = [];           // what the list shows, in order
 let selKey = store.get('kuggis.sel');
 let detail = null;       // {key, data, error}
 let logTimer = null, stateTimer = null, detailTimer = null;
-let busy = false;        // an action is running
+const pending = new Map(); // row key → what kuggis is doing to it (merging, sending…)
 
 // ── small helpers ────────────────────────────────────────────────────────────
 function el(tag, cls, ...kids) {
@@ -135,6 +135,9 @@ function ago(t) {
 }
 const clock = t => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const prKey = pr => `pr:${pr.repo}#${pr.n}`;
+const sessionKey = s => `session:${s.project}/${s.name}`;
+const busyBadge = doing => el('span', 'badge busy', el('span', 'spin'), ` ${doing}`);
+const busyBanner = doing => el('div', 'banner reviewing', el('span', 'spin'), ` ${doing}`);
 
 // xterm-256 colour → CSS, for the project colours the tmux bars use.
 function xterm(i) {
@@ -164,6 +167,7 @@ function toast(msg, bad) {
 
 // ── the list ─────────────────────────────────────────────────────────────────
 function badge(pr) {
+  if (pending.has(prKey(pr))) return busyBadge(pending.get(prKey(pr)));
   if (pr.reviewing_since) return el('span', 'badge reviewing', el('span', 'spin'), ` reviewing ${ago(pr.reviewing_since)}`);
   if (pr.empty) return el('span', 'badge bad', '✗ no review');
   if (!pr.verdict) return el('span', 'badge none', '· not reviewed');
@@ -205,7 +209,7 @@ function buildRows() {
     for (const pr of prs) rows.push({ kind: 'pr', key: prKey(pr), pr });
     if (ss.some(s => s.state === 'unreachable')) rows.push({ kind: 'vm', key: `vm:${p.name}`, project: p.name });
     for (const s of ss.filter(s => s.name !== '-').sort((a, b) => SESSION_RANK(a) - SESSION_RANK(b)))
-      rows.push({ kind: 'session', key: `session:${s.project}/${s.name}`, s });
+      rows.push({ kind: 'session', key: sessionKey(s), s });
   }
 }
 
@@ -227,8 +231,9 @@ function renderList() {
     } else if (r.kind === 'session') {
       const s = r.s, waiting = s.state.startsWith('waiting');
       e = el('div', 'row session', el('span', 'num', '●'), el('span', 'name', visible(s.name)),
-        el('span', `badge ${waiting ? 'waiting' : s.state.startsWith('working') ? 'working' : 'none'}`,
-          visible((waiting ? '⚑ ' : '') + s.state)),
+        pending.has(r.key) ? busyBadge(pending.get(r.key)) :
+          el('span', `badge ${waiting ? 'waiting' : s.state.startsWith('working') ? 'working' : 'none'}`,
+            visible((waiting ? '⚑ ' : '') + s.state)),
         el('span', 'age', visible(s.age)));
     } else {
       e = el('div', 'row vm', el('span', 'badge bad', "✗ the VM didn't answer"));
@@ -309,6 +314,8 @@ const loaded = pr => (detail?.key === prKey(pr) ? detail.data : null);
 
 // What blocks an action on this PR, or null.
 function blockers(pr) {
+  const doing = pending.get(prKey(pr));
+  if (doing) return { ask: doing, merge: doing, send: doing };
   const d = loaded(pr), up = parentOf(pr), loading = 'still loading this PR';
   return {
     ask: pr.reviewing_since ? 'the Thinker is reviewing it now' : null,
@@ -334,6 +341,7 @@ function renderDetail() {
       button(up ? `Merge after #${up.n}` : 'Merge', 'm', () => mergeDialog(pr), b.merge),
       button('Send review to its session', 's', () => sendDialog(pr), b.send),
       button('GitHub', 'o', () => openPr(pr))));
+  if (pending.has(r.key)) frag.append(busyBanner(pending.get(r.key)));
   if (pr.reviewing_since) {
     frag.append(el('div', 'banner reviewing', el('span', 'spin'),
       ` The Thinker is reviewing this · since ${clock(pr.reviewing_since)} · ${ago(pr.reviewing_since)}`));
@@ -378,6 +386,8 @@ function sessionDetail(s) {
     el('div', 'label', visible(s.project)),
     el('h1', null, visible(s.name)),
     el('div', 'meta', visible(`${s.state} · ${s.age}`)),
+    el('div', 'actions', button('Close', 'x', () => closeDialog(s), pending.get(sessionKey(s)))),
+    pending.has(sessionKey(s)) && busyBanner(pending.get(sessionKey(s))),
     plain ? el('pre', 'command', attachCommand(s)) : el('div', 'banner bad', "This session's name isn't plain letters, digits, - and _, so kuggis won't put it on your clipboard."),
     el('p', 'muted', plain ? 'Enter copies it. Paste it into a terminal to attach.' : ''));
 }
@@ -403,22 +413,23 @@ async function enter() {
   toast(ok ? `copied: ${c}` : `couldn't reach the clipboard: ${c}`, !ok);
 }
 
-async function act(path, body, pending) {
-  if (busy) return;
-  busy = true;
-  toast(pending);
+async function act(key, doing, path, body) {
+  if (pending.has(key)) return;
+  pending.set(key, doing);
+  renderList();
+  renderDetail();
   try {
     const j = await api(path, body);
     toast(j.message || 'done');
   } catch (e) {
     toast(e.message, true);
   } finally {
-    busy = false;
+    pending.delete(key);
     await refresh();
   }
 }
 
-const ask = pr => act('/api/ask', { repo: pr.repo, n: pr.n }, `asking the Thinker to review #${pr.n}…`);
+const ask = pr => act(prKey(pr), 'starting', '/api/ask', { repo: pr.repo, n: pr.n });
 const openPr = pr => window.open(`https://github.com/${pr.repo}/pull/${pr.n}`, '_blank', 'noopener');
 
 function confirmDialog(title, body, ok, run) {
@@ -450,7 +461,7 @@ function mergeDialog(pr) {
     el('p', null, visible(`${pr.repo} #${pr.n} at ${pr.sha.slice(0, 12)} into ${pr.base}. Only that commit merges: if the branch moved, GitHub refuses.`)),
     warn.length ? el('ul', 'warn', ...warn.map(w => el('li', null, w))) : null);
   confirmDialog(`Merge #${pr.n}?`, body, 'Merge', () =>
-    act('/api/merge', { repo: pr.repo, n: pr.n, sha: pr.sha }, `merging #${pr.n}…`));
+    act(prKey(pr), 'merging', '/api/merge', { repo: pr.repo, n: pr.n, sha: pr.sha }));
 }
 
 function sendDialog(pr) {
@@ -462,7 +473,12 @@ function sendDialog(pr) {
     el('div', 'label', 'Look at (anything that could carry data out)'),
     el('pre', null, visible(d.flags || 'nothing unusual')));
   confirmDialog(`Send the review of #${pr.n} to ${pr.head}?`, body, 'Send', () =>
-    act('/api/send', { repo: pr.repo, n: pr.n, hash: d.hash }, `sending to ${pr.project} / ${pr.head}…`));
+    act(prKey(pr), 'sending', '/api/send', { repo: pr.repo, n: pr.n, hash: d.hash }));
+}
+
+function closeDialog(s) {
+  confirmDialog(`Close ${s.name}?`, document.createDocumentFragment(), 'Close', () =>
+    act(sessionKey(s), 'closing', '/api/close', { project: s.project, session: s.name }));
 }
 
 // ── refresh ──────────────────────────────────────────────────────────────────
@@ -510,6 +526,7 @@ document.addEventListener('keydown', e => {
     m: () => pr && mergeDialog(pr),
     s: () => pr && (b.send ? toast(b.send) : sendDialog(pr)),
     o: () => pr && openPr(pr),
+    x: () => r?.kind === 'session' && !pending.has(r.key) && closeDialog(r.s),
     ' ': () => document.getElementById('detail').scrollBy({ top: (e.shiftKey ? -0.8 : 0.8) * innerHeight }),
   }[e.key];
   if (on) { e.preventDefault(); on(); }

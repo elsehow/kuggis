@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# needs-you question|blocked|done "one line": the agent says it can't go on
+# without the user. The session shows as waiting on you, in kuggis and the
+# tmux bars, from the end of this turn until the user next types into it,
+# and ntfy gets the line. A turn that merely ends doesn't count: the agent may
+# be waiting on its own background work.
+set -euo pipefail
+name=${BOX_SESSION:-}
+[ -n "$name" ] || { echo "needs-you: not in a box session" >&2; exit 1; }
+case ${1:-} in
+  question | blocked | done) ;;
+  *) echo 'usage: needs-you question|blocked|done "one line"' >&2; exit 2 ;;
+esac
+mkdir -p ~/.box/needs
+echo "$1" >~/.box/needs/"$name"
+line=$(printf '%s' "${2:-}" | tr -d '\000-\037\177' | head -c 200)
+~/.box/hook.sh ping "$(jq -nc --arg m "$1${line:+: $line}" '{"last-assistant-message": $m}')"
+echo "marked as waiting on the user ($1) once this turn ends"

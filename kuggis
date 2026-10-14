@@ -1149,9 +1149,14 @@ web_send() { # web_send <repo> <n> <review hash>
   echo "sent the review to $p / $head"
 }
 
-web_api() { # kuggis _web <state | pr|log|ask <repo> <n> | merge|send <repo> <n> <hash>>
-  [ "${1:-}" = state ] || [[ ${2:-} =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && ${3:-} =~ ^[0-9]+$ ]] || die "bad PR"
+web_api() { # kuggis _web <state | pr|log|ask <repo> <n> | merge|send <repo> <n> <hash> | close <project> <session>>
   case ${1:-} in
+    state) ;;
+    close) [ -n "$(row "${2:-}")" ] || die "no project '${2:-}'" ;;
+    *) [[ ${2:-} =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && ${3:-} =~ ^[0-9]+$ ]] || die "bad PR" ;;
+  esac
+  case ${1:-} in
+    close) check_name "${3:-}"; act cmd_done "$2" "$3" </dev/null ;; # never --force: it refuses unpushed work
     state) web_state ;;
     pr) web_pr "$2" "$3" ;;
     log) web_log "$2" "$3" ;;
@@ -1161,7 +1166,7 @@ web_api() { # kuggis _web <state | pr|log|ask <repo> <n> | merge|send <repo> <n>
       ask_thinker "$r" </dev/null ;;
     merge) [[ ${4:-} =~ ^[0-9a-f]{40}$ ]] || die "bad commit"; web_merge "$2" "$3" "$4" ;;
     send) [[ ${4:-} =~ ^[0-9a-f]{64}$ ]] || die "bad review hash"; web_send "$2" "$3" "$4" ;;
-    *) die "usage: kuggis _web state|pr|log|ask|merge|send" ;;
+    *) die "usage: kuggis _web state|pr|log|ask|merge|send|close" ;;
   esac
 }
 

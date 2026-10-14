@@ -11,6 +11,7 @@ WT=$REPO/.claude/worktrees
 STATE=$HOME/.box/state
 AGENT=$HOME/.box/agent # claude | codex, per session; absent means claude
 FIRST=$HOME/.box/first # a first message for a session's next start, read once by run.sh
+NEEDS=$HOME/.box/needs # question|blocked|done, from needs-you, until the user next types
 
 die() { echo "box: $*" >&2; exit 1; }
 alive() { tmux has-session -t "=$1" 2>/dev/null; }
@@ -37,6 +38,7 @@ status() {
       state=running # Codex reports finished turns only, not working/waiting
     else
       state=$(cat "$f")
+      [ "$state" = idle ] && [ -f "$NEEDS/$name" ] && state="waiting on you ($(cat "$NEEDS/$name"))"
       [ "$state" = waiting ] && state="waiting on you"
     fi
     [ "$(agent_of "$name")" = claude ] || state="$state (codex)"

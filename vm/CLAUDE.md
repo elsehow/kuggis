@@ -22,6 +22,12 @@ say so and stop instead of looking for a way in.
   approval, so you can't merge it; don't look for a way around that. The
   user ends the session with `kuggis done`, which refuses while work is
   uncommitted or unpushed.
+- **Say when you need the user.** When you stop to ask something, can't
+  go on without them, or are done, run
+  `~/.box/needs-you question|blocked|done "one line"` before you end the
+  turn. That marks the session as waiting on them and pings their phone.
+  Don't when you're only waiting on your own work (a run, a build, a
+  monitor): end the turn, and carry on when it finishes.
 - **Commits carry a `Box:` trailer** naming this VM and session, added by
   a git hook. Leave it in place.
 <!-- /box -->
