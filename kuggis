@@ -548,8 +548,123 @@ review_stale() { # review_stale <review> <head commit>
 }
 
 # A PR as you review it: its files, then the Thinker's review.
+# ── The Thinker reviews a PR in the background ───────────────────────────────
+# ctrl-t on a PR (t on its screen) starts the Thinker headless in its room:
+# the same launcher, tools and fetch guard, with nobody watching. Its only
+# output is a review file in its outbox, and merging stays yours. kuggis
+# gathers what it reads into inbox/asks/<owner>-<repo>-<n>/ and keeps the run's
+# stream in $THINKING, for the preview.
+THINKING=$CONF/thinking
+
+ask_key() { echo "${1//\//-}-$2"; } # owner/repo n → owner-repo-n
+
+# Is a review run of this PR still going? Prints when it started (epoch).
+thinker_reviewing() { # thinker_reviewing <repo> <n>
+  local f pid
+  f=$THINKING/$(ask_key "$1" "$2").pid
+  [ -f "$f" ] && read -r pid <"$f" && kill -0 "$pid" 2>/dev/null || return 1
+  stat -f %m "$f"
+}
+
+# Did the last run end without a review of the head it read? (A review that
+# came later, say from the room, counts.)
+thinker_came_back_empty() { # thinker_came_back_empty <repo> <n> <head commit> <review|"">
+  local f
+  f=$THINKING/$(ask_key "$1" "$2").empty
+  [ -f "$f" ] || return 1
+  [ -z "$4" ] || [ -n "$(review_stale "$4" "$3")" ] || [ "$f" -nt "$4" ]
+}
+
+# The run's progress: what it said and which tools it used, newest last.
+# Control characters are stripped: this text came out of the room.
+thinker_log() { # thinker_log <repo> <n> [lines]
+  local f
+  f=$THINKING/$(ask_key "$1" "$2").jsonl
+  [ -s "$f" ] || return 0
+  jq -rR '(fromjson? // {type: "raw", text: .}) |
+    if .type == "raw" then .text
+    elif .type == "assistant" then .message.content[]? |
+      if .type == "text" then .text
+      elif .type == "tool_use" then "→ \(.name) \(.input.file_path // .input.pattern // .input.query // .input.url // "")"
+      else empty end
+    elif .type == "result" then
+      "· finished in \((.duration_ms // 0) / 1000 | floor)s\(if .is_error then ", with an error: \(.result // .subtype)" else "" end)"
+    else empty end' "$f" 2>/dev/null |
+    sed 's|/Users/thinker/workspace/||g' | LC_ALL=C tr -d '\000-\010\013-\037\177' | tail -n "${3:-12}"
+}
+
+ask_thinker() { # ask_thinker <tsv row>
+  local p repo n head sha base author checks title t0
+  IFS=$'\t' read -r p repo n head sha base author checks title <<<"$1"
+  if ! [ -x /opt/kuggis-thinker/launch ] || ! [ -w "$ROOM_INBOX" ]; then
+    printf 'no Thinker room yet: kuggis think --setup. any key: '
+    ask >/dev/null
+    echo
+    return 1
+  fi
+  if t0=$(thinker_reviewing "$repo" "$n"); then
+    echo "the Thinker is already reviewing $repo#$n (since $(date -r "$t0" +%H:%M))"
+    return 0
+  fi
+  if [ -n "${KUGGIS_DRY_RUN:-}" ]; then echo "would start the Thinker on $repo#$n"; return 0; fi
+  mkdir -p "$THINKING"
+  # its own session: closing kuggis or the terminal doesn't stop the review
+  perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$HERE/kuggis" _review "$1" </dev/null >/dev/null 2>&1 &
+  echo "the Thinker is reviewing $repo#$n"
+}
+
+# The detached run (kuggis _review). Everything it prints goes to the log the
+# preview reads; if it ends without a review of the head it read, it says so.
+review_run() { # review_run <tsv row>
+  local p repo n f rev
+  IFS=$'\t' read -r p repo n _ <<<"$1"
+  f=$THINKING/$(ask_key "$repo" "$n")
+  echo $$ >"$f.pid"
+  # shellcheck disable=SC2064 # expand now: these are locals
+  trap "rm -f '$f.pid'" EXIT
+  rm -f "$f.empty" "$f.head"
+  review_with_thinker "$repo" "$n" "$f" >"$f.jsonl" 2>&1 || true
+  rev=$(review_for "$repo" "$n")
+  [ -n "$rev" ] && [ -s "$f.head" ] && [ -z "$(review_stale "$rev" "$(cat "$f.head")")" ] || touch "$f.empty"
+}
+
+# Gather the PR into the room's inbox, then run the Thinker headless on it.
+# Runs under || (set -e is off): each step that matters checks itself.
+review_with_thinker() { # review_with_thinker <repo> <n> <state file prefix>
+  local repo=$1 n=$2 f=$3 key ask head b up stack='' prompt
+  key=$(ask_key "$repo" "$n") ask=$ROOM_INBOX/asks/$(ask_key "$repo" "$n")
+  rm -rf "$ask"
+  mkdir -p "$ask" || return 1
+  head=$(gh pr view "$n" -R "$repo" --json headRefOid -q .headRefOid) && [ -n "$head" ] || return 1
+  gh pr view "$n" -R "$repo" --json title,body,headRefName,baseRefName,author,statusCheckRollup \
+    --jq "\"# \(.title)\n\n$repo#$n: branch \(.headRefName) into \(.baseRefName), head ${head:0:12}, by \(.author.login), checks \($CHECKS_JQ)\n\n\(.body)\"" \
+    >"$ask/pr.md" || return 1
+  for b in $(gh pr view "$n" -R "$repo" --json closingIssuesReferences --jq '.closingIssuesReferences[].number'); do
+    gh issue view "$b" -R "$repo" --json title,body \
+      --jq "\"\n\n---\n\n# Issue #$b, which this PR closes: \(.title)\n\n\(.body)\"" >>"$ask/pr.md" || true
+  done
+  gh pr diff "$n" -R "$repo" | head -c 400000 >"$ask/$n.diff"
+  [ -s "$ask/$n.diff" ] || { echo "couldn't get the diff of $repo#$n"; return 1; }
+  # the open PRs it is stacked on, down to the default branch
+  b=$(gh pr view "$n" -R "$repo" --json baseRefName -q .baseRefName)
+  for _ in 1 2 3 4 5; do
+    up=$(gh pr list -R "$repo" --state open --head "$b" --json number,baseRefName -q '.[0] | "\(.number) \(.baseRefName)"')
+    [ -n "$up" ] || break
+    gh pr diff "${up% *}" -R "$repo" | head -c 400000 >"$ask/${up% *}.diff"
+    stack="$stack #${up% *}" b=${up#* }
+  done
+  chmod -R a+rX "$ask"
+  echo "$head" >"$f.head"
+  prompt="Review $repo#$n. Its title, description, branch, head commit and checks are in inbox/asks/$key/pr.md, with the issues it closes, if any; its diff is inbox/asks/$key/$n.diff."
+  [ -z "$stack" ] || prompt="$prompt It is stacked on$stack: their diffs are in the same folder. Read them first, for context, but review only #$n."
+  prompt="$prompt inbox/status.md lists the other open PRs. Write outbox/review-${repo#*/}-$n.md as your instructions describe, with head ${head:0:12}. Nobody is watching this run, so don't ask questions: if you can't decide, the verdict is hold, and say what would decide it."
+  cd /
+  sudo -n -u thinker /opt/kuggis-thinker/launch --model "${KUGGIS_REVIEW_MODEL:-opus}" -p "$prompt" \
+    --output-format stream-json --verbose
+}
+
 pr_view() { # pr_view <tsv row>
-  local p repo n head sha base author checks title rev stale
+  local p repo n head sha base author checks title rev stale t0
   IFS=$'\t' read -r p repo n head sha base author checks title <<<"$1"
   rev=$(review_for "$repo" "$n")
   echo "$repo#$n  $title"
@@ -557,6 +672,15 @@ pr_view() { # pr_view <tsv row>
   gh pr view "$n" -R "$repo" --json additions,deletions,files \
     --jq '"\(.files | length) files, +\(.additions) −\(.deletions)", (.files[:25][] | "  +\(.additions) −\(.deletions)  \(.path)")' 2>/dev/null
   echo "────────────────────────────────────────────────────────────"
+  if t0=$(thinker_reviewing "$repo" "$n"); then
+    echo "The Thinker is reviewing this, since $(date -r "$t0" +%H:%M):"
+    thinker_log "$repo" "$n" | sed 's/^/  /'
+    echo
+  elif thinker_came_back_empty "$repo" "$n" "$sha" "$rev"; then
+    echo "The Thinker's last run ended without a review of this commit:"
+    thinker_log "$repo" "$n" | sed 's/^/  /'
+    echo
+  fi
   if [ -n "$rev" ]; then
     stale=$(review_stale "$rev" "$sha")
     echo "The Thinker: $(brief_field "$rev" verdict)${stale:+  STALE: $stale}"
@@ -565,7 +689,7 @@ pr_view() { # pr_view <tsv row>
     echo
     awk 'NR == 1 && $0 == "---" { fm = 1; next } fm && $0 == "---" { fm = 0; next } !fm' "$rev"
   else
-    echo "No review from the Thinker yet. It sees this PR's diff in its inbox."
+    echo "No review from the Thinker yet: t (ctrl-t in the list) asks it for one."
   fi
 }
 
@@ -582,7 +706,7 @@ pr_screen() { # pr_screen <tsv row>
     pr_view "$1" >"$view"
     if [ -t 1 ]; then ${KUGGIS_PAGER:-less -RFX} "$view"; else cat "$view"; fi
     rm -f "$view"
-    printf '\n[m]erge  [c]hanges to its session  [v]iew diff  [o]pen  [s]kip: '
+    printf '\n[m]erge  [c]hanges to its session  [t]he Thinker reviews it  [v]iew diff  [o]pen  [s]kip: '
     key=$(ask)
     echo "$key"
     case $key in
@@ -613,6 +737,8 @@ pr_screen() { # pr_screen <tsv row>
         [ "$(ask)" = y ] || { echo; continue; }
         echo
         send_review "$p" "$repo" "$n" "$head" "$rev"
+        return 0 ;;
+      t) ask_thinker "$1" || continue
         return 0 ;;
       v) gh pr diff "$n" -R "$repo" --color always | less -R ;;
       o) gh pr view "$n" -R "$repo" --web >/dev/null 2>&1 ;;
@@ -657,6 +783,10 @@ close_session() { # close_session <project> <session>
   echo
 }
 
+home_ask() { # home_ask <item line>
+  [ "$(cut -f1 <<<"$1")" != pr ] || ask_thinker "$(cut -f3- <<<"$1")" || true
+}
+
 home_close() { # home_close <item line>
   local kind _ p s
   IFS=$'\t' read -r kind _ p s <<<"$1"
@@ -664,7 +794,7 @@ home_close() { # home_close <item line>
 }
 
 home_items() {
-  local f a p repo n head sha base author checks title rev v c s st age
+  local f a p repo n head sha base author checks title rev v c s st age t0
   local B=$'\e[1m' Y=$'\e[33m' R=$'\e[31m' G=$'\e[32m' D=$'\e[2m' N=$'\e[0m' T=$'\t'
   for f in $(pending_briefs); do
     a=$(brief_field "$f" agent)
@@ -672,7 +802,11 @@ home_items() {
   done
   prs_tsv | while IFS=$'\t' read -r p repo n head sha base author checks title; do
     rev=$(review_for "$repo" "$n") v="${D}no review${N}"
-    if [ -n "$rev" ]; then
+    if t0=$(thinker_reviewing "$repo" "$n"); then
+      v="${Y}Thinker: reviewing… $((($(date +%s) - t0) / 60))m${N}"
+    elif thinker_came_back_empty "$repo" "$n" "$sha" "$rev"; then
+      v="${R}Thinker: no review (see preview)${N}"
+    elif [ -n "$rev" ]; then
       v="Thinker: $(brief_field "$rev" verdict)"
       [ -z "$(review_stale "$rev" "$sha")" ] || v="$v (stale)"
     fi
@@ -736,9 +870,10 @@ cmd_fzf_home() {
   trap 'exit 129' HUP TERM # a closed terminal still cleans up
   "$self" _items | fzf --ansi --listen="$sock" --delimiter=$'\t' --with-nth=2 --id-nth=1,3,4,5 \
     --layout=reverse --no-sort --info=hidden --prompt='kuggis › ' \
-    --header='enter: open · ctrl-x: close session · ctrl-r: refresh · esc: quit' \
+    --header='enter open · ctrl-t the Thinker reviews a PR · ctrl-x close a session · ctrl-r refresh · esc quit' \
     --preview="$self _preview {}" --preview-window='right,60%,wrap' \
     --bind="enter:execute($self _act {})+reload-sync($self _items)+refresh-preview" \
+    --bind="ctrl-t:execute($self _ask {})+reload-sync($self _items)+refresh-preview" \
     --bind="ctrl-x:execute($self _close {})+reload-sync($self _items)+refresh-preview" \
     --bind="ctrl-r:reload-sync($self _items)+refresh-preview" || true
 }
@@ -858,6 +993,8 @@ case ${1:-home} in
   _preview) home_preview "$2" ;;
   _act) home_act "$2" ;;
   _close) home_close "$2" ;;
+  _ask) home_ask "$2" ;;
+  _review) review_run "$2" ;;
   ls) cmd_ls ;;
   dispatch) shift; cmd_dispatch "$@" ;;
   new) shift; cmd_new "$@" ;;
