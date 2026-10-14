@@ -13,11 +13,12 @@
 #                                    --codex starts Codex instead of Claude
 #   kuggis done <project> <name> [--force]
 #                                    end a session and remove its worktree
-#   kuggis put [project] [session] [file]
+#   kuggis put [project [session [file]]]
 #                                    upload a file (default: the clipboard image,
 #                                    else your latest screenshot) to ~/inbox on
 #                                    the VM; types the path into the session if
-#                                    one is named, else copies it
+#                                    one is named, else copies it. Arguments go
+#                                    in this order; a file needs a session
 #   kuggis new <project> <owner/repo> [--vm NAME] [--profile NAME]
 #           [--cpu N] [--memory M] [--disk D]
 #                                    create the VM, grant it the repo, set it up
@@ -141,18 +142,15 @@ upload() {
 }
 
 cmd_put() {
-  local file='' p='' s='' a tmp='' dir path
-  for a in "$@"; do
-    if [ -f "$a" ]; then file=$a
-    elif [ -z "$p" ]; then p=$a
-    elif [ -z "$s" ]; then s=$a
-    else die "usage: kuggis put [project] [session] [file]"
-    fi
-  done
+  local file='' p='' s='' tmp='' dir path
+  # Positional, never guessed: a project or session can share a file's name.
+  [ $# -le 3 ] || die "usage: kuggis put [project [session [file]]]"
+  p=${1:-} s=${2:-} file=${3:-}
+  [ -z "$file" ] || [ -f "$file" ] || die "no such file: $file"
   if [ -z "$p" ]; then
     # shellcheck disable=SC2046
     set -- $(projects)
-    [ $# -eq 1 ] || die "which project? kuggis put <project> [session] [file]"
+    [ $# -eq 1 ] || die "which project? kuggis put <project> [session [file]]"
     p=$1
   fi
   [ -z "$s" ] || check_name "$s"
