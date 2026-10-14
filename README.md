@@ -17,8 +17,11 @@ Setup on the laptop, once:
    on your phone, to get pinged when a session waits on you.
 
 Then `kuggis new <project> <owner/repo>` and `kuggis <project> <session>`.
-`kuggis` on its own shows what's waiting on you (sessions, and briefs from the
-Thinker); pick one to attach to it or review it. The Thinker, an agent that
+`kuggis` on its own shows what's waiting on you: briefs from the Thinker, open
+PRs with its reviews, and every session, with a live preview of the highlighted
+one (a session's current screen). Enter opens it; the list refreshes itself.
+It uses [fzf](https://github.com/junegunn/fzf) when installed (`brew install
+fzf`), and a numbered menu otherwise. The Thinker, an agent that
 reads your vault and the web from a contained room on the laptop, is in
 `think/README.md`.
 

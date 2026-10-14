@@ -370,25 +370,37 @@ dispatch_brief() { # dispatch_brief <file> <project> <session> <agent>
   remote "$host" "~/.box/session.sh deliver $3 $4 $dest" </dev/null
 }
 
+# Why a brief can't be dispatched, or nothing.
+brief_problem() {
+  local p s a
+  p=$(brief_field "$1" project) s=$(brief_field "$1" session) a=$(brief_field "$1" agent)
+  if [ -z "$p" ] || [ -z "$(row "$p")" ]; then echo "project '$p' isn't one of yours: $(projects | tr '\n' ' ')"
+  elif ! [[ $s =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then echo "session '$s' isn't a valid name"
+  else case ${a:-claude} in claude | codex) ;; *) echo "agent '$a' isn't claude or codex" ;; esac
+  fi
+}
+
+# A brief as you review it: where it goes, what to look at, then all of it.
+brief_view() { # brief_view <file> [<original, if this is your edit>]
+  local f=$1 orig=${2:-$1} problem a
+  problem=$(brief_problem "$f") a=$(brief_field "$f" agent)
+  echo "brief    $(basename "$orig")$([ "$f" = "$orig" ] || echo '  (your edit)')"
+  echo "goes to  $(brief_field "$f" project) / $(brief_field "$f" session) (${a:-claude})"
+  [ -z "$problem" ] || echo "PROBLEM  $problem"
+  echo "look at  (anything that could carry data out)"
+  brief_flags "$f" | sed 's/^/  /' | grep . || echo "  nothing unusual"
+  echo "────────────────────────────────────────────────────────────"
+  cat "$f"
+}
+
 # Show a brief, then [d]ispatch, [e]dit, [s]kip or [r]eject it. Returns 1 to quit.
 review_brief() {
   local orig=$1 f=$1 key p s a problem view
   while :; do
     p=$(brief_field "$f" project) s=$(brief_field "$f" session) a=$(brief_field "$f" agent)
-    a=${a:-claude} problem=''
-    [ -n "$p" ] && [ -n "$(row "$p")" ] || problem="project '$p' isn't one of yours: $(projects | tr '\n' ' ')"
-    [[ $s =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || problem=${problem:-"session '$s' isn't a valid name"}
-    case $a in claude | codex) ;; *) problem=${problem:-"agent '$a' isn't claude or codex"} ;; esac
+    a=${a:-claude} problem=$(brief_problem "$f")
     view=$(mktemp)
-    {
-      echo "brief    $(basename "$orig")$([ "$f" = "$orig" ] || echo '  (your edit)')"
-      echo "goes to  $p / $s ($a)"
-      [ -z "$problem" ] || echo "PROBLEM  $problem"
-      echo "look at  (anything that could carry data out)"
-      brief_flags "$f" | sed 's/^/  /' | grep . || echo "  nothing unusual"
-      echo "────────────────────────────────────────────────────────────"
-      cat "$f"
-    } >"$view"
+    brief_view "$f" "$orig" >"$view"
     if [ -t 1 ]; then ${KUGGIS_PAGER:-less -RFX} "$view"; else cat "$view"; fi
     rm -f "$view"
     printf '\n[d]ispatch  [e]dit  [s]kip  [r]eject  [q]uit: '
@@ -527,33 +539,45 @@ send_review() { # send_review <project> <repo> <n> <head-branch> <review-file>
   log_brief "review sent" "$5" "$1/$4 for $2#$3"
 }
 
-# One PR: its summary, the Thinker's review, then [m]erge, [c]hanges (send the
-# review to its session), [v]iew the diff, [o]pen it on GitHub, [s]kip.
-pr_screen() { # pr_screen <tsv row>
-  local p repo n head sha base author checks title rev view key verdict rhead stale='' def
+# Why the Thinker's review of a PR no longer applies, or nothing.
+review_stale() { # review_stale <review> <head commit>
+  local h; h=$(brief_field "$1" head)
+  [ -n "$h" ] && [[ $2 == "$h"* ]] || echo "reviewed ${h:-an unknown commit}; the PR has moved on"
+}
+
+# A PR as you review it: its files, then the Thinker's review.
+pr_view() { # pr_view <tsv row>
+  local p repo n head sha base author checks title rev stale
   IFS=$'\t' read -r p repo n head sha base author checks title <<<"$1"
   rev=$(review_for "$repo" "$n")
+  echo "$repo#$n  $title"
+  echo "by $author   $head → $base   head ${sha:0:12}   checks: $checks"
+  gh pr view "$n" -R "$repo" --json additions,deletions,files \
+    --jq '"\(.files | length) files, +\(.additions) −\(.deletions)", (.files[:25][] | "  +\(.additions) −\(.deletions)  \(.path)")' 2>/dev/null
+  echo "────────────────────────────────────────────────────────────"
+  if [ -n "$rev" ]; then
+    stale=$(review_stale "$rev" "$sha")
+    echo "The Thinker: $(brief_field "$rev" verdict)${stale:+  STALE: $stale}"
+    echo "look at  (anything that could carry data out, if you send it on)"
+    brief_flags "$rev" | sed 's/^/  /' | grep . || echo "  nothing unusual"
+    echo
+    awk 'NR == 1 && $0 == "---" { fm = 1; next } fm && $0 == "---" { fm = 0; next } !fm' "$rev"
+  else
+    echo "No review from the Thinker yet. It sees this PR's diff in its inbox."
+  fi
+}
+
+# One PR: pr_view, then [m]erge, [c]hanges (send the review to its session),
+# [v]iew the diff, [o]pen it on GitHub, [s]kip.
+pr_screen() { # pr_screen <tsv row>
+  local p repo n head sha base author checks title rev view key stale def
+  IFS=$'\t' read -r p repo n head sha base author checks title <<<"$1"
+  rev=$(review_for "$repo" "$n")
+  stale=$([ -z "$rev" ] || review_stale "$rev" "$sha")
   def=$(gh repo view "$repo" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo main)
   while :; do
     view=$(mktemp)
-    {
-      echo "$repo#$n  $title"
-      echo "by $author   $head → $base   head ${sha:0:12}   checks: $checks"
-      gh pr view "$n" -R "$repo" --json additions,deletions,files \
-        --jq '"\(.files | length) files, +\(.additions) −\(.deletions)", (.files[:25][] | "  +\(.additions) −\(.deletions)  \(.path)")' 2>/dev/null
-      echo "────────────────────────────────────────────────────────────"
-      if [ -n "$rev" ]; then
-        verdict=$(brief_field "$rev" verdict) rhead=$(brief_field "$rev" head)
-        [ -n "$rhead" ] && [[ $sha == "$rhead"* ]] || stale="  STALE: reviewed ${rhead:-an unknown commit}; the PR has moved on"
-        echo "The Thinker: ${verdict:-no verdict}$stale"
-        echo "look at  (anything that could carry data out, if you send it on)"
-        brief_flags "$rev" | sed 's/^/  /' | grep . || echo "  nothing unusual"
-        echo
-        awk 'NR == 1 && $0 == "---" { fm = 1; next } fm && $0 == "---" { fm = 0; next } !fm' "$rev"
-      else
-        echo "No review from the Thinker yet. It sees this PR's diff in its inbox."
-      fi
-    } >"$view"
+    pr_view "$1" >"$view"
     if [ -t 1 ]; then ${KUGGIS_PAGER:-less -RFX} "$view"; else cat "$view"; fi
     rm -f "$view"
     printf '\n[m]erge  [c]hanges to its session  [v]iew diff  [o]pen  [s]kip: '
@@ -598,6 +622,92 @@ cmd_dispatch() {
   done
   [ "$n" -gt 0 ] || echo "kuggis: no briefs waiting in $OUTBOX"
   room_status
+}
+
+# ── The home screen with fzf ─────────────────────────────────────────────────
+# One list (briefs, PRs, sessions), a live preview of the highlighted item (a
+# session's current screen, a brief, a PR and its review), Enter to act on it.
+# It refreshes itself every 15s through fzf's control socket, which lives in a
+# folder only you can enter and takes a random key: the thinker user can reach
+# your localhost, and must not be able to drive this.
+
+# The list: kind, what you see, then the item's data (tab-separated).
+home_items() {
+  local f a p repo n head sha base author checks title rev v c s st age
+  local B=$'\e[1m' Y=$'\e[33m' R=$'\e[31m' G=$'\e[32m' D=$'\e[2m' N=$'\e[0m' T=$'\t'
+  for f in $(pending_briefs); do
+    a=$(brief_field "$f" agent)
+    echo "brief${T}${B}✉ brief${N}    $(brief_field "$f" project) / $(brief_field "$f" session) ${D}(${a:-claude})${N}${T}$f"
+  done
+  prs_tsv | while IFS=$'\t' read -r p repo n head sha base author checks title; do
+    rev=$(review_for "$repo" "$n") v="${D}no review${N}"
+    if [ -n "$rev" ]; then
+      v="Thinker: $(brief_field "$rev" verdict)"
+      [ -z "$(review_stale "$rev" "$sha")" ] || v="$v (stale)"
+    fi
+    case $checks in failing) c="${R}$checks${N}" ;; ok) c="${G}$checks${N}" ;; *) c=$checks ;; esac
+    echo "pr${T}${B}⇡ PR${N}       ${repo#*/} #$n  $title  ${D}·${N} $c ${D}·${N} $v${T}$p${T}$repo${T}$n${T}$head${T}$sha${T}$base${T}$author${T}$checks${T}$title"
+  done
+  # waiting on you first, then working, then the rest
+  sessions_tsv | awk -F'\t' '{ r = $3 ~ /^waiting/ ? 0 : $3 ~ /^working/ ? 1 : 2; print r "\t" $0 }' |
+    sort -s -t "${T}" -k1,1n | cut -f2- | while IFS=$'\t' read -r p s st age; do
+    [ "$s" != - ] || continue
+    case $st in "waiting on you"*) st="${Y}$st${N}" ;; working*) st="${G}$st${N}" ;; *) st="${D}$st${N}" ;; esac
+    echo "session${T}● $p / $s  $st ${D}$age${N}${T}$p${T}$s"
+  done
+}
+
+home_preview() { # home_preview <item line>
+  local kind _ p s rows
+  IFS=$'\t' read -r kind _ p s <<<"$1"
+  case $kind in
+    brief) brief_view "$p" ;;
+    pr) pr_view "$(cut -f3- <<<"$1")" ;;
+    session)
+      rows=${FZF_PREVIEW_LINES:-40}
+      echo "$p / $s · enter attaches"
+      remote "$(host_of "$p")" "tmux capture-pane -e -p -t '=$s:' 2>/dev/null" </dev/null |
+        awk '{ l[NR] = $0 } /[^ ]/ { last = NR } END { for (i = 1; i <= last; i++) print l[i] }' |
+        tail -n $((rows - 1)) ;;
+  esac
+}
+
+home_act() { # home_act <item line>
+  local kind _ p s
+  IFS=$'\t' read -r kind _ p s <<<"$1"
+  case $kind in
+    brief) review_brief "$p" || true ;;
+    pr) pr_screen "$(cut -f3- <<<"$1")" || true ;;
+    session) cmd_attach "$p" "$s" || true ;;
+  esac
+  (room_status >/dev/null 2>&1 &)
+}
+
+cmd_fzf_home() {
+  local self=$HERE/kuggis dir sock tick
+  dir=$(mktemp -d /tmp/kuggis.XXXXXX) # mode 700, and short: socket paths are capped at 104 bytes
+  sock=$dir/home.sock
+  FZF_API_KEY=$(openssl rand -hex 16)
+  export FZF_API_KEY
+  (room_status >/dev/null 2>&1 &)
+  (
+    # Refresh the list and the preview every 15s while fzf runs.
+    while sleep 15; do
+      [ -S "$sock" ] || continue
+      curl -sf --unix-socket "$sock" -XPOST -H "x-api-key: $FZF_API_KEY" http://localhost \
+        -d "reload-sync($self _items)+refresh-preview" >/dev/null || break
+    done
+  ) &
+  tick=$!
+  disown "$tick" 2>/dev/null || true
+  "$self" _items | fzf --ansi --listen="$sock" --delimiter=$'\t' --with-nth=2 --id-nth=1,3,4,5 \
+    --layout=reverse --no-sort --info=hidden --prompt='kuggis › ' \
+    --header='enter: open · ctrl-r: refresh · esc: quit · refreshes every 15s' \
+    --preview="$self _preview {}" --preview-window='right,60%,wrap' \
+    --bind="enter:execute($self _act {})+reload-sync($self _items)+refresh-preview" \
+    --bind="ctrl-r:reload-sync($self _items)+refresh-preview" || true
+  kill "$tick" 2>/dev/null || true
+  rm -rf "$dir"
 }
 
 # `kuggis` at a terminal: what's waiting on you in one place. Briefs to review,
@@ -698,7 +808,14 @@ cmd_think() {
 }
 
 case ${1:-home} in
-  home) if [ -t 0 ] && [ -t 1 ]; then cmd_home; else cmd_ls; fi ;;
+  home)
+    if ! [ -t 0 ] || ! [ -t 1 ]; then cmd_ls
+    elif command -v fzf >/dev/null; then cmd_fzf_home
+    else cmd_home
+    fi ;;
+  _items) home_items ;;
+  _preview) home_preview "$2" ;;
+  _act) home_act "$2" ;;
   ls) cmd_ls ;;
   dispatch) shift; cmd_dispatch "$@" ;;
   new) shift; cmd_new "$@" ;;
