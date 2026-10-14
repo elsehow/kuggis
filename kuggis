@@ -313,10 +313,13 @@ DLOG=$CONF/dispatch.log # time, decision, sha256, brief, project/session/agent
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
-# Text from the room (briefs, reviews, run logs), made safe to print: control
-# characters other than tab and newline show as \xNN, so nothing in it can
-# recolour, hide or overwrite what you're reading.
-room_text() { perl -CSD -pe 's/([\x00-\x08\x0b-\x1f\x7f-\x9f])/sprintf("\\x%02x", ord $1)/ge' "$@" 2>/dev/null; }
+# Text from the room or a VM (briefs, reviews, run logs, PR titles), made safe
+# to print: control characters other than tab and newline, C1 included, show
+# as \xNN, so nothing in it can recolour, hide or overwrite what you're
+# reading. Bytes, not characters: invalid UTF-8 can't cut the text short.
+room_text() {
+  perl -pe 's/([\x00-\x08\x0b-\x1f\x7f])/sprintf("\\x%02x", ord $1)/ge; s/\xc2([\x80-\x9f])/sprintf("\\x%02x", ord $1)/ge' "$@"
+}
 
 # One key from the person (a line when stdin isn't a terminal, as in tests).
 ask() {
@@ -554,7 +557,6 @@ review_stale() { # review_stale <review> <head commit>
   [ -n "$h" ] && [[ $2 == "$h"* ]] || echo "reviewed ${h:-an unknown commit}; the PR has moved on"
 }
 
-# A PR as you review it: its files, then the Thinker's review.
 # ── The Thinker reviews a PR in the background ───────────────────────────────
 # ctrl-t on a PR (t on its screen) starts the Thinker headless in its room:
 # the same launcher, tools and fetch guard, with nobody watching. Its only
@@ -647,7 +649,7 @@ ask_diff() { # ask_diff <repo> <n> <folder>
 # Gather the PR into the room's inbox, then run the Thinker headless on it.
 # Runs under || (set -e is off): each step that matters checks itself.
 review_with_thinker() { # review_with_thinker <repo> <n> <state file prefix>
-  local repo=$1 n=$2 f=$3 key ask head b up stack='' prompt
+  local repo=$1 n=$2 f=$3 key ask head b up def stack='' prompt
   key=$(ask_key "$repo" "$n") ask=$ROOM_INBOX/asks/$(ask_key "$repo" "$n")
   rm -rf "$ask"
   mkdir -p "$ask" || return 1
@@ -664,7 +666,9 @@ review_with_thinker() { # review_with_thinker <repo> <n> <state file prefix>
   ask_diff "$repo" "$n" "$ask" || { echo "couldn't get the diff of $repo#$n"; return 1; }
   # the open PRs it is stacked on, down to the default branch
   b=$(gh pr view "$n" -R "$repo" --json baseRefName -q .baseRefName)
+  def=$(gh repo view "$repo" --json defaultBranchRef -q .defaultBranchRef.name)
   for _ in 1 2 3 4 5; do
+    [ "$b" != "$def" ] || break
     up=$(gh pr list -R "$repo" --state open --head "$b" --json number,baseRefName -q '.[0] // empty | "\(.number) \(.baseRefName)"')
     [ -n "$up" ] || break
     ! ask_diff "$repo" "${up% *}" "$ask" || stack="$stack #${up% *}"
@@ -681,11 +685,12 @@ review_with_thinker() { # review_with_thinker <repo> <n> <state file prefix>
     --output-format stream-json --verbose
 }
 
+# A PR as you review it: its files, then the Thinker's review.
 pr_view() { # pr_view <tsv row>
   local p repo n head sha base author checks title rev stale t0
   IFS=$'\t' read -r p repo n head sha base author checks title <<<"$1"
   rev=$(review_for "$repo" "$n")
-  echo "$repo#$n  $title"
+  echo "$repo#$n  $(room_text <<<"$title")"
   echo "by $author   $head → $base   head ${sha:0:12}   checks: $checks"
   gh pr view "$n" -R "$repo" --json additions,deletions,files \
     --jq '"\(.files | length) files, +\(.additions) −\(.deletions)", (.files[:25][] | "  +\(.additions) −\(.deletions)  \(.path)")' 2>/dev/null
@@ -829,7 +834,7 @@ home_items() {
       [ -z "$(review_stale "$rev" "$sha")" ] || v="$v (stale)"
     fi
     case $checks in failing) c="${R}$checks${N}" ;; ok) c="${G}$checks${N}" ;; *) c=$checks ;; esac
-    echo "pr${T}${B}⇡ PR${N}       ${repo#*/} #$n  $title  ${D}·${N} $c ${D}·${N} $v${T}$p${T}$repo${T}$n${T}$head${T}$sha${T}$base${T}$author${T}$checks${T}$title"
+    echo "pr${T}${B}⇡ PR${N}       ${repo#*/} #$n  $(room_text <<<"$title")  ${D}·${N} $c ${D}·${N} $v${T}$p${T}$repo${T}$n${T}$head${T}$sha${T}$base${T}$author${T}$checks${T}$title"
   done
   # waiting on you first, then working, then the rest
   sessions_tsv | awk -F'\t' '{ r = $3 ~ /^waiting/ ? 0 : $3 ~ /^working/ ? 1 : 2; print r "\t" $0 }' |
