@@ -6,6 +6,8 @@
 #                                    open PRs with its reviews, every session;
 #                                    pick one to dispatch, merge or attach
 #   kuggis ls                        list every session on every VM
+#   kuggis web                       the same PRs, reviews and sessions in your
+#                                    browser: ask for reviews, read them, merge
 #   kuggis dispatch [--status]       review the Thinker's briefs one by one;
 #                                    --status only refreshes what it can read
 #   kuggis <project> [name] [--codex]
@@ -544,12 +546,15 @@ send_review() { # send_review <project> <repo> <n> <head-branch> <review-file>
     printf -- '---\nproject: %s\nsession: %s\n---\n' "$1" "$4"
     echo "The owner sends you this review of your PR $2#$3. Address it on this branch, push, and reply with what you changed."
     echo
-    awk 'NR == 1 && $0 == "---" { fm = 1; next } fm && $0 == "---" { fm = 0; next } !fm' "$5"
+    review_body "$5"
   } >"$f"
   if [ -n "${KUGGIS_DRY_RUN:-}" ]; then echo "would send to $1/$4:"; cat "$f"; return 0; fi
   dispatch_brief "$f" "$1" "$4" "$(remote "$(host_of "$1")" "cat ~/.box/agent/$4 2>/dev/null || echo claude" </dev/null)"
   log_brief "review sent" "$5" "$1/$4 for $2#$3"
 }
+
+# A review without its front matter.
+review_body() { awk 'NR == 1 && $0 == "---" { fm = 1; next } fm && $0 == "---" { fm = 0; next } !fm' "$1"; }
 
 # Why the Thinker's review of a PR no longer applies, or nothing.
 review_stale() { # review_stale <review> <head commit>
@@ -634,8 +639,8 @@ ask_thinker() { # ask_thinker <tsv row>
   local p repo n head sha base author checks title t0
   IFS=$'\t' read -r p repo n head sha base author checks title <<<"$1"
   if ! [ -x /opt/kuggis-thinker/launch ] || ! [ -w "$ROOM_INBOX" ]; then
-    printf 'no Thinker room yet: kuggis think --setup. any key: '
-    ask >/dev/null
+    printf 'no Thinker room yet: kuggis think --setup.'
+    [ ! -t 0 ] || { printf ' any key: '; ask >/dev/null; }
     echo
     return 1
   fi
@@ -740,7 +745,7 @@ pr_view() { # pr_view <tsv row>
     echo "look at  (anything that could carry data out, if you send it on)"
     brief_flags "$rev" | sed 's/^/  /' | grep . || echo "  nothing unusual"
     echo
-    awk 'NR == 1 && $0 == "---" { fm = 1; next } fm && $0 == "---" { fm = 0; next } !fm' "$rev" | room_text
+    review_body "$rev" | room_text
   elif [ -z "$t0" ]; then
     echo "No review from the Thinker yet: t (ctrl-t in the list) asks it for one."
   fi
@@ -1021,6 +1026,127 @@ cmd_home() {
   done
 }
 
+# ── kuggis web: the PRs, the Thinker's reviews and your sessions in a browser ─
+# web/server.py serves web/ on 127.0.0.1 and asks `kuggis _web …` for the rest,
+# so reviewing, sending and merging run the same code as the list here. Reads
+# print JSON; an action prints what it did, or dies saying why not.
+cmd_web() {
+  local port=${KUGGIS_WEB_PORT:-7480} tok url
+  command -v python3 >/dev/null || die "kuggis web needs python3"
+  mkdir -p "$CONF"
+  [ -s "$CONF/web.token" ] || (umask 077 && openssl rand -hex 24 >"$CONF/web.token")
+  tok=$(<"$CONF/web.token") url="http://127.0.0.1:$port/#$tok"
+  if curl -fsS -m 2 -H "X-Kuggis-Token: $tok" "http://127.0.0.1:$port/api/ping" 2>/dev/null | grep -q kuggis; then
+    echo "kuggis: already serving on http://127.0.0.1:$port"
+    open "$url"
+    return
+  fi
+  echo "kuggis: serving on http://127.0.0.1:$port (ctrl-c stops it; reviews already started keep going)"
+  (sleep 1 && open "$url") &
+  KUGGIS_WEB_TOKEN_FILE=$CONF/web.token exec python3 -I "$HERE/web/server.py" "$port" "$HERE/kuggis"
+}
+
+# The open PR <repo>#<n>, as a prs_tsv row.
+pr_row() { prs_tsv | awk -F'\t' -v r="$1" -v n="$2" 'tolower($2) == tolower(r) && $3 == n' | head -n 1; }
+
+# Projects (with their tmux colour), open PRs with the Thinker's word on each,
+# and every session.
+web_state() {
+  local p repo n head sha base author checks title rev v stale t0 empty
+  {
+    for p in $(projects); do printf 'project\t%s\t%s\n' "$p" "$(project_colour "$p")"; done
+    prs_tsv | while IFS=$'\t' read -r p repo n head sha base author checks title; do
+      rev=$(review_for "$repo" "$n") v='' stale='' empty=''
+      t0=$(thinker_reviewing "$repo" "$n") || t0=''
+      [ -z "$rev" ] || v=$(brief_field "$rev" verdict) stale=$(review_stale "$rev" "$sha")
+      ! thinker_came_back_empty "$repo" "$n" "$sha" "$rev" || empty=1
+      printf 'pr'
+      printf '\t%s' "$p" "$repo" "$n" "$head" "$sha" "$base" "$author" "$checks" "$title" "$v" "$stale" "$t0" "$empty"
+      echo
+    done
+    sessions_tsv | sed 's/^/session	/'
+  } | room_text | jq -Rn '[inputs | split("\t")] | {
+    projects: [.[] | select(.[0] == "project") | {name: .[1], colour: (.[2] | tonumber)}],
+    prs: [.[] | select(.[0] == "pr") | {project: .[1], repo: .[2], n: (.[3] | tonumber), head: .[4],
+      sha: .[5], base: .[6], author: .[7], checks: .[8], title: .[9], verdict: .[10], stale: .[11],
+      reviewing_since: (if .[12] == "" then null else .[12] | tonumber end), empty: (.[13] == "1")}],
+    sessions: [.[] | select(.[0] == "session") | {project: .[1], name: .[2], state: .[3], age: .[4]}],
+    now: (now | floor)}'
+}
+
+# One PR as you review it: its files, the Thinker's review and its run log.
+# hash is the review's sha256: sending checks that you send what you read.
+web_pr() { # web_pr <repo> <n>
+  local rev body='' flags='' hash='' head='' at='' def pr
+  rev=$(review_for "$1" "$2")
+  if [ -n "$rev" ]; then
+    body=$(review_body "$rev" | room_text) flags=$(brief_flags "$rev" | room_text)
+    hash=$(sha "$rev") head=$(brief_field "$rev" head | room_text) at=$(stat -f %m "$rev")
+  fi
+  def=$(gh repo view "$1" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo main)
+  pr=$(gh pr view "$2" -R "$1" --json additions,deletions,files,url 2>/dev/null) || pr=null
+  jq -n --arg review "$body" --arg flags "$flags" --arg hash "$hash" --arg head "$head" --arg at "$at" \
+    --arg def "$def" --arg log "$(thinker_log "$1" "$2" 80)" --argjson pr "$pr" \
+    '{review: $review, flags: $flags, hash: $hash, reviewed_head: $head,
+      reviewed_at: (if $at == "" then null else $at | tonumber end), default_branch: $def, log: $log, pr: $pr}'
+}
+
+web_log() { # web_log <repo> <n>
+  local t0
+  t0=$(thinker_reviewing "$1" "$2") || t0=''
+  jq -n --arg log "$(thinker_log "$1" "$2" 80)" --arg t0 "$t0" \
+    '{log: $log, reviewing_since: (if $t0 == "" then null else $t0 | tonumber end)}'
+}
+
+# Merge only the commit you looked at, and only a PR on the default branch.
+web_merge() { # web_merge <repo> <n> <head commit you saw>
+  local r p repo n head sha base author def rev
+  r=$(pr_row "$1" "$2")
+  [ -n "$r" ] || die "$1#$2 isn't open any more"
+  IFS=$'\t' read -r p repo n head sha base author _ <<<"$r"
+  [ "$sha" = "$3" ] || die "$repo#$n has moved on since you looked (now ${sha:0:12}): reload it"
+  def=$(gh repo view "$repo" --json defaultBranchRef -q .defaultBranchRef.name)
+  [ "$base" = "$def" ] || die "it's stacked on $base: merge that one first"
+  merge_pr "$repo" "$n" "$head" "$sha" "$base" "$author" || die "not merged; its branch and stacked PRs are untouched"
+  rev=$(review_for "$repo" "$n")
+  log_brief merged "${rev:-/dev/null}" "$repo#$n at ${sha:0:12}"
+  echo "merged $repo#$n. Its session, when you're done with it: kuggis done $p $head"
+}
+
+# Send the review you read, byte for byte: a copy is checked against the hash
+# you saw, and the copy is what goes.
+web_send() { # web_send <repo> <n> <review hash>
+  local r p repo n head rev d
+  r=$(pr_row "$1" "$2")
+  [ -n "$r" ] || die "$1#$2 isn't open any more"
+  IFS=$'\t' read -r p repo n head _ <<<"$r"
+  rev=$(review_for "$repo" "$n")
+  [ -n "$rev" ] || die "no review of $repo#$n to send"
+  [ -n "$(row "$p")" ] || die "no kuggis project for $repo"
+  d=$(mktemp -d)
+  cp "$rev" "$d/"
+  rev=$d/$(basename "$rev")
+  [ "$(sha "$rev")" = "$3" ] || die "the review changed since you read it: reload it"
+  send_review "$p" "$repo" "$n" "$head" "$rev"
+  echo "sent the review to $p / $head"
+}
+
+web_api() { # kuggis _web <state | pr|log|ask <repo> <n> | merge|send <repo> <n> <hash>>
+  [ "${1:-}" = state ] || [[ ${2:-} =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ && ${3:-} =~ ^[0-9]+$ ]] || die "bad PR"
+  case ${1:-} in
+    state) web_state ;;
+    pr) web_pr "$2" "$3" ;;
+    log) web_log "$2" "$3" ;;
+    ask)
+      local r; r=$(pr_row "$2" "$3")
+      [ -n "$r" ] || die "$2#$3 isn't open any more"
+      ask_thinker "$r" </dev/null ;;
+    merge) [[ ${4:-} =~ ^[0-9a-f]{40}$ ]] || die "bad commit"; web_merge "$2" "$3" "$4" ;;
+    send) [[ ${4:-} =~ ^[0-9a-f]{64}$ ]] || die "bad review hash"; web_send "$2" "$3" "$4" ;;
+    *) die "usage: kuggis _web state|pr|log|ask|merge|send" ;;
+  esac
+}
+
 # The Thinker's room (think/README.md): a separate macOS user running Claude
 # Code restricted, entered through a root-owned launcher.
 cmd_think() {
@@ -1062,6 +1188,8 @@ case ${1:-home} in
   _close) home_close "$2" ;;
   _ask) home_ask "$2" ;;
   _review) review_run "$2" ;;
+  _web) shift; web_api "$@" ;;
+  web) cmd_web ;;
   ls) cmd_ls ;;
   dispatch) shift; cmd_dispatch "$@" ;;
   new) shift; cmd_new "$@" ;;

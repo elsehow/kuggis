@@ -26,7 +26,17 @@ ctrl-t on a PR has the Thinker review it in the background (headless, in its
 room, on Opus; `KUGGIS_REVIEW_MODEL` changes that); the row shows it working,
 then its verdict.
 It uses [fzf](https://github.com/junegunn/fzf) when installed (`brew install
-fzf`), and a numbered menu otherwise. The Thinker, an agent that
+fzf`), and a numbered menu otherwise.
+
+`kuggis web` does the PR half of that in your browser, on 127.0.0.1:7480
+(`KUGGIS_WEB_PORT` changes it): open PRs grouped by project with the Thinker's
+verdict on each, its review and progress beside them, and keys to ask for a
+review (T), merge (M) or send the review to the PR's session (S). Sessions are
+listed too; Enter copies the `kuggis <project> <session>` that attaches you.
+Only a page holding the token in `~/.config/kuggis/web.token` can use the API;
+`kuggis web` opens it with that token. The themes are BigBrain's.
+
+The Thinker, an agent that
 reads your vault and the web from a contained room on the laptop, is in
 `think/README.md`.
 
