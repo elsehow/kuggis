@@ -1,7 +1,7 @@
 {
   "permissions": {
     "defaultMode": "acceptEdits",
-    "allow": ["WebSearch", "WebFetch"],
+    "allow": ["WebSearch", "WebFetch", "mcp__kuggis"],
     "deny": ["Edit(**/.claude/**)", "Edit(**/.mcp.json)"],
     "disableBypassPermissionsMode": "disable"
   },

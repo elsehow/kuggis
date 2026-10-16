@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cells import policy as contracts
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
-RESERVED = {"operator", "unassigned", "home", "ls", "cells", "cell", "prs", "web",
-            "dispatch", "think", "new", "sync", "sh", "put", "done", "token", "help", "onboard", "reconcile", "audit", "adopt"}
+RESERVED = {"operator", "unassigned", "home", "ls", "cells", "cell", "prs", "web", "dispatch", "watch", "url",
+            "think", "new", "sync", "sh", "put", "done", "token", "help", "onboard", "reconcile", "audit", "adopt"}
 ORDER = ("trusted", "forecasting", "merrillfront-dev", "bigbrain-dev",
          "bigbrain-others", "hiring")
 DEFAULTS = {
@@ -147,13 +147,22 @@ def project(snapshot, config):
                 "state": state, "needs_you": not state.startswith("development verified"),
                 "command": f"kuggis audit {name}", "age": ""})
 
-    # The source exposes only brief metadata, never brief contents or reviews.
-    briefs = snapshot.get("briefs", [])
-    if snapshot.get("thinker_installed") or briefs:
+    # The source exposes only request metadata, never bodies or reviews.
+    requests = snapshot.get("requests", [])
+    held = [r for r in requests if r.get("held")]
+    if snapshot.get("thinker_installed") or requests:
         cell("trusted")["rows"].append({
             "id": "thinker", "kind": "thinker", "name": "Thinker", "project": "",
-            "state": f"{len(briefs)} brief{'s' if len(briefs) != 1 else ''} waiting" if briefs else "no pending briefs",
-            "needs_you": bool(briefs), "command": "kuggis think", "age": "",
+            "state": f"{len(held)} waiting for you" if held else "nothing waiting",
+            "needs_you": bool(held), "command": "kuggis think", "age": "",
+        })
+
+    for pr in sorted(snapshot.get("prs", []), key=lambda x: (x["project"], x["n"])):
+        name = mapping.get(pr["project"], "unassigned")
+        cell(name)["rows"].append({
+            "id": f"pr:{pr['repo']}#{pr['n']}", "kind": "pr", "name": f"#{pr['n']} {pr['title']}",
+            "project": pr["project"], "state": f"checks {pr['checks']}", "needs_you": False, "age": "",
+            "cell": pr["repo"], "arg": str(pr["n"]), "command": f"gh pr view {pr['n']} -R {pr['repo']} --web",
         })
 
     for s in sorted(snapshot["sessions"], key=lambda x: (x["project"], x["name"])):
@@ -171,12 +180,19 @@ def project(snapshot, config):
                    "command": session_command(name, s["project"], s["name"], snapshot["projects"], mapping) if valid else None}
         cell(name)["rows"].append(row)
 
-    for b in sorted(briefs, key=lambda x: x["id"]):
-        name = mapping.get(b["project"], "unassigned")
+    for r in sorted(requests, key=lambda x: (x["since"], x["id"])):
+        kind, p = r.get("kind", "brief"), r.get("project", "")
+        if r.get("cell"):
+            try:
+                p = resolve(config, r["cell"], p)
+            except ValueError:
+                p = p or ""
+        name = mapping.get(p, "unassigned") if kind == "brief" else "trusted"
+        label = {"brief": f"brief / {r.get('session', '')}", "fetch": f"fetch {r.get('url', '')[:60]}"}.get(kind, kind)
+        state = ("awaiting dispatch" if kind == "brief" else "awaiting your ok") if r.get("held") else "carrying"
         cell(name)["rows"].append({
-            "id": f"brief:{b['id']}", "kind": "door", "name": f"brief / {b['session']}",
-            "project": b["project"], "state": "awaiting dispatch", "needs_you": True,
-            "since": b["since"], "command": "kuggis dispatch", "age": "",
+            "id": f"request:{r['id']}", "kind": "door", "name": label, "project": p if kind == "brief" else "",
+            "state": state, "needs_you": bool(r.get("held")), "since": r["since"], "command": "kuggis dispatch", "age": "",
         })
 
     def rank(name):
@@ -217,7 +233,11 @@ def main():
                     "thinker_installed": os.access("/opt/kuggis-thinker/launch", os.X_OK)}
     else:
         snapshot = json.load(sys.stdin)
-    cells = project(snapshot, config)["cells"]
+    grouped = project(snapshot, config)
+    if mode == "json":  # the room's state.json: everything, grouped by cell
+        print(json.dumps(grouped))
+        return
+    cells = grouped["cells"]
     color = "--color" in args
     args = [a for a in args if a != "--color"]
     if args:
@@ -258,7 +278,7 @@ def main():
                 label = f"  {dot} {safe(who):<32} {safe(r['state'])} {safe(age)}".rstrip()
                 if mode == "items":
                     kind = r["kind"] if r["command"] else "invalid"
-                    print("\t".join([kind, label, safe(r.get("cell", r["project"])), safe(r["name"])]))
+                    print("\t".join([kind, label, safe(r.get("cell", r["project"])), safe(r.get("arg", r["name"]))]))
                 else:
                     print(label)
             if mode != "items":
