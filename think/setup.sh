@@ -59,6 +59,18 @@ install -d -o "$owner" -g staff -m 755 "$home/workspace/inbox"
 install -d -o "$user" -g staff -m 700 "$home/.config"
 (umask 077; printf '%s\n' "$token" >"$home/.config/claude-token")
 chown "$user:staff" "$home/.config/claude-token"
+# Keys for the other agents' providers, if the owner keeps any (KEY=value lines).
+secrets=${3:-}
+if [ -n "$secrets" ] && [ -f "$secrets" ]; then
+  install -o "$user" -g staff -m 600 "$secrets" "$home/.config/secrets.env"
+  echo "secrets: $(grep -cE '^[A-Z_]+=.+' "$secrets") key(s) from $secrets"
+else
+  rm -f "$home/.config/secrets.env"
+fi
+# The other agents run from Homebrew; the room only needs to be able to run them.
+for a in codex pi; do
+  if sudo -u "$user" test -x "/opt/homebrew/bin/$a"; then echo "agent: $a (kuggis think --agent $a)"; else echo "agent: $a not available to $user"; fi
+done
 [ -f "$home/.claude.json" ] || {
   echo '{"hasCompletedOnboarding": true}' >"$home/.claude.json"
   chown "$user:staff" "$home/.claude.json"; chmod 600 "$home/.claude.json"

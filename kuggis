@@ -39,8 +39,9 @@
 #   kuggis sh <cell> [--project NAME] [cmd...]
 #                                    plain ssh to a project's VM
 #   kuggis token                     mint a Claude token into the keychain
-#   kuggis think [--setup|--check]   the Thinker: Claude Code in a contained room
-#                                    on this laptop (think/README.md)
+#   kuggis think [--setup|--check|--agent claude|codex|pi]
+#                                    the Thinker: an agent in a contained room on
+#                                    this laptop, with kuggis watch (think/README.md)
 #
 # Existing project names still work. A cell with multiple projects requires
 # --project NAME. Cell names route commands; they do not enforce isolation.
@@ -1453,7 +1454,7 @@ cmd_think() {
       token=$(security find-generic-password -s "$KEYCHAIN_SERVICE" -w 2>/dev/null) || die "no Claude token yet: kuggis token"
       [ "$(id -u)" != 0 ] || die "run kuggis think --setup as yourself, without sudo: it asks for sudo when it needs it"
       echo "kuggis: building the Thinker's room (sudo asks for your password)"
-      printf '%s' "$token" | sudo "$HERE/think/setup.sh" "$USER" "$bin"
+      printf '%s' "$token" | sudo "$HERE/think/setup.sh" "$USER" "$bin" "$CONF/secrets/thinker.env"
       ;;
     --check)
       sudo -u thinker "$room/check" "$USER" || true

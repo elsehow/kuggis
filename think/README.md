@@ -53,6 +53,19 @@ A brief is how private facts would reach a public repo, and the VMs have open
 internet and no vault, so your read is the check. Merges happen inside the
 cells by their own rules; the Thinker doesn't review PRs.
 
+## Any agent
+
+`kuggis think --agent claude|codex|pi`. One launcher, three agents, the same
+wall: the same user, home, proxy, system prompt (`prompt.md`) and the kuggis
+door as the one tool with reach. Claude runs restricted with no shell; Codex
+and pi have shells, and the wall is what holds them. Codex's own sandbox
+can't nest inside the wall, so it runs without one; its web search, browser
+and apps are turned off by name. pi's tools are an allowlist by construction.
+Codex and pi run from Homebrew; their provider keys go in
+`~/.config/kuggis/secrets/thinker.env` (`OPENAI_API_KEY=…`,
+`ANTHROPIC_API_KEY=…`), copied into the room by `--setup`. Every key is to
+an account that is yours: the proxy only reaches hosts on `think/hosts`.
+
 ## What holds it
 
 The OS is the wall; the agent's own settings are a second layer.

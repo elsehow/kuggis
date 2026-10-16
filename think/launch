@@ -3,26 +3,66 @@
 # Root-owned in /opt/kuggis-thinker; `kuggis think` runs it through sudo, and
 # nothing the Thinker can write changes how it starts.
 #
+#   launch [--agent claude|codex|pi] [agent flags...]
+#
 # The wall is the OS: macOS's process sandbox (room.sb) denies the agent and
 # everything it starts all network except loopback TCP to the kuggis proxy and
-# to BigBrain's door. The proxy (kuggis watch runs it) tunnels to the model API
-# and nothing else, so the agent's own settings are a second layer, never the
-# wall. --restricted keeps Claude's file tools inside the workspace and leaves
-# it no shell; the kuggis door (door.py) is its one tool with reach.
+# to BigBrain's door. The proxy (kuggis watch runs it) tunnels to the model
+# APIs and nothing else. So the agent can be any agent, shell and all; its own
+# settings below are a second layer, never the wall. Each agent gets the same
+# home, proxy, system prompt (prompt.md) and the kuggis door (door.py) as its
+# one tool with reach.
 set -eu
 room=/opt/kuggis-thinker home=/Users/thinker
 PROXY=4749 BB=4748
 [ ! -f "$room/ports" ] || . "$room/ports"
-cd "$home/workspace"
+agent=claude
+if [ "${1:-}" = --agent ]; then agent=${2:?--agent needs claude, codex or pi}; shift 2; fi
+case $agent in claude | codex | pi) ;; *) echo "launch: unknown agent '$agent' (claude, codex, pi)" >&2; exit 2 ;; esac
+
 export HOME=$home USER=thinker LOGNAME=thinker SHELL=/bin/zsh PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export TERM=xterm-256color COLORTERM=truecolor LANG=${LANG:-en_US.UTF-8}
 export HTTPS_PROXY=http://127.0.0.1:$PROXY HTTP_PROXY=http://127.0.0.1:$PROXY NO_PROXY=127.0.0.1,localhost
 export DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
-export CLAUDE_CODE_OAUTH_TOKEN="$(<"$home/.config/claude-token")"
-exec /usr/bin/sandbox-exec -D PROXY=$PROXY -D BB=$BB -f "$room/room.sb" \
-  "$room/claude" --restricted \
-  --tools "Read,Edit,Write,Glob,Grep,WebSearch" \
-  --settings "$room/settings.json" \
-  --strict-mcp-config --mcp-config "$room/mcp.json" \
-  --append-system-prompt "$(<"$room/prompt.md")" \
-  "$@"
+door_cmd=/usr/bin/python3 door_args='["-I","/opt/kuggis-thinker/door.py","serve"]'
+
+if [ -z "${KUGGIS_LAUNCH_DRY:-}" ]; then
+  cd "$home/workspace"
+  # Credentials the room may hold: the Claude token, and keys for the other
+  # agents' providers (secrets.env, from ~/.config/kuggis/secrets/thinker.env),
+  # each to an account that is the owner's.
+  export CLAUDE_CODE_OAUTH_TOKEN="$(<"$home/.config/claude-token")"
+  if [ -f "$home/.config/secrets.env" ]; then set -a; . "$home/.config/secrets.env"; set +a; fi
+fi
+
+case $agent in
+  claude)
+    # --restricted keeps the file tools inside the workspace and leaves no shell.
+    cmd=("$room/claude" --restricted
+      --tools "Read,Edit,Write,Glob,Grep,WebSearch"
+      --settings "$room/settings.json"
+      --strict-mcp-config --mcp-config "$room/mcp.json"
+      --append-system-prompt "$(<"$room/prompt.md")") ;;
+  codex)
+    # Codex's own sandbox can't nest inside the wall, so it runs without one:
+    # the wall and the thinker user are the protection. Its exits are turned
+    # off by name; the kuggis door is its MCP server; prompt.md is its AGENTS.md.
+    export PATH=/opt/homebrew/bin:$PATH CODEX_HOME=$home/.codex
+    [ -n "${KUGGIS_LAUNCH_DRY:-}" ] || { mkdir -p "$CODEX_HOME"; cp "$room/prompt.md" "$CODEX_HOME/AGENTS.md"; }
+    cmd=(codex -C "$home/workspace" -s danger-full-access
+      -c "mcp_servers.kuggis.command=\"$door_cmd\"" -c "mcp_servers.kuggis.args=$door_args"
+      -c 'web_search="disabled"' --disable browser_use --disable browser_use_external --disable apps) ;;
+  pi)
+    # pi's tools are an allowlist by construction; its MCP servers come from
+    # ~/.pi/agent/mcp.json, rewritten here on every start.
+    export PATH=/opt/homebrew/bin:$PATH
+    [ -n "${KUGGIS_LAUNCH_DRY:-}" ] || {
+      mkdir -p "$home/.pi/agent"
+      printf '{"mcpServers":{"kuggis":{"command":"%s","args":%s}}}\n' "$door_cmd" "$door_args" >"$home/.pi/agent/mcp.json"
+    }
+    cmd=(pi --no-extensions --no-skills --no-prompt-templates --no-context-files
+      --append-system-prompt "$room/prompt.md") ;;
+esac
+
+if [ -n "${KUGGIS_LAUNCH_DRY:-}" ]; then print -r -- "$agent:" "${(q)cmd[@]}" "$@"; exit 0; fi
+exec /usr/bin/sandbox-exec -D PROXY=$PROXY -D BB=$BB -f "$room/room.sb" "${cmd[@]}" "$@"
