@@ -55,23 +55,30 @@ cells by their own rules; the Thinker doesn't review PRs.
 
 ## What holds it
 
+The OS is the wall; the agent's own settings are a second layer.
+
 | Layer | What it does |
 |---|---|
-| The `thinker` user | A standard account. Your home is `chmod 700`, so it can't read your vault, projects, transcripts, keys or keychain. |
-| `/opt/kuggis-thinker` | Root-owned: the Claude Code binary, settings, MCP config, the door, the fetch guard and the launcher. Nothing the Thinker writes changes how it starts. |
+| The `thinker` user | A standard account, hidden, denied cron. Your home is `chmod 700`, so it can't read your vault, projects, transcripts, keys or keychain. |
+| `room.sb` | macOS's process sandbox, applied by the launcher to the agent and everything it starts: no network at all except outbound TCP on loopback to the kuggis proxy and to BigBrain's door. Unix sockets count, so even a name lookup is refused (a hostname carries data out). |
+| The proxy | `think/proxy.py`, run by `kuggis watch` as you: tunnels CONNECT to the hosts in `think/hosts` (the model APIs; add yours in `~/.config/kuggis/thinker-hosts`) and refuses the rest. TLS runs end to end, so it sees hostnames, never content. |
+| `/opt/kuggis-thinker` | Root-owned: the Claude Code binary, settings, MCP config, the door, the sandbox profile and the launcher. Nothing the Thinker writes changes how it starts. |
 | `claude --restricted` | Ignores user, project and local settings. Keeps the file tools inside the workspace. Refuses bypassPermissions. |
-| `--tools` | Read, Edit, Write, Glob, Grep, WebSearch, WebFetch. No shell. |
+| `--tools` | Read, Edit, Write, Glob, Grep, WebSearch. No shell, no WebFetch: pages come through the door. |
 | Token login | `kuggis token`'s Claude token. It loads no claude.ai connectors (Gmail, Drive and the rest are each a way out). |
-| `fetch-guard` | WebFetch opens a URL only if it came from outside the model, exactly as given. Public hosts only. Fails closed. |
 | `--strict-mcp-config` | MCP servers only from the room's `mcp.json`: the door, and BigBrain's once connected. |
+
+`kuggis think --check` proves the wall from inside: a direct connection, a
+name lookup, UDP, listening and another loopback port are all refused by the
+kernel; the proxy refuses a host off its list and tunnels to the model API.
 
 ## What it can still do
 
 - **Search the web** through the door (a search key in
   `~/.config/kuggis/secrets/thinker.env`, `TAVILY_API_KEY`) or Claude's own
-  WebSearch, whose query goes to Anthropic.
-- **Fetch pages** at URLs a search returned or you vouched for. It can't
-  follow links inside a page by itself.
+  WebSearch, whose query goes to Anthropic through the proxy.
+- **Fetch pages**, through the door, at URLs a search returned or you vouched
+  for. It can't follow links inside a page by itself.
 - **Write in its workspace and its outbox**
   (`/Users/thinker/workspace/outbox`, readable by you).
 - Once it's connected, **read the vault and drop into it** through

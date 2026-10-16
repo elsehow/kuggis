@@ -31,8 +31,13 @@ id "$user" >/dev/null
 install -d -o root -g wheel -m 755 "$room"
 install -o root -g wheel -m 755 "$bin" "$room/claude"
 install -o root -g wheel -m 755 "$here/check.sh" "$room/check"
-for f in launch fetch-guard; do install -o root -g wheel -m 755 "$here/$f" "$room/$f"; done
-for f in settings.json prompt.md check-prompt.md door.py; do install -o root -g wheel -m 644 "$here/$f" "$room/$f"; done
+install -o root -g wheel -m 755 "$here/launch" "$room/launch"
+for f in settings.json prompt.md check-prompt.md door.py room.sb; do install -o root -g wheel -m 644 "$here/$f" "$room/$f"; done
+# The two loopback ports the wall lets through: the kuggis proxy, BigBrain's door.
+printf 'PROXY=%s\nBB=%s\n' "${KUGGIS_PROXY_PORT:-4749}" "${BIGBRAIN_API_PORT:-4748}" >"$room/ports"
+chmod 644 "$room/ports"
+# cron would run the Thinker's jobs outside the wall.
+grep -qx "$user" /usr/lib/cron/cron.deny 2>/dev/null || echo "$user" >>/usr/lib/cron/cron.deny
 # mcp.json: the kuggis door (think/door.py) always; BigBrain's door is added by
 # hand once it's connected, so an existing file keeps its other entries.
 [ -f "$room/mcp.json" ] || install -o root -g wheel -m 644 "$here/mcp.json" "$room/mcp.json"

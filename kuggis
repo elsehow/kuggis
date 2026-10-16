@@ -649,10 +649,22 @@ room_state() {
   mv "$ROOM_INBOX/.state.json.tmp" "$ROOM_INBOX/state.json"
 }
 
+# The room's only road out: a CONNECT proxy on loopback that tunnels to the
+# hosts in think/hosts (plus ~/.config/kuggis/thinker-hosts) and refuses the
+# rest. Started here so the room has a road exactly while kuggis watches.
+PROXY_PORT=${KUGGIS_PROXY_PORT:-4749}
+start_proxy() {
+  ! nc -z 127.0.0.1 "$PROXY_PORT" 2>/dev/null || return 0
+  python3 -I "$HERE/think/proxy.py" "$PROXY_PORT" "$HERE/think/hosts" "$CONF/thinker-hosts" &
+  # shellcheck disable=SC2064 # expand now
+  trap "kill $! 2>/dev/null" EXIT
+}
+
 # kuggis watch: keep the room's inbox fresh and carry its requests, every few
 # seconds, until stopped. The cockpit (kuggis think) runs it for you.
 cmd_watch() {
   case ${1:-} in '' | --once) ;; *) die "usage: kuggis watch [--once]" ;; esac
+  [ "${1:-}" = --once ] || start_proxy
   while :; do
     room_state
     carry
