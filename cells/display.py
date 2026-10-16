@@ -1,7 +1,8 @@
-"""Shared CLI and dashboard cell grouping. Not the cell policy or event fold.
+"""The cell grouping the home screen and the room's state.json share. Not the
+cell policy or event fold.
 
 Private display definitions live in $KUGGIS_CONFIG/cells/*.json. Membership
-here groups the UI; it grants no access and does not certify isolation.
+here groups the view; it grants no access and does not certify isolation.
 """
 import hashlib
 import json
@@ -16,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from cells import policy as contracts
 
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
-RESERVED = {"operator", "unassigned", "home", "ls", "cells", "cell", "prs", "web", "dispatch", "watch", "url",
+RESERVED = {"operator", "unassigned", "home", "ls", "cells", "cell", "dispatch", "watch", "url",
             "think", "new", "sync", "sh", "put", "done", "token", "help", "onboard", "reconcile", "audit", "adopt"}
 ORDER = ("trusted", "forecasting", "merrillfront-dev", "bigbrain-dev",
          "bigbrain-others", "hiring")

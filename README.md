@@ -37,42 +37,19 @@ Existing project commands such as `kuggis airo my-task` keep working. If a
 project and a cell share a name, the existing project command wins; an
 explicit `--project` selector can target another member of the cell.
 
-`kuggis` on its own shows the same cell groups, session states and pending
-briefs as the web dashboard. Enter attaches to a session, opens the Thinker,
-dispatches pending briefs, or shows a cell definition. Ctrl-x closes a
+`kuggis` on its own shows the cells, their sessions and states, and the
+Thinker's waiting requests. Enter attaches to a session, opens the Thinker,
+decides a waiting request, or shows a cell definition. Ctrl-x closes a
 session (`kuggis done`), and the list refreshes itself. Opening the cell home
 does not query GitHub or start reviews. Detach with `C-b d` to come back to it.
 It uses [fzf](https://github.com/junegunn/fzf) when installed (`brew install
 fzf`), and a numbered menu otherwise.
 
-`kuggis prs` keeps the previous PR-oriented home screen. Ctrl-t on a PR asks
-the Thinker to review it (on Opus; `KUGGIS_REVIEW_MODEL` changes that).
-Merging a PR offers to close its session.
-
-`kuggis web` opens the cell dashboard on 127.0.0.1:7480
-(`KUGGIS_WEB_PORT` changes it). Cells stay in a fixed order; sessions stay
-alphabetical within their project, even when their state changes. A red dot
-means the session needs you (including a stopped session or an unreachable
-VM). Click a row, or focus it and press Enter, to copy its command. Session
-commands use the cell name, adding `--project` when needed. Operator and
-unassigned sessions retain their project commands.
-
-The Thinker appears under trusted when installed or when it has requests
-waiting. A brief waiting for you appears in its destination's cell with its
-waiting age; clicking one copies `kuggis dispatch`. Unknown destinations
-appear under unassigned. The Thinker row copies `kuggis think`. Opening this
-overview only reads session state and request metadata: it never starts a
-review or queries GitHub. A failed refresh keeps the last snapshot visibly
-marked as stale. `kuggis think` is a tmux cockpit: the Thinker's chat, this
-home screen one window over, and `kuggis watch` carrying the Thinker's
-requests (think/README.md).
-
-The **PRs** link opens the existing review tools at `/reviews`: ask for a
-Thinker review (T), merge (M), send a review to its session (S), or close a
-session (X). AIRO agents review and merge on their VM; they don't need this
-human review loop.
-Only a page holding the token in `~/.config/kuggis/web.token` can use the API;
-`kuggis web` opens it with that token. The themes are BigBrain's.
+`kuggis think` is the Thinker's cockpit (think/README.md): its chat, this home
+screen one window over, and `kuggis watch` carrying its requests. A request
+waiting for you is a row with a red dot under its cell; Enter opens `kuggis
+dispatch`. Merges happen inside the cells, by their contract: kuggis shows
+open PRs under their cell and otherwise leaves them alone.
 
 ### Verifiable development cells
 
@@ -135,11 +112,11 @@ These are quality checks within the cell; a compromised cell can fabricate its
 own review, so they are not a
 security boundary.
 
-CLI and dashboard show incomplete setup, verification expiry, or **development
+The home screen shows incomplete setup, verification expiry, or **development
 verified; isolation not certified**. Readiness observations expire after 15
 minutes or any policy/runtime change. A failed audit invalidates earlier green
 observations. Starting a managed job performs a fresh verification; attaching
-to an already-running session remains available for recovery. The dashboard
+to an already-running session remains available for recovery. The home screen
 reads cached observations and never changes settings or starts reviews.
 
 The scope is development readiness, not the full security architecture: this
@@ -222,7 +199,7 @@ kuggis sh forecasting 'python3 -I ~/.box/events.py check'
 This read-only diagnostic validates and folds the VM log and compares it to
 the retained state files; it exits nonzero on rejected events or differences.
 Already-running sessions should be restarted after sync to load the adapters.
-The dashboard still reads the compatibility files and checks tmux liveness.
+The home screen still reads the compatibility files and checks tmux liveness.
 This is the session portion of the event-log migration: continuous laptop
 transport, the other event types, and retiring old state await the shadow trial.
 
@@ -252,19 +229,17 @@ Optional private display definitions live in
 
 These small JSON files need no extra dependencies and are **grouping and routing metadata**,
 separate from the future enforced YAML policy in the plan. Their format is in
-`web/cell-display.schema.json`; an optional `definition` object can hold notes
+`cells/display.schema.json`; an optional `definition` object can hold notes
 to inspect. The dialog shows the exact file and SHA256, never an enforcement
 commit. Explicit membership replaces inference for that cell. Duplicate
 membership, invalid files, cell names that collide with CLI commands, and
-attempts to put kuggis inside a cell surface as errors. The CLI and web use
-the same membership and validation. Configured cells remain visible even
+attempts to put kuggis inside a cell surface as errors. The home screen and
+the room's state.json use the same membership and validation. Configured cells remain visible even
 without sessions. The fixed order
 is trusted, forecasting, merrillfront-dev, bigbrain-dev, bigbrain-others, hiring,
 then custom cells alphabetically, then operator and unassigned.
 
 Keep these definitions private; do not commit personal data or credentials.
-No configuration is written by the dashboard. After upgrading kuggis, restart
-an already-running `kuggis web` process to load the new server.
 
 The Thinker, an agent that
 reads your vault and the web from a contained room on the laptop, is in
