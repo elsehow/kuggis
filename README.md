@@ -97,6 +97,8 @@ plan. A changed policy, repository head, runtime installation or observed
 configuration invalidates that approval. Partial setup is saved as incomplete;
 rerunning the planner reports remaining work. Existing unmanaged VMs are never
 overwritten automatically. New forks explicitly name their upstream and owner.
+Setup PRs are opened by the scoped VM bot so the owner can approve them under
+an existing review requirement; GitHub forbids approving your own PR.
 
 Onboarding has a deliberate prerequisite: the managed test and review workflows
 must be reviewed and merged, and tests green on the default branch **before**

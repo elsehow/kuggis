@@ -43,7 +43,10 @@ class Services:
         self.file_calls = 0
 
     def response(self, data):
-        return {k: {'enabled': v} if isinstance(v, bool) else v for k, v in data.items()}
+        result = {k: {'enabled': v} if isinstance(v, bool) else copy.deepcopy(v) for k, v in data.items()}
+        # GitHub accepts either contexts or checks on PUT; GET returns both.
+        result['required_status_checks']['contexts'] = [c['context'] for c in result['required_status_checks']['checks']]
+        return result
 
     def machines(self):
         return 'demo-dev.exe.xyz'
@@ -83,6 +86,9 @@ class Services:
         self.mutations.append(args)
         self.vm_bad = False
 
+    def open_setup_pr(self, project, body):
+        return self.api('repos/' + project['repo'] + '/pulls', 'POST', body)
+
 
 class Contract(unittest.TestCase):
     def setUp(self):
@@ -93,6 +99,12 @@ class Contract(unittest.TestCase):
         (self.config/'vms').write_text('demo demo-dev example/demo -\n')
         self.policy = definition()
         self.services = Services(self.policy)
+
+    def test_protection_request_uses_only_app_bound_checks_not_legacy_contexts(self):
+        required=control.protection_body(None)['required_status_checks']
+        self.assertNotIn('contexts',required)
+        self.assertEqual(required['checks'],[{'context':name,'app_id':15368} for name in policy.CHECKS])
+        self.assertTrue(control.protection_matches(self.services.protection))
 
     def test_projects_cannot_override_shared_merge_or_spending_policy(self):
         for transform in [lambda p: p['merge'].update(human_approvals=1),
@@ -224,14 +236,27 @@ class Contract(unittest.TestCase):
             if '/contents/' in path: return existing[path.split('/contents/')[1].split('?')[0]]
             if '/pulls?' in path: return prs
             raise AssertionError(path)
-        with patch.object(self.services,'api',side_effect=api):
+        with patch.object(self.services,'api',side_effect=api), \
+             patch.object(self.services,'open_setup_pr',wraps=self.services.open_setup_pr) as bot:
             first=control.workflow_pr(self.services,p,wanted,self.services.head,expected)
             count=len(writes)
             self.assertEqual(first,control.workflow_pr(self.services,p,wanted,self.services.head,expected))
             self.assertEqual(count,len(writes))
+            bot.assert_called_once()
+            self.assertEqual(bot.call_args.args[0],p)
             existing[control.WORKFLOW]={'sha':'d'*40,'content':base64.b64encode(b'unreviewed').decode()}
             with self.assertRaisesRegex(ValueError,'unreviewed'):
                 control.workflow_pr(self.services,p,wanted,self.services.head,expected)
+
+    def test_setup_pr_uses_scoped_vm_identity_without_operator_credentials(self):
+        body={'title':'Setup','body':'Review this setup','head':'setup','base':'main'}
+        with patch.object(control,'run',return_value='{"html_url":"https://github.com/example/demo/pull/1"}') as run:
+            result=control.Services().open_setup_pr(self.services.project,body)
+        argv=run.call_args.args[0]
+        self.assertEqual(argv[-2],'demo-dev.exe.xyz')
+        self.assertEqual(argv[-1],'env GH_HOST=github.int.exe.xyz gh api repos/example/demo/pulls --method POST --input -')
+        self.assertEqual(json.loads(run.call_args.kwargs['data']),body)
+        self.assertTrue(result['html_url'].endswith('/pull/1'))
 
     def test_dashboard_incomplete_expired_and_changed_policy(self):
         control.atomic_json(self.config/'cells/forecasting.json', self.policy)

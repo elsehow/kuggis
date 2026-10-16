@@ -55,6 +55,15 @@ class Services:
     def local(self, *args):
         return run([ROOT / 'kuggis', *args])
 
+    def open_setup_pr(self, project, body):
+        # The owner must be able to approve the bootstrap PR under an existing
+        # review requirement. GitHub forbids approving one's own PR, so create
+        # it as the repository-scoped VM bot, without copying operator credentials.
+        command = (f"env GH_HOST=github.int.exe.xyz gh api repos/{project['repo']}/pulls "
+                   '--method POST --input -')
+        return json.loads(run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
+                               project['vm'] + '.exe.xyz', command], data=json.dumps(body), timeout=30))
+
 
 def atomic_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -248,7 +257,7 @@ def protection_matches(p):
 
 def protection_body(old):
     # Preserve unrelated boolean protections. Never remove access restrictions.
-    body = {'required_status_checks': {'strict': False, 'contexts': CHECKS,
+    body = {'required_status_checks': {'strict': False,
                 'checks': [{'context': name, 'app_id': 15368} for name in CHECKS]}, 'enforce_admins': True,
             'required_pull_request_reviews': {'dismiss_stale_reviews': True, 'require_code_owner_reviews': False,
                                              'required_approving_review_count': 0, 'require_last_push_approval': False},
@@ -295,7 +304,7 @@ def workflow_pr(services, p, expected_files, expected_head, expected_shas):
             services.api(f'repos/{repo}/contents/{path}', 'PUT', update)
     prs = services.api(f"repos/{repo}/pulls?head={repo.split('/')[0]}:{branch}&state=open")
     if not prs:
-        return services.api(f'repos/{repo}/pulls', 'POST', {'title': 'Add cell development test and review workflows',
+        return services.open_setup_pr(p, {'title': 'Add cell development test and review workflows',
             'head': branch, 'base': p['branch'],
             'body': 'Run explicit offline tests on PRs and the default branch. Publish exact-head reviewer verdicts from the scoped VM bot as statuses, using trusted workflow code without checking out the PR. These are prerequisites for agent self-merging; merge permissions change only after both workflows are merged and default-branch tests are green.'})['html_url']
     return prs[0]['html_url']
