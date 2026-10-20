@@ -27,17 +27,23 @@ plan, and on the box, to configure the proxy.
 ## The binary
 
     cell key new PATH               mint a secret (0600); print its public key
+    cell key pub PATH               print the public key of a secret
     cell say CELL SEQ SECRET        sign the Said on stdin
     cell open KEY                   verify the Statement on stdin; print what it said
     cell allow CELLFILE             the hosts a cell's proxy may tunnel to
     cell tree DIR                   check a directory as one tree
-    cell plan DIR [NAME] [--have OBSERVED [--box HASH]]
+    cell plan DIR [NAME] [--bin LINUX_CELL] [--have OBSERVED [--box HASH]]
     cell apply DIR [NAME] --approve HASH [--bin LINUX_CELL] [--pins DIR]
     cell adopt VM NAME              tag an existing VM as NAME's root
     cell observe [--from DIR]       read exe.dev's listings back as cells and doors
-    cell proxy --listen ADDR --cell CELLFILE
+    cell proxy --listen ADDR --cell CELLFILE [--private-ok]
+    cell setup CELLFILE
+    cell check
+    cell probe
+    cell door --listen ADDR --cell CELLFILE --said DIR --inbox DIR
     cell ship --cell CELLFILE --secret FILE --outbox DIR --said DIR [--once]
     cell run --cell CELLFILE --inbox DIR --outbox DIR --home DIR
+    cell knock --inbox DIR
     cell brief DIR NAME SESSION TEXT
     cell pull DIR NAME [--since N]
     cell login DIR NAME
@@ -116,12 +122,14 @@ binary needs setup, and the approval binds the hash of the one shipped.
 `agent` user with no sudo and one open socket, the proxy on loopback; a
 `cell-proxy` user that may resolve at exe.dev's gateway and open TLS
 ports and nothing else; a `cell-door` user that serves the statement log
-and files what a parent says; nftables rules by uid, loaded before the
-network; the signing key minted root-only; everything as hardened systemd
+and files what a parent says; a `cell-say` user that holds the key and
+ships what the agent says; nftables rules by uid, loaded before the
+network; the signing key minted 0600 for `cell-say` alone; everything as hardened systemd
 services. `cell check` then runs `cell probe` as the agent, which tries
 everything the threat model says the agent cannot do, adds what root can
 see, signs the result as `Checked`, with the binary's hash and which
-harnesses are signed in, and appends it to the log the laptop pulls. Both ran on a fresh exe.dev VM: every probe matched, setup is
+harnesses are signed in, and appends it to the log the laptop pulls.
+Both ran on a fresh exe.dev VM: every probe matched, setup is
 idempotent, and the wall survives a reboot.
 
 ## The door
