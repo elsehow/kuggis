@@ -60,6 +60,32 @@ ones not attached. Through a door the parent sends a `Said`, a brief or a
 reply, trusted because only the parent can knock. Everything upward is a
 signed `Statement`.
 
+## The wall
+
+`cell setup CELLFILE`, run once as root on a box, builds the wall: an
+`agent` user with no sudo and one open socket, the proxy on loopback; a
+`cell-proxy` user that may resolve at exe.dev's gateway and open TLS
+ports and nothing else; a `cell-door` user that serves the statement log
+and files what a parent says; nftables rules by uid, loaded before the
+network; the signing key minted root-only; everything as hardened systemd
+services. `cell check` then runs `cell probe` as the agent, which tries
+everything the threat model says the agent cannot do, adds what root can
+see, signs the result as `Checked` and appends it to the log the laptop
+pulls. Both ran on a fresh exe.dev VM: every probe matched, setup is
+idempotent, and the wall survives a reboot.
+
+## The door
+
+`cell door` listens on loopback where exe.dev's in-VM auth proxy delivers
+the VM's web traffic. A parent reaches it at `door-<child>.int.exe.xyz`
+through a peer integration attached to the parent's VM alone; the
+platform sets `X-Exedev-Source-Vm` after stripping whatever the caller
+sent, and the gateway answers everyone else with "not attached".
+`GET /said?since=N` serves the signed log; `POST /say` files one brief
+for this cell, or one reply, in the inbox the agent reads. The agent
+cannot knock on its own door from inside: the wall allows it only the
+proxy's port. Verified live between two VMs, spoofed header included.
+
 ## The proxy
 
 Standard library only. It tunnels CONNECT to allowed hosts on 443 or 8443

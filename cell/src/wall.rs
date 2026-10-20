@@ -29,9 +29,14 @@ use std::time::Duration;
 pub const ETC: &str = "/etc/cell";
 pub const SAID: &str = "/var/lib/cell/said";
 pub const BIN: &str = "/usr/local/bin/cell";
+pub const INBOX: &str = "/var/lib/cell/inbox";
 pub const AGENT: &str = "agent";
 pub const PROXY_USER: &str = "cell-proxy";
+pub const DOOR_USER: &str = "cell-door";
 pub const PROXY_ADDR: &str = "127.0.0.1:3128";
+/// Where exe.dev's in-VM auth proxy delivers the VM's web traffic, peer
+/// knocks included, from loopback.
+pub const DOOR_ADDR: &str = "127.0.0.1:8000";
 /// exe.dev's resolver, as /etc/resolv.conf names it inside a VM.
 pub const RESOLVER: &str = "169.254.169.254";
 
@@ -124,6 +129,29 @@ WantedBy=multi-user.target
     )
 }
 
+fn door_unit() -> String {
+    format!(
+        "[Unit]
+Description=cell door: the one way in, and the log read out
+After=network-online.target
+
+[Service]
+User={DOOR_USER}
+ExecStart={BIN} door --listen {DOOR_ADDR} --cell {ETC}/cell.json --said {SAID} --inbox {INBOX}
+Restart=always
+RestartSec=1
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths={INBOX}
+
+[Install]
+WantedBy=multi-user.target
+"
+    )
+}
+
 fn wall_unit() -> String {
     format!(
         "[Unit]
@@ -162,10 +190,20 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
     let cell: Cell = serde_json::from_str(&fs::read_to_string(cell_path)?)?;
     fs::create_dir_all(ETC)?;
     fs::create_dir_all(SAID)?;
+    fs::create_dir_all(INBOX)?;
 
     for (user, args) in [
         (
             PROXY_USER,
+            vec![
+                "--system",
+                "--no-create-home",
+                "--shell",
+                "/usr/sbin/nologin",
+            ],
+        ),
+        (
+            DOOR_USER,
             vec![
                 "--system",
                 "--no-create-home",
@@ -184,6 +222,8 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
     for group in ["sudo", "admin", "wheel", "docker", "adm"] {
         let _ = attempt("gpasswd", &["-d", AGENT, group]);
     }
+    run("chown", &[&format!("{DOOR_USER}:{DOOR_USER}"), INBOX])?;
+    fs::set_permissions(INBOX, fs::Permissions::from_mode(0o755))?;
 
     let me = std::env::current_exe()?;
     if me != Path::new(BIN) {
@@ -209,6 +249,11 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
         0o644,
     )?;
     write_as_root(
+        Path::new("/etc/systemd/system/cell-door.service"),
+        door_unit().as_bytes(),
+        0o644,
+    )?;
+    write_as_root(
         Path::new("/etc/systemd/system/cell-wall.service"),
         wall_unit().as_bytes(),
         0o644,
@@ -222,8 +267,8 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
     run("systemctl", &["daemon-reload"])?;
     run("systemctl", &["enable", "--now", "cell-wall"])?;
     run("nft", &["-f", &etc("wall.nft").to_string_lossy()])?;
-    run("systemctl", &["enable", "cell-proxy"])?;
-    run("systemctl", &["restart", "cell-proxy"])?;
+    run("systemctl", &["enable", "cell-proxy", "cell-door"])?;
+    run("systemctl", &["restart", "cell-proxy", "cell-door"])?;
     std::thread::sleep(Duration::from_millis(300));
 
     check()
@@ -437,6 +482,7 @@ pub fn probe() -> Vec<Probe> {
         tcp("direct tcp to a public address", "1.1.1.1:443"),
         tcp("direct tcp to the gateway", &format!("{RESOLVER}:80")),
         tcp("tcp to local sshd", "127.0.0.1:22"),
+        tcp("knock on our own door from inside", DOOR_ADDR),
         tcp("direct tcp over ipv6", "[2606:4700:4700::1111]:443"),
         udp("dns straight to the gateway", &format!("{RESOLVER}:53")),
         udp("dns to a public resolver", "8.8.8.8:53"),
@@ -470,6 +516,7 @@ pub fn probe() -> Vec<Probe> {
         unix("snapd's socket", "/run/snapd.socket"),
         read_file("read the signing key", &etc("secret")),
         write_file("write the cell file", &etc("cell.json")),
+        write_file("write the inbox", Path::new(INBOX)),
         write_file("write the wall", &etc("wall.nft")),
         write_file(
             "write the proxy unit",
@@ -545,13 +592,15 @@ pub fn check() -> Fallible<Statement> {
         },
         groups.trim(),
     ));
-    let (active, _) = attempt("systemctl", &["is-active", "--quiet", "cell-proxy"]);
-    probes.push(Probe::new(
-        "root: proxy service",
-        "active",
-        if active { "active" } else { "down" },
-        "",
-    ));
+    for unit in ["cell-proxy", "cell-door"] {
+        let (active, _) = attempt("systemctl", &["is-active", "--quiet", unit]);
+        probes.push(Probe::new(
+            &format!("root: {unit} service"),
+            "active",
+            if active { "active" } else { "down" },
+            "",
+        ));
+    }
     let (walled, _) = attempt("nft", &["list", "chain", "inet", "cell", "out"]);
     probes.push(Probe::new(
         "root: wall loaded",

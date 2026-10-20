@@ -1,6 +1,7 @@
 //! `cell`: the typed core on the command line. Every subcommand is a thin
 //! call into the library; the library holds every check.
 
+use cell::door::Door;
 use cell::exe::{Integration, Listing, Observed};
 use cell::proxy::{system_resolver, Policy, Proxy};
 use cell::{Cell, Hash, Invalid, Key, Name, Plan, Said, Secret, Statement, Tree};
@@ -36,6 +37,8 @@ usage:
                                   sign the result as Checked, append it to the log
   cell probe                      as the agent on a box: try everything it must
                                   not be able to do; one JSON line per probe
+  cell door --listen ADDR --cell CELLFILE --said DIR --inbox DIR
+                                  serve the statement log; file what a parent says
 ";
 
 type Fallible = Result<(), Box<dyn Error>>;
@@ -62,6 +65,7 @@ fn run(args: &[String]) -> Fallible {
         Some("setup") => setup(rest),
         Some("check") => checked(cell::wall::check()?),
         Some("probe") => probe(),
+        Some("door") => door(rest),
         _ => {
             eprint!("{USAGE}");
             Err("no such command".into())
@@ -280,6 +284,17 @@ fn probe() -> Fallible {
     for p in cell::wall::probe() {
         println!("{}", serde_json::to_string(&p)?);
     }
+    Ok(())
+}
+
+fn door(args: &[String]) -> Fallible {
+    let listen = flag(args, "--listen").ok_or("door: --listen ADDR")?;
+    let cell = load_cell(flag(args, "--cell").ok_or("door: --cell CELLFILE")?)?;
+    let said = flag(args, "--said").ok_or("door: --said DIR")?;
+    let inbox = flag(args, "--inbox").ok_or("door: --inbox DIR")?;
+    let listener = TcpListener::bind(listen)?;
+    eprintln!("cell {}: door on {}", cell.name, listener.local_addr()?);
+    Arc::new(Door::new(&cell, said, inbox)).serve(listener)?;
     Ok(())
 }
 

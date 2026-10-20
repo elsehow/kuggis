@@ -28,7 +28,7 @@ impl std::error::Error for Invalid {}
 /// take one of these as its name.
 pub const RESERVED: &[&str] = &[
     "cell", "key", "say", "open", "allow", "tree", "plan", "observe", "proxy", "setup", "check",
-    "probe", "help",
+    "probe", "door", "help",
 ];
 
 macro_rules! text {

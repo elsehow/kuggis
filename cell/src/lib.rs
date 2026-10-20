@@ -7,6 +7,7 @@
 
 pub mod canon;
 pub mod cell;
+pub mod door;
 pub mod exe;
 pub mod grant;
 pub mod plan;
