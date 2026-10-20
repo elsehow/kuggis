@@ -2,11 +2,18 @@
 //! cells and doors. Only what the edge enforces is visible here. Grants the
 //! box enforces are reported by the box itself, in `Checked`.
 
+use crate::apply::{Edge, Fallible};
 use crate::cell::{Cell, TAG_PREFIX};
 use crate::grant::{Grant, Harness, EDGE_SUFFIX};
-use crate::prim::{Host, Name};
+use crate::prim::{Hash, Host, Name};
+use crate::said::{Key, Said, Statement};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::Duration;
 
 /// A door is an http-proxy integration named `door-<child>`, targeting the
 /// child's VM with `--peer`, attached to the parent's VM. The edge stamps
@@ -14,9 +21,14 @@ use std::collections::{BTreeMap, BTreeSet};
 /// VMs it is attached to.
 pub const DOOR_PREFIX: &str = "door-";
 
+/// The integration's name.
+pub fn door_name(child: &Name) -> String {
+    format!("{DOOR_PREFIX}{child}")
+}
+
 /// The hostname the parent knocks on.
 pub fn door_host(child: &Name) -> Host {
-    format!("{DOOR_PREFIX}{child}{EDGE_SUFFIX}")
+    format!("{}{EDGE_SUFFIX}", door_name(child))
         .parse()
         .expect("a name between fixed labels is a host")
 }
@@ -56,15 +68,19 @@ pub struct Integration {
 }
 
 impl Vm {
-    /// The cell this VM is, by its `cell-` tag, else by its name.
+    /// The cell this VM is the root of, by its `cell-` tag. A VM without
+    /// the tag is not a cell, whatever its name: `cell adopt` adds the tag.
     pub fn cell_name(&self) -> Option<Name> {
-        let tagged = self
-            .tags
+        self.tags
             .iter()
             .find_map(|t| t.strip_prefix(TAG_PREFIX))
-            .and_then(|n| n.parse().ok());
-        tagged.or_else(|| self.vm_name.parse().ok())
+            .and_then(|n| n.parse().ok())
     }
+}
+
+/// The VM that is this cell's root.
+pub fn vm_of<'a>(vms: &'a [Vm], cell: &Name) -> Option<&'a Vm> {
+    vms.iter().find(|v| v.cell_name().as_ref() == Some(cell))
 }
 
 impl Integration {
@@ -141,6 +157,139 @@ impl Observed {
     }
 }
 
+/// exe.dev over ssh: the CLI is the API, and the HTTPS API is the same
+/// words in a POST body. `bin` is the Linux build shipped to a box for
+/// setup; without it, setup is refused.
+pub struct Ssh {
+    pub bin: Option<PathBuf>,
+}
+
+const VM_OPTS: &[&str] = &[
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    "-o",
+    "ConnectTimeout=10",
+];
+
+/// A VM just made takes a while to answer; ssh says 255 until it does.
+fn retrying(what: &str, mut attempt: impl FnMut() -> std::io::Result<Output>) -> Fallible<String> {
+    for tries in 1.. {
+        let out = attempt()?;
+        if out.status.success() {
+            return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+        }
+        if out.status.code() != Some(255) || tries >= 20 {
+            return Err(format!("{what}: {}", String::from_utf8_lossy(&out.stderr).trim()).into());
+        }
+        thread::sleep(Duration::from_secs(3));
+    }
+    unreachable!()
+}
+
+impl Ssh {
+    fn vm(vm: &str, cmd: &str) -> Fallible<String> {
+        Ssh::vm_in(vm, cmd, &[])
+    }
+
+    /// A command on a VM with something on its stdin.
+    fn vm_in(vm: &str, cmd: &str, input: &[u8]) -> Fallible<String> {
+        let host = format!("{vm}.exe.xyz");
+        retrying(&format!("ssh {host} {cmd}"), || {
+            let mut child = Command::new("ssh")
+                .args(VM_OPTS)
+                .arg(&host)
+                .arg(cmd)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            child.stdin.take().expect("piped").write_all(input)?;
+            child.wait_with_output()
+        })
+    }
+
+    fn put(vm: &str, local: &Path, remote: &str) -> Fallible<()> {
+        let to = format!("{vm}.exe.xyz:{remote}");
+        retrying(&format!("scp {} {to}", local.display()), || {
+            Command::new("scp")
+                .args(VM_OPTS)
+                .arg(local)
+                .arg(&to)
+                .output()
+        })
+        .map(drop)
+    }
+}
+
+impl Edge for Ssh {
+    fn listing(&self) -> Fallible<(Vec<Vm>, Vec<Integration>)> {
+        let listing: Listing = serde_json::from_str(&self.run(&["ls", "--json"])?)?;
+        let ints = serde_json::from_str(&self.run(&["integrations", "list", "--json"])?)?;
+        Ok((listing.vms, ints))
+    }
+
+    fn run(&self, args: &[&str]) -> Fallible<String> {
+        let out = Command::new("ssh")
+            .args(["-o", "BatchMode=yes", "exe.dev"])
+            .args(args)
+            .output()?;
+        if !out.status.success() {
+            return Err(format!(
+                "ssh exe.dev {}: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )
+            .into());
+        }
+        Ok(String::from_utf8(out.stdout)?)
+    }
+
+    fn log(&self, vm: &str) -> Fallible<Option<(Key, Vec<Statement>)>> {
+        let raw = Ssh::vm(
+            vm,
+            "test -f /etc/cell/key.pub && cat /etc/cell/key.pub && cat /var/lib/cell/said/*.json 2>/dev/null; true",
+        )?;
+        parse_log(&raw)
+    }
+
+    fn binary(&self) -> Fallible<Option<Hash>> {
+        self.bin
+            .as_deref()
+            .map(|p| -> Fallible<Hash> { Ok(Hash::of(&std::fs::read(p)?)) })
+            .transpose()
+    }
+
+    fn setup(&self, vm: &str, cell: &Cell) -> Fallible<String> {
+        let bin = self
+            .bin
+            .as_deref()
+            .ok_or("setup needs the Linux build: cell apply ... --bin PATH")?;
+        let file =
+            std::env::temp_dir().join(format!("cell-{}-{}.json", cell.name, std::process::id()));
+        std::fs::write(&file, cell.canonical())?;
+        Ssh::put(vm, bin, "/tmp/cell")?;
+        let sent = Ssh::put(vm, &file, "/tmp/cell.json");
+        let _ = std::fs::remove_file(&file);
+        sent?;
+        Ssh::vm(vm, "sudo /tmp/cell setup /tmp/cell.json")
+    }
+
+    fn knock(&self, vm: &str, said: &Said) -> Fallible<u64> {
+        let out = Ssh::vm_in(
+            vm,
+            &format!(
+                "sudo {} knock --inbox {}",
+                crate::wall::BIN,
+                crate::wall::INBOX
+            ),
+            &serde_json::to_vec(said)?,
+        )?;
+        Ok(out.trim().parse()?)
+    }
+}
+
 pub fn observe(vms: &[Vm], ints: &[Integration]) -> Observed {
     let mut out = Observed::default();
     for vm in vms {
@@ -156,14 +305,54 @@ pub fn observe(vms: &[Vm], ints: &[Integration]) -> Observed {
     out
 }
 
+/// The key on its first line, then the statements as the shell glob gave
+/// them: in name order, where 10 comes before 2. Put in sequence here, so
+/// that the verifier's order check speaks of gaps and nothing else.
+fn parse_log(raw: &str) -> Fallible<Option<(Key, Vec<Statement>)>> {
+    let Some((key, rest)) = raw.split_once('\n') else {
+        return Ok(None);
+    };
+    let key: Key = key.parse()?;
+    let mut log = serde_json::Deserializer::from_str(rest)
+        .into_iter::<Statement>()
+        .collect::<Result<Vec<_>, _>>()?;
+    log.sort_by_key(|s| s.seq);
+    Ok(Some((key, log)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::said::Secret;
+
+    #[test]
+    fn a_log_in_name_order_is_put_in_sequence() {
+        let secret = Secret::generate();
+        let name: Name = "a".parse().unwrap();
+        let said = Said::Session {
+            name: "s".parse().unwrap(),
+            harness: Harness::Claude,
+            state: crate::said::State::Idle,
+            text: None,
+        };
+        let mut raw = format!("{}\n", secret.public());
+        for seq in [1, 10, 11, 2, 3, 4, 5, 6, 7, 8, 9] {
+            let s = Statement::sign(&secret, name.clone(), seq, said.clone());
+            raw.push_str(&serde_json::to_string(&s).unwrap());
+            raw.push('\n');
+        }
+        let (key, log) = parse_log(&raw).unwrap().unwrap();
+        assert!(key == secret.public());
+        let seqs: Vec<u64> = log.iter().map(|s| s.seq).collect();
+        assert_eq!(seqs, (1..=11).collect::<Vec<_>>());
+        assert!(parse_log("").unwrap().is_none());
+    }
 
     const VMS: &str = r#"{"vms":[
       {"vm_name":"airo-dev","tags":["box","cell-airo"],"status":"running"},
-      {"vm_name":"scratch","status":"running"},
-      {"vm_name":"Bad Name","tags":[],"status":"running"}
+      {"vm_name":"scratch","tags":["cell-scratch"],"status":"running"},
+      {"vm_name":"plain","tags":["box"],"status":"running"},
+      {"vm_name":"odd","tags":["cell-Bad Name"],"status":"running"}
     ]}"#;
     const INTS: &str = r#"[
       {"name":"gh-airo-dev","type":"github","attachments":["vm:airo-dev"],"config":{"repositories":["elsehow/airo","forecastingresearch/AIRO"],"installation_id":1}},
@@ -184,8 +373,14 @@ mod tests {
         assert_eq!(
             seen.cells.len(),
             2,
-            "a VM whose name is not a Name is not a cell"
+            "a VM without a cell tag is not a cell, nor one whose tag is not a name"
         );
+        assert_eq!(
+            vm_of(&vms.vms, &"airo".parse().unwrap()).unwrap().vm_name,
+            "airo-dev",
+            "the root may be a VM of another name, adopted by tag"
+        );
+        assert!(vm_of(&vms.vms, &"plain".parse().unwrap()).is_none());
         let airo: Name = "airo".parse().unwrap();
         let want: Cell = serde_json::from_str(
             r#"{"name":"airo","grants":[{"agent":"codex"},{"code":{"repo":"elsehow/airo","write":true}},{"code":{"repo":"forecastingresearch/airo","write":true}},{"code":{"repo":"o/r","write":false}}]}"#,

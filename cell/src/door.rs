@@ -13,6 +13,7 @@
 //! the inbox, and touches nothing else.
 
 use crate::cell::Cell;
+use crate::log::next_number;
 use crate::prim::Name;
 use crate::said::Said;
 use serde::{Deserialize, Serialize};
@@ -27,12 +28,25 @@ use std::time::Duration;
 /// The header exe.dev sets on a peer request, naming the calling VM.
 pub const SOURCE_HEADER: &str = "x-exedev-source-vm";
 
-/// What the inbox holds: who knocked, and what they said.
+/// What the inbox holds: who knocked, and what they said. A knock through
+/// the door names the parent cell the platform vouched for; one without a
+/// name came from root over ssh, which is to say from you.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Knock {
-    pub from: Name,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<Name>,
     pub said: Said,
+}
+
+/// File a knock as the next `<n>.json` in the inbox, atomically.
+pub fn file_knock(inbox: &Path, knock: &Knock) -> io::Result<u64> {
+    let n = next_number(inbox)?;
+    let bytes = serde_json::to_vec(knock).map_err(io::Error::other)?;
+    let tmp = inbox.join(format!("{n}.tmp"));
+    fs::write(&tmp, &bytes)?;
+    fs::rename(&tmp, inbox.join(format!("{n}.json")))?;
+    Ok(n)
 }
 
 #[derive(Debug, Clone)]
@@ -197,7 +211,14 @@ impl Door {
                 let Ok(said) = serde_json::from_slice::<Said>(&body) else {
                     return refuse(client, Refusal::Malformed, &shown);
                 };
-                self.file(client, Knock { from, said }, &shown)
+                self.file(
+                    client,
+                    Knock {
+                        from: Some(from),
+                        said,
+                    },
+                    &shown,
+                )
             }
             ("GET" | "POST", _) => refuse(client, Refusal::NotFound, &shown),
             _ => refuse(client, Refusal::Method, &shown),
@@ -236,19 +257,9 @@ impl Door {
         if !takes {
             return refuse(client, Refusal::NotForUs, shown);
         }
-        let n = match next_number(&self.inbox) {
-            Ok(n) => n,
-            Err(_) => return refuse(client, Refusal::Malformed, shown),
-        };
-        let bytes = serde_json::to_vec(&knock).expect("a knock serializes");
-        let path = self.inbox.join(format!("{n}.json"));
-        let tmp = self.inbox.join(format!("{n}.tmp"));
-        if fs::write(&tmp, &bytes)
-            .and_then(|()| fs::rename(&tmp, &path))
-            .is_err()
-        {
+        let Ok(n) = file_knock(&self.inbox, &knock) else {
             return refuse(client, Refusal::Malformed, shown);
-        }
+        };
         let mut client = client;
         let _ = client
             .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -293,21 +304,4 @@ fn refuse(mut client: TcpStream, why: Refusal, shown: &str) -> (String, Outcome)
     );
     let _ = client.shutdown(Shutdown::Both);
     (shown.to_string(), Outcome::Refused(why))
-}
-
-/// The next free number in a directory of `<n>.json`.
-pub fn next_number(dir: &Path) -> io::Result<u64> {
-    let mut last = 0u64;
-    for entry in fs::read_dir(dir)? {
-        let name = entry?.file_name();
-        if let Some(n) = name
-            .to_string_lossy()
-            .strip_suffix(".json")
-            .and_then(|s| s.parse::<u64>().ok())
-        {
-            last = last.max(n);
-        }
-    }
-    last.checked_add(1)
-        .ok_or_else(|| io::Error::other("numbers exhausted"))
 }

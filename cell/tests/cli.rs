@@ -247,9 +247,11 @@ fn tree_allow_plan_and_observe() {
         out(&a).lines().collect::<Vec<_>>(),
         [
             "api.anthropic.com",
+            "claude.ai",
             "codex.int.exe.xyz",
             "files.pythonhosted.org",
             "github.int.exe.xyz",
+            "platform.claude.com",
             "pypi.org"
         ]
     );
@@ -272,16 +274,12 @@ fn tree_allow_plan_and_observe() {
         serde_json::json!({"airo": ["airo-scratch"]})
     );
     assert!(
-        observed["cells"].get("svc-1").is_some(),
-        "every nameable VM is observed, with whatever it has"
+        observed["cells"].get("svc-1").is_none()
+            && observed["cells"].get("agent-box-dev").is_none(),
+        "a VM without a cell tag is not a cell: {}",
+        observed["cells"]
     );
-    assert_eq!(
-        observed["cells"]["svc-1"]["grants"]
-            .as_array()
-            .unwrap()
-            .len(),
-        0
-    );
+    assert_eq!(observed["cells"].as_object().unwrap().len(), 2);
     let have = write(&d, "have.json", &observed.to_string());
 
     let dir = cells.to_str().unwrap();
@@ -289,7 +287,7 @@ fn tree_allow_plan_and_observe() {
     assert!(p.status.success(), "{}", err(&p));
     let plan: serde_json::Value = serde_json::from_str(&out(&p)).unwrap();
     assert_eq!(
-        plan["actions"],
+        plan["airo"]["actions"],
         serde_json::json!(["setup"]),
         "edge and door match; only the box needs the file: {plan}"
     );
@@ -302,7 +300,7 @@ fn tree_allow_plan_and_observe() {
     assert!(p.status.success(), "{}", err(&p));
     let plan: serde_json::Value = serde_json::from_str(&out(&p)).unwrap();
     assert_eq!(
-        plan["actions"],
+        plan["airo"]["actions"],
         serde_json::json!([{"close": "airo-scratch"}, "setup"]),
         "{plan}"
     );
@@ -312,7 +310,7 @@ fn tree_allow_plan_and_observe() {
     let p = run(&["plan", dir, "forecasting", "--have", &have], "");
     assert!(p.status.success(), "{}", err(&p));
     let plan: serde_json::Value = serde_json::from_str(&out(&p)).unwrap();
-    let actions = plan["actions"].as_array().unwrap();
+    let actions = plan["forecasting"]["actions"].as_array().unwrap();
     assert_eq!(actions[0], "create");
     assert!(
         actions.contains(&serde_json::json!({"open": "airo"})),
@@ -320,9 +318,101 @@ fn tree_allow_plan_and_observe() {
     );
     assert_eq!(actions.last().unwrap(), "setup");
 
+    // the whole tree at once, under one hash
+    let p = run(&["plan", dir, "--have", &have], "");
+    assert!(p.status.success(), "{}", err(&p));
+    let plan: serde_json::Value = serde_json::from_str(&out(&p)).unwrap();
+    assert_eq!(plan.as_object().unwrap().len(), 2, "{plan}");
+    assert_eq!(plan["forecasting"]["actions"][0], "create");
+    assert_eq!(
+        plan["airo"]["actions"],
+        serde_json::json!([{"close": "airo-scratch"}, "setup"])
+    );
+
+    let p = run(&["apply", dir, "--approve", "00"], "");
+    assert!(!p.status.success());
+
     let p = run(&["plan", dir, "nobody", "--have", &have], "");
     assert!(!p.status.success());
     assert!(err(&p).contains("nobody: not in the tree"), "{}", err(&p));
+}
+
+#[test]
+fn the_agent_speaks_through_the_outbox() {
+    let d = tmp("ship");
+    let outbox = d.join("outbox");
+    let said = d.join("said");
+    fs::create_dir_all(&outbox).unwrap();
+    fs::create_dir_all(&said).unwrap();
+    let cell = write(
+        &d,
+        "cell.json",
+        r#"{"name":"a","grants":[{"agent":"claude"}]}"#,
+    );
+    let secret = d.join("secret");
+    let k = run(&["key", "new", secret.to_str().unwrap()], "");
+    let key = out(&k).trim().to_string();
+    write(
+        &outbox,
+        "q.json",
+        r#"{"session":{"name":"s","harness":"claude","state":"question","text":"merge?"}}"#,
+    );
+    write(
+        &outbox,
+        "x.json",
+        r#"{"checked":{"cell":"0000000000000000000000000000000000000000000000000000000000000000","ok":true,"report":""}}"#,
+    );
+    let args = [
+        "ship",
+        "--cell",
+        &cell,
+        "--secret",
+        secret.to_str().unwrap(),
+        "--outbox",
+        outbox.to_str().unwrap(),
+        "--said",
+        said.to_str().unwrap(),
+        "--once",
+    ];
+    let s = run(&args, "");
+    assert!(s.status.success(), "{}", err(&s));
+    assert_eq!(
+        out(&s).lines().collect::<Vec<_>>(),
+        [
+            "q.json -> 1",
+            "x.json refused: only the wall check says checked"
+        ]
+    );
+    assert!(outbox.join("q.1").exists());
+    assert!(outbox.join("x.refused").exists());
+    let statement = fs::read_to_string(said.join("1.json")).unwrap();
+    let o = run(&["open", &key], &statement);
+    assert!(o.status.success(), "{}", err(&o));
+    assert!(out(&o).contains(r#""text":"merge?""#), "{}", out(&o));
+    let s = run(&args, "");
+    assert!(
+        s.status.success() && out(&s).is_empty(),
+        "nothing left to ship"
+    );
+}
+
+#[test]
+fn a_knock_from_root_has_no_name() {
+    let d = tmp("knock");
+    let inbox = d.join("inbox");
+    fs::create_dir_all(&inbox).unwrap();
+    let k = run(
+        &["knock", "--inbox", inbox.to_str().unwrap()],
+        r#"{"brief":{"to":"a","session":"s","text":"go"}}"#,
+    );
+    assert!(k.status.success(), "{}", err(&k));
+    assert_eq!(out(&k).trim(), "1");
+    let filed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(inbox.join("1.json")).unwrap()).unwrap();
+    assert!(filed.get("from").is_none(), "{filed}");
+    assert_eq!(filed["said"]["brief"]["text"], "go");
+    let k = run(&["knock", "--inbox", inbox.to_str().unwrap()], "junk");
+    assert!(!k.status.success());
 }
 
 #[test]

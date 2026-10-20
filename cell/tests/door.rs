@@ -125,7 +125,7 @@ fn a_vouched_brief_or_reply_is_filed_and_nothing_else_is() {
     assert_eq!(status, "HTTP/1.1 202 Accepted");
     let filed: Knock =
         serde_json::from_str(&fs::read_to_string(d.join("inbox/1.json")).unwrap()).unwrap();
-    assert_eq!(filed.from.as_str(), "parent");
+    assert_eq!(filed.from.unwrap().as_str(), "parent");
     assert_eq!(filed.said, serde_json::from_str::<Said>(brief).unwrap());
 
     let reply = format!(

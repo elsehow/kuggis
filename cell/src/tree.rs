@@ -147,6 +147,17 @@ impl Tree {
         self.under.get(name).and_then(|p| self.cells.get(p))
     }
 
+    /// How many cells sit above this one; the human's own are at 0.
+    pub fn depth(&self, name: &Name) -> usize {
+        let mut depth = 0;
+        let mut cur = name;
+        while let Some(p) = self.under.get(cur) {
+            depth += 1;
+            cur = p;
+        }
+        depth
+    }
+
     pub fn children<'a>(&'a self, name: &'a Name) -> impl Iterator<Item = &'a Cell> + 'a {
         self.under
             .iter()

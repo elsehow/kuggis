@@ -28,7 +28,7 @@ impl std::error::Error for Invalid {}
 /// take one of these as its name.
 pub const RESERVED: &[&str] = &[
     "cell", "key", "say", "open", "allow", "tree", "plan", "observe", "proxy", "setup", "check",
-    "probe", "door", "help",
+    "probe", "door", "help", "apply", "adopt", "ship", "knock", "brief", "pull", "run", "login",
 ];
 
 macro_rules! text {
@@ -297,6 +297,15 @@ digest!(
 
 impl Hash {
     pub const ZERO: Hash = Hash([0; 32]);
+
+    pub fn is_zero(&self) -> bool {
+        *self == Hash::ZERO
+    }
+
+    /// For serde: an old `Checked` carries no `binary`.
+    pub fn zero() -> Hash {
+        Hash::ZERO
+    }
 
     pub fn of(bytes: &[u8]) -> Hash {
         Hash(Sha256::digest(bytes).into())

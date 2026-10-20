@@ -2,8 +2,10 @@
 //! hosts the proxy may tunnel to, and some imply an exe.dev attachment that
 //! holds the credential at the edge.
 
+use crate::canon;
 use crate::prim::{Host, Name, Repo};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// An agent harness a cell may run, signed in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -30,8 +32,22 @@ pub enum Grant {
     Host(Host),
 }
 
-/// Where Claude Code talks.
-pub const ANTHROPIC: &str = "api.anthropic.com";
+impl fmt::Display for Harness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        canon::display(self, f)
+    }
+}
+
+impl fmt::Display for Grant {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        canon::display(self, f)
+    }
+}
+
+/// Where Claude Code talks: the API, and the two hosts its sign-in needs.
+/// Everything else it would reach, the updater, claude.ai connectors,
+/// telemetry, stays behind the wall.
+pub const CLAUDE_HOSTS: [&str; 3] = ["api.anthropic.com", "claude.ai", "platform.claude.com"];
 /// exe.dev's edge for the Codex integration named `codex`.
 pub const CODEX_EDGE: &str = "codex.int.exe.xyz";
 /// exe.dev's GitHub edge; one hostname for every repo integration.
@@ -42,14 +58,14 @@ pub const EDGE_SUFFIX: &str = ".int.exe.xyz";
 impl Grant {
     /// The hosts this grant lets the proxy tunnel to.
     pub fn hosts(&self) -> Vec<Host> {
-        let fixed = |s: &str| vec![s.parse().expect("constant host")];
+        let fixed = |s: &str| -> Host { s.parse().expect("constant host") };
         match self {
-            Grant::Agent(Harness::Claude) => fixed(ANTHROPIC),
-            Grant::Agent(Harness::Codex) => fixed(CODEX_EDGE),
+            Grant::Agent(Harness::Claude) => CLAUDE_HOSTS.iter().map(|h| fixed(h)).collect(),
+            Grant::Agent(Harness::Codex) => vec![fixed(CODEX_EDGE)],
             Grant::Agent(Harness::Pi) => vec![],
-            Grant::Code { .. } => fixed(GITHUB_EDGE),
+            Grant::Code { .. } => vec![fixed(GITHUB_EDGE)],
             Grant::Vault => vec![],
-            Grant::Edge(name) => fixed(&format!("{name}{EDGE_SUFFIX}")),
+            Grant::Edge(name) => vec![fixed(&format!("{name}{EDGE_SUFFIX}"))],
             Grant::Host(h) => vec![h.clone()],
         }
     }
@@ -103,7 +119,12 @@ mod tests {
 
     #[test]
     fn hosts_are_fixed_per_grant() {
-        assert_eq!(Grant::Agent(Harness::Claude).hosts()[0].as_str(), ANTHROPIC);
+        let claude: Vec<String> = Grant::Agent(Harness::Claude)
+            .hosts()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(claude, CLAUDE_HOSTS);
         assert_eq!(
             Grant::Edge("brave".parse().unwrap()).hosts()[0].as_str(),
             "brave.int.exe.xyz"

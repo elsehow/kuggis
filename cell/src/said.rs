@@ -8,6 +8,7 @@ use crate::grant::Harness;
 use crate::prim::{hex_bytes, hex_string, Commit, Hash, Invalid, Name, Repo, Url};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::str::FromStr;
 
@@ -61,11 +62,17 @@ pub enum Said {
         head: Commit,
         pass: bool,
     },
-    /// The wall check from inside, and which cell the box is running.
+    /// The wall check from inside: which cell the box is running, under
+    /// which build, and which harnesses have a credential on the box.
+    /// Codex's credential is the edge's, so it never appears in `signed`.
     Checked {
         cell: Hash,
         ok: bool,
         report: String,
+        #[serde(default = "Hash::zero", skip_serializing_if = "Hash::is_zero")]
+        binary: Hash,
+        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        signed: BTreeSet<Harness>,
     },
     /// An answer to a statement that waited, bound to its hash. You say
     /// this over ssh; a parent says it through the door.
@@ -73,6 +80,12 @@ pub enum Said {
         of: Hash,
         body: Result<String, String>,
     },
+}
+
+impl fmt::Display for Said {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        canon::display(self, f)
+    }
 }
 
 impl Said {

@@ -12,10 +12,12 @@
 //! agent, and signs what it saw.
 
 use crate::cell::Cell;
-use crate::grant::EDGE_SUFFIX;
+use crate::grant::{Harness, EDGE_SUFFIX};
+use crate::log;
 use crate::prim::Hash;
-use crate::said::{Said, Secret, Statement};
+use crate::said::{Said, Secret, State, Statement};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
@@ -24,15 +26,30 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
 use std::time::Duration;
 
 pub const ETC: &str = "/etc/cell";
 pub const SAID: &str = "/var/lib/cell/said";
 pub const BIN: &str = "/usr/local/bin/cell";
 pub const INBOX: &str = "/var/lib/cell/inbox";
+/// Where the agent drops what it wants said; the shipper signs it.
+pub const OUTBOX: &str = "/var/lib/cell/outbox";
 pub const AGENT: &str = "agent";
 pub const PROXY_USER: &str = "cell-proxy";
 pub const DOOR_USER: &str = "cell-door";
+/// Owns the key and the log; the only user besides root that can sign.
+pub const SAY_USER: &str = "cell-say";
+/// The agent's home, where the adapter keeps its work and its sessions.
+pub const AGENT_HOME: &str = "/home/agent";
+/// Where the harness binary goes, root-owned, for the agent to run.
+pub const CLAUDE_BIN: &str = "/usr/local/bin/claude";
+/// Claude Code behind the wall: no updater, since the binary is root's; no
+/// claude.ai connectors, since the account's services are not the cell's;
+/// no optional telemetry. The wall refuses those roads anyway; this keeps
+/// the harness from trying them.
+pub const CLAUDE_ENV: &str =
+    "DISABLE_AUTOUPDATER=1 ENABLE_CLAUDEAI_MCP_SERVERS=false CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1";
 pub const PROXY_ADDR: &str = "127.0.0.1:3128";
 /// Where exe.dev's in-VM auth proxy delivers the VM's web traffic, peer
 /// knocks included, from loopback.
@@ -152,6 +169,72 @@ WantedBy=multi-user.target
     )
 }
 
+/// Claude Code, installed by root with root's open internet, then copied
+/// where the agent can run it and nobody can change it. The agent cannot
+/// update it: its only road is the proxy.
+fn install_claude() -> Fallible {
+    if Path::new(CLAUDE_BIN).exists() {
+        return Ok(());
+    }
+    run(
+        "bash",
+        &["-c", "curl -fsSL https://claude.ai/install.sh | bash"],
+    )?;
+    let installed = run("readlink", &["-f", "/root/.local/bin/claude"])?;
+    let tmp = format!("{CLAUDE_BIN}.tmp");
+    fs::copy(installed.trim(), &tmp)?;
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))?;
+    fs::rename(&tmp, CLAUDE_BIN)?;
+    Ok(())
+}
+
+fn agent_unit() -> String {
+    format!(
+        "[Unit]
+Description=cell agent: runs the harness on what the inbox brings
+After=cell-say.service
+
+[Service]
+User={AGENT}
+WorkingDirectory={AGENT_HOME}
+Environment=HOME={AGENT_HOME}
+Environment=HTTPS_PROXY=http://{PROXY_ADDR} HTTP_PROXY=http://{PROXY_ADDR} NO_PROXY=
+Environment=https_proxy=http://{PROXY_ADDR} http_proxy=http://{PROXY_ADDR} no_proxy=
+Environment={CLAUDE_ENV}
+ExecStart={BIN} run --cell {ETC}/cell.json --inbox {INBOX} --outbox {OUTBOX} --home {AGENT_HOME}
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
+"
+    )
+}
+
+fn say_unit() -> String {
+    format!(
+        "[Unit]
+Description=cell say: signs what the agent drops in the outbox
+After=local-fs.target
+
+[Service]
+User={SAY_USER}
+ExecStart={BIN} ship --cell {ETC}/cell.json --secret {ETC}/secret --outbox {OUTBOX} --said {SAID}
+Restart=always
+RestartSec=1
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths={OUTBOX} {SAID}
+
+[Install]
+WantedBy=multi-user.target
+"
+    )
+}
+
 fn wall_unit() -> String {
     format!(
         "[Unit]
@@ -177,6 +260,7 @@ fn profile() -> String {
 if [ \"$(id -un)\" = {AGENT} ]; then
   export HTTPS_PROXY=http://{PROXY_ADDR} HTTP_PROXY=http://{PROXY_ADDR} NO_PROXY=
   export https_proxy=$HTTPS_PROXY http_proxy=$HTTP_PROXY no_proxy=
+  export {CLAUDE_ENV}
 fi
 "
     )
@@ -191,39 +275,44 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
     fs::create_dir_all(ETC)?;
     fs::create_dir_all(SAID)?;
     fs::create_dir_all(INBOX)?;
+    fs::create_dir_all(OUTBOX)?;
 
-    for (user, args) in [
-        (
-            PROXY_USER,
-            vec![
-                "--system",
-                "--no-create-home",
-                "--shell",
-                "/usr/sbin/nologin",
-            ],
-        ),
-        (
-            DOOR_USER,
-            vec![
-                "--system",
-                "--no-create-home",
-                "--shell",
-                "/usr/sbin/nologin",
-            ],
-        ),
-        (AGENT, vec!["--create-home", "--shell", "/bin/bash"]),
-    ] {
+    let system = [
+        "--system",
+        "--no-create-home",
+        "--shell",
+        "/usr/sbin/nologin",
+    ];
+    for user in [PROXY_USER, DOOR_USER, SAY_USER] {
         if !user_exists(user) {
-            let mut a = args.clone();
-            a.push(user);
-            run("useradd", &a)?;
+            run("useradd", &[&system[..], &[user]].concat())?;
         }
+    }
+    if !user_exists(AGENT) {
+        run("useradd", &["--create-home", "--shell", "/bin/bash", AGENT])?;
     }
     for group in ["sudo", "admin", "wheel", "docker", "adm"] {
         let _ = attempt("gpasswd", &["-d", AGENT, group]);
     }
     run("chown", &[&format!("{DOOR_USER}:{DOOR_USER}"), INBOX])?;
     fs::set_permissions(INBOX, fs::Permissions::from_mode(0o755))?;
+    // the log and its lock are the shipper's; root appends as root
+    let lock = Path::new(SAID).join(log::LOCK);
+    if !lock.exists() {
+        write_as_root(&lock, b"", 0o644)?;
+    }
+    run(
+        "chown",
+        &[
+            &format!("{SAY_USER}:{SAY_USER}"),
+            SAID,
+            &lock.to_string_lossy(),
+        ],
+    )?;
+    fs::set_permissions(SAID, fs::Permissions::from_mode(0o755))?;
+    // the agent drops, the shipper takes: both may write, nobody else
+    run("chown", &[&format!("{SAY_USER}:{AGENT}"), OUTBOX])?;
+    fs::set_permissions(OUTBOX, fs::Permissions::from_mode(0o775))?;
 
     let me = std::env::current_exe()?;
     if me != Path::new(BIN) {
@@ -242,6 +331,20 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
             0o600,
         )?;
     }
+    run(
+        "chown",
+        &[
+            &format!("{SAY_USER}:{SAY_USER}"),
+            &secret_path.to_string_lossy(),
+        ],
+    )?;
+    fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o600))?;
+    let secret: Secret = fs::read_to_string(&secret_path)?.parse()?;
+    write_as_root(
+        &etc("key.pub"),
+        format!("{}\n", secret.public()).as_bytes(),
+        0o644,
+    )?;
     write_as_root(&etc("wall.nft"), wall_nft().as_bytes(), 0o644)?;
     write_as_root(
         Path::new("/etc/systemd/system/cell-proxy.service"),
@@ -251,6 +354,19 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
     write_as_root(
         Path::new("/etc/systemd/system/cell-door.service"),
         door_unit().as_bytes(),
+        0o644,
+    )?;
+    write_as_root(
+        Path::new("/etc/systemd/system/cell-say.service"),
+        say_unit().as_bytes(),
+        0o644,
+    )?;
+    if cell.harnesses().contains(&Harness::Claude) {
+        install_claude()?;
+    }
+    write_as_root(
+        Path::new("/etc/systemd/system/cell-agent.service"),
+        agent_unit().as_bytes(),
         0o644,
     )?;
     write_as_root(
@@ -267,8 +383,9 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
     run("systemctl", &["daemon-reload"])?;
     run("systemctl", &["enable", "--now", "cell-wall"])?;
     run("nft", &["-f", &etc("wall.nft").to_string_lossy()])?;
-    run("systemctl", &["enable", "cell-proxy", "cell-door"])?;
-    run("systemctl", &["restart", "cell-proxy", "cell-door"])?;
+    let units = ["cell-proxy", "cell-door", "cell-say", "cell-agent"];
+    run("systemctl", &[&["enable"][..], &units].concat())?;
+    run("systemctl", &[&["restart"][..], &units].concat())?;
     std::thread::sleep(Duration::from_millis(300));
 
     check()
@@ -450,6 +567,84 @@ fn write_file(name: &str, path: &Path) -> Probe {
     }
 }
 
+/// Try to make a file in a directory.
+fn create_in(name: &str, dir: &str) -> Probe {
+    let path = Path::new(dir).join(format!(".probe-{}", std::process::id()));
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(&path);
+            Probe::new(name, "refused", "writable", "")
+        }
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+            Probe::new(name, "refused", "refused", "")
+        }
+        Err(e) => Probe::new(name, "refused", "refused", e.to_string()),
+    }
+}
+
+/// Drop a Said in the outbox the way the agent does, tmp then rename, and
+/// wait for the shipper's answer: a receipt naming a sequence number, or a
+/// refusal with its reason. Cleans up after itself.
+fn drop_in_outbox(stem: &str, body: &str) -> Result<Result<u64, String>, String> {
+    let at = |ext: &str| Path::new(OUTBOX).join(format!("{stem}.{ext}"));
+    fs::write(at("tmp"), body)
+        .and_then(|()| fs::rename(at("tmp"), at("json")))
+        .map_err(|e| e.to_string())?;
+    for _ in 0..50 {
+        thread::sleep(Duration::from_millis(100));
+        if let Ok(why) = fs::read_to_string(at("refused")) {
+            let _ = fs::remove_file(at("refused"));
+            return Ok(Err(why.trim().to_string()));
+        }
+        let receipt = fs::read_dir(OUTBOX)
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .filter_map(|e| e.file_name().into_string().ok())
+            .find_map(|n| n.strip_prefix(&format!("{stem}."))?.parse::<u64>().ok());
+        if let Some(seq) = receipt {
+            let _ = fs::remove_file(at(&seq.to_string()));
+            return Ok(Ok(seq));
+        }
+    }
+    Err("no answer in 5 s".into())
+}
+
+fn voice(cell: Option<&Cell>) -> Probe {
+    let name = "the voice: a session statement through the outbox";
+    let Some(harness) = cell.and_then(|c| c.harnesses().into_iter().next()) else {
+        return Probe::new(name, "none", "none", "the cell runs no harness");
+    };
+    let said = Said::Session {
+        name: "wall-check".parse().expect("a name"),
+        harness,
+        state: State::Idle,
+        text: Some("the agent can speak".into()),
+    };
+    let body = serde_json::to_string(&said).expect("a Said serializes");
+    match drop_in_outbox(&format!("probe-{}-voice", std::process::id()), &body) {
+        Ok(Ok(seq)) => Probe::new(name, "signed", "signed", format!("seq {seq}")),
+        Ok(Err(why)) => Probe::new(name, "signed", "refused", why),
+        Err(e) => Probe::new(name, "signed", "unanswered", e),
+    }
+}
+
+fn forge() -> Probe {
+    let name = "the voice: a forged wall check";
+    let body = format!(
+        r#"{{"checked":{{"cell":"{}","ok":true,"report":"forged"}}}}"#,
+        "0".repeat(64)
+    );
+    match drop_in_outbox(&format!("probe-{}-forge", std::process::id()), &body) {
+        Ok(Err(why)) => Probe::new(name, "refused", "refused", why),
+        Ok(Ok(seq)) => Probe::new(name, "refused", "signed", format!("seq {seq}")),
+        Err(e) => Probe::new(name, "refused", "unanswered", e),
+    }
+}
+
 fn command(name: &str, cmd: &str, args: &[&str]) -> Probe {
     let (ok, out) = attempt(cmd, args);
     let line = out
@@ -496,6 +691,11 @@ pub fn probe() -> Vec<Probe> {
             "example.com:443",
             "refused",
         ),
+        via_proxy(
+            "proxy: the account's claude.ai connectors",
+            "mcp-proxy.anthropic.com:443",
+            "refused",
+        ),
         via_proxy("proxy: an address literal", "1.1.1.1:443", "refused"),
         via_proxy(
             "proxy: an allowed host on port 80",
@@ -516,7 +716,8 @@ pub fn probe() -> Vec<Probe> {
         unix("snapd's socket", "/run/snapd.socket"),
         read_file("read the signing key", &etc("secret")),
         write_file("write the cell file", &etc("cell.json")),
-        write_file("write the inbox", Path::new(INBOX)),
+        create_in("write the inbox", INBOX),
+        create_in("write the log", SAID),
         write_file("write the wall", &etc("wall.nft")),
         write_file(
             "write the proxy unit",
@@ -525,6 +726,8 @@ pub fn probe() -> Vec<Probe> {
         command("sudo", "sudo", &["-n", "true"]),
         command("stop the proxy", "systemctl", &["stop", "cell-proxy"]),
         command("read the firewall", "nft", &["list", "ruleset"]),
+        voice(cell.as_ref()),
+        forge(),
     ];
     match allowed_host {
         Some(h) => {
@@ -592,7 +795,14 @@ pub fn check() -> Fallible<Statement> {
         },
         groups.trim(),
     ));
-    for unit in ["cell-proxy", "cell-door"] {
+    let (_, owner) = attempt("stat", &["-c", "%U:%a", &etc("secret").to_string_lossy()]);
+    probes.push(Probe::new(
+        "root: the key's owner and mode",
+        &format!("{SAY_USER}:600"),
+        owner.trim(),
+        "",
+    ));
+    for unit in ["cell-proxy", "cell-door", "cell-say", "cell-agent"] {
         let (active, _) = attempt("systemctl", &["is-active", "--quiet", unit]);
         probes.push(Probe::new(
             &format!("root: {unit} service"),
@@ -624,39 +834,34 @@ pub fn check() -> Fallible<Statement> {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let seq = next_seq()?;
-    let statement = Statement::sign(
+    let statement = log::append(
+        Path::new(SAID),
         &secret,
         cell.name.clone(),
-        seq,
         Said::Checked {
             cell: hash,
             ok,
             report,
+            binary: Hash::of(&fs::read(BIN)?),
+            signed: signed_in(),
         },
-    );
-    write_as_root(
-        &Path::new(SAID).join(format!("{seq}.json")),
-        serde_json::to_string(&statement)?.as_bytes(),
-        0o644,
     )?;
     Ok(statement)
 }
 
-fn next_seq() -> Fallible<u64> {
-    let mut last = 0u64;
-    for entry in fs::read_dir(SAID)? {
-        let name = entry?.file_name();
-        if let Some(n) = name
-            .to_string_lossy()
-            .strip_suffix(".json")
-            .and_then(|s| s.parse::<u64>().ok())
-        {
-            last = last.max(n);
-        }
-    }
-    last.checked_add(1)
-        .ok_or_else(|| "sequence exhausted".into())
+/// Where each harness keeps its credential on the box. Claude Code writes
+/// its OAuth tokens here on Linux. Codex keeps none on the box: its
+/// credential is the edge's, so attachment there is its sign-in. Pi
+/// borrows whichever is present.
+const CREDENTIALS: &[(Harness, &str)] =
+    &[(Harness::Claude, "/home/agent/.claude/.credentials.json")];
+
+fn signed_in() -> BTreeSet<Harness> {
+    CREDENTIALS
+        .iter()
+        .filter(|(_, path)| fs::metadata(path).is_ok_and(|m| m.len() > 0))
+        .map(|(h, _)| *h)
+        .collect()
 }
 
 #[cfg(test)]
@@ -681,6 +886,10 @@ mod tests {
     fn the_proxy_runs_unprivileged_and_the_agent_is_pointed_at_it() {
         assert!(proxy_unit().contains("User=cell-proxy"));
         assert!(proxy_unit().contains("NoNewPrivileges=yes"));
+        assert!(say_unit().contains("User=cell-say"));
+        assert!(agent_unit().contains("User=agent"));
+        assert!(agent_unit().contains("Environment=HTTPS_PROXY=http://127.0.0.1:3128"));
+        assert!(say_unit().contains("ReadWritePaths=/var/lib/cell/outbox /var/lib/cell/said"));
         assert!(profile().contains("HTTPS_PROXY=http://127.0.0.1:3128"));
         assert!(profile().contains("= agent ]"));
     }

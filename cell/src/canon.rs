@@ -8,3 +8,8 @@ use serde::Serialize;
 pub fn bytes<T: Serialize>(v: &T) -> Vec<u8> {
     serde_json::to_vec(v).expect("core types always serialize")
 }
+
+/// Display a value as its JSON, for errors and logs.
+pub fn display<T: Serialize>(v: &T, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(&serde_json::to_string(v).expect("core types always serialize"))
+}

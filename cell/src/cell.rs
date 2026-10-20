@@ -116,8 +116,10 @@ mod tests {
             [
                 "api.anthropic.com",
                 "brave.int.exe.xyz",
+                "claude.ai",
                 "codex.int.exe.xyz",
                 "github.int.exe.xyz",
+                "platform.claude.com",
                 "pypi.org"
             ]
         );
