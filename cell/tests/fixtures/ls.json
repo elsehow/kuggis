@@ -1,0 +1,6 @@
+{"vms":[
+ {"vm_name":"airo-dev","tags":["box","cell:airo"],"status":"running","comment":"box:elsehow/airo"},
+ {"vm_name":"agent-box-dev","tags":["box"],"status":"running"},
+ {"vm_name":"airo-scratch","tags":["cell:airo-scratch"],"status":"running"},
+ {"vm_name":"svc-1","tags":["svc"],"status":"running"}
+]}
