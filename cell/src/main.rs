@@ -30,6 +30,12 @@ usage:
                                   cells and doors
   cell proxy --listen ADDR --cell CELLFILE [--private-ok]
                                   run the wall's proxy for that cell
+  cell setup CELLFILE             as root on a box: build the wall for that cell,
+                                  then check it and sign what was seen
+  cell check                      as root on a box: probe the wall as the agent,
+                                  sign the result as Checked, append it to the log
+  cell probe                      as the agent on a box: try everything it must
+                                  not be able to do; one JSON line per probe
 ";
 
 type Fallible = Result<(), Box<dyn Error>>;
@@ -53,6 +59,9 @@ fn run(args: &[String]) -> Fallible {
         Some("plan") => plan(rest),
         Some("observe") => observe(rest),
         Some("proxy") => proxy(rest),
+        Some("setup") => setup(rest),
+        Some("check") => checked(cell::wall::check()?),
+        Some("probe") => probe(),
         _ => {
             eprint!("{USAGE}");
             Err("no such command".into())
@@ -240,6 +249,38 @@ fn exe(args: &[&str]) -> Result<String, Box<dyn Error>> {
         .into());
     }
     Ok(String::from_utf8(out.stdout)?)
+}
+
+fn setup(args: &[String]) -> Fallible {
+    let path = Path::new(arg(args, 0, "CELLFILE")?);
+    checked(cell::wall::setup(path)?)
+}
+
+/// Print a Checked statement's report and where it was written.
+fn checked(statement: Statement) -> Fallible {
+    let secret: Secret = fs::read_to_string(Path::new(cell::wall::ETC).join("secret"))?.parse()?;
+    let Said::Checked { cell, ok, report } = statement.open(&secret.public())? else {
+        return Err("not a Checked statement".into());
+    };
+    println!("{report}");
+    println!(
+        "{}: cell {} on seq {}, key {}",
+        if *ok { "WALL OK" } else { "WALL BROKEN" },
+        cell,
+        statement.seq,
+        secret.public()
+    );
+    if !*ok {
+        return Err("the wall did not hold; see the report".into());
+    }
+    Ok(())
+}
+
+fn probe() -> Fallible {
+    for p in cell::wall::probe() {
+        println!("{}", serde_json::to_string(&p)?);
+    }
+    Ok(())
 }
 
 fn proxy(args: &[String]) -> Fallible {

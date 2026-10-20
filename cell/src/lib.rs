@@ -14,6 +14,7 @@ pub mod prim;
 pub mod proxy;
 pub mod said;
 pub mod tree;
+pub mod wall;
 
 pub use cell::Cell;
 pub use exe::Observed;

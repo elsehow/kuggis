@@ -2,7 +2,7 @@
 //! cells and doors. Only what the edge enforces is visible here. Grants the
 //! box enforces are reported by the box itself, in `Checked`.
 
-use crate::cell::Cell;
+use crate::cell::{Cell, TAG_PREFIX};
 use crate::grant::{Grant, Harness, EDGE_SUFFIX};
 use crate::prim::{Host, Name};
 use serde::{Deserialize, Serialize};
@@ -56,12 +56,12 @@ pub struct Integration {
 }
 
 impl Vm {
-    /// The cell this VM is, by its `cell:` tag, else by its name.
+    /// The cell this VM is, by its `cell-` tag, else by its name.
     pub fn cell_name(&self) -> Option<Name> {
         let tagged = self
             .tags
             .iter()
-            .find_map(|t| t.strip_prefix("cell:"))
+            .find_map(|t| t.strip_prefix(TAG_PREFIX))
             .and_then(|n| n.parse().ok());
         tagged.or_else(|| self.vm_name.parse().ok())
     }
@@ -161,18 +161,18 @@ mod tests {
     use super::*;
 
     const VMS: &str = r#"{"vms":[
-      {"vm_name":"airo-dev","tags":["box","cell:airo"],"status":"running"},
+      {"vm_name":"airo-dev","tags":["box","cell-airo"],"status":"running"},
       {"vm_name":"scratch","status":"running"},
       {"vm_name":"Bad Name","tags":[],"status":"running"}
     ]}"#;
     const INTS: &str = r#"[
       {"name":"gh-airo-dev","type":"github","attachments":["vm:airo-dev"],"config":{"repositories":["elsehow/airo","forecastingresearch/AIRO"],"installation_id":1}},
-      {"name":"gh-ro","type":"github","attachments":["tag:cell:airo"],"config":{"repositories":["o/r"],"readonly":true}},
-      {"name":"codex","type":"llm","attachments":["tag:cell:airo"],"config":{"providers":{"openai":{"enabled":true,"source":"chatgpt"}}}},
+      {"name":"gh-ro","type":"github","attachments":["tag:cell-airo"],"config":{"repositories":["o/r"],"readonly":true}},
+      {"name":"codex","type":"llm","attachments":["tag:cell-airo"],"config":{"providers":{"openai":{"enabled":true,"source":"chatgpt"}}}},
       {"name":"llm","type":"llm","attachments":["auto:all"],"config":{"providers":{"openai":{"enabled":true,"source":"managed"}}}},
       {"name":"brave","type":"brave","attachments":["vm:scratch"],"config":{}},
       {"name":"Odd Name","type":"exa","attachments":["vm:scratch"],"config":{}},
-      {"name":"door-scratch","type":"http-proxy","attachments":["tag:cell:airo"],"config":{"target":"https://scratch.exe.xyz/","peer":true}},
+      {"name":"door-scratch","type":"http-proxy","attachments":["tag:cell-airo"],"config":{"target":"https://scratch.exe.xyz/","peer":true}},
       {"name":"door-Nope","type":"http-proxy","attachments":["vm:scratch"],"config":{}}
     ]"#;
 

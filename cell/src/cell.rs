@@ -8,6 +8,9 @@
 
 use crate::canon;
 use crate::grant::{Grant, Harness};
+
+/// Prefix of the tag that marks a VM as a cell's root.
+pub const TAG_PREFIX: &str = "cell-";
 use crate::prim::{Hash, Host, Name};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -60,8 +63,9 @@ impl Cell {
     }
 
     /// The exe.dev tag that names this cell's VM; integrations attach to it.
+    /// exe.dev tags match `^[a-z][a-z0-9_-]*$`, so a prefix, not a scheme.
     pub fn tag(&self) -> String {
-        format!("cell:{}", self.name)
+        format!("{TAG_PREFIX}{}", self.name)
     }
 
     pub fn edge_grants(&self) -> impl Iterator<Item = &Grant> {
@@ -119,6 +123,6 @@ mod tests {
         );
         assert_eq!(c.harnesses().len(), 3);
         assert!(!c.is_room());
-        assert_eq!(c.tag(), "cell:a");
+        assert_eq!(c.tag(), "cell-a");
     }
 }

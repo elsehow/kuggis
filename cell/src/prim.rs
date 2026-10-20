@@ -27,7 +27,8 @@ impl std::error::Error for Invalid {}
 /// Words the `cell` binary uses as subcommands. A cell or session may not
 /// take one of these as its name.
 pub const RESERVED: &[&str] = &[
-    "cell", "key", "say", "open", "allow", "tree", "plan", "observe", "proxy", "help",
+    "cell", "key", "say", "open", "allow", "tree", "plan", "observe", "proxy", "setup", "check",
+    "probe", "help",
 ];
 
 macro_rules! text {
