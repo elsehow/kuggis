@@ -1,3 +1,7 @@
-__pycache__/
-*.py[cod]
 cell/target/
+cell/bindings/
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+.kuggis/
+.claude/worktrees/

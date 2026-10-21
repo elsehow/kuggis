@@ -250,7 +250,7 @@ impl Door {
 
     fn file(&self, client: TcpStream, knock: Knock, shown: &str) -> (String, Outcome) {
         let takes = match &knock.said {
-            Said::Brief { to, .. } => *to == self.cell,
+            Said::Brief { session, .. } => session.cell == self.cell,
             Said::Reply { .. } => true,
             _ => false,
         };

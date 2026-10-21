@@ -12,7 +12,7 @@
 //! agent, and signs what it saw.
 
 use crate::cell::Cell;
-use crate::grant::{Harness, EDGE_SUFFIX, GITHUB_EDGE};
+use crate::grant::{Provider, EDGE_SUFFIX, GITHUB_EDGE};
 use crate::log;
 use crate::prim::Hash;
 use crate::said::{Said, Secret, State, Statement};
@@ -42,14 +42,8 @@ pub const DOOR_USER: &str = "cell-door";
 pub const SAY_USER: &str = "cell-say";
 /// The agent's home, where the adapter keeps its work and its sessions.
 pub const AGENT_HOME: &str = "/home/agent";
-/// Where the harness binary goes, root-owned, for the agent to run.
-pub const CLAUDE_BIN: &str = "/usr/local/bin/claude";
-/// Claude Code behind the wall: no updater, since the binary is root's; no
-/// claude.ai connectors, since the account's services are not the cell's;
-/// no optional telemetry. The wall refuses those roads anyway; this keeps
-/// the harness from trying them.
-pub const CLAUDE_ENV: &str =
-    "DISABLE_AUTOUPDATER=1 ENABLE_CLAUDEAI_MCP_SERVERS=false CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1";
+/// Root-owned, pinned Pi runtime.
+pub const PI_BIN: &str = "/usr/local/lib/cell/pi-1.3.0/pi";
 pub const PROXY_ADDR: &str = "127.0.0.1:3128";
 /// Where exe.dev's in-VM auth proxy delivers the VM's web traffic, peer
 /// knocks included, from loopback.
@@ -169,47 +163,257 @@ WantedBy=multi-user.target
     )
 }
 
-/// Claude Code, installed by root with root's open internet, then copied
-/// where the agent can run it and nobody can change it. The agent cannot
-/// update it: its only road is the proxy.
-fn install_claude() -> Fallible {
-    if Path::new(CLAUDE_BIN).exists() {
+/// A pinned, root-owned Pi bundle. The agent can execute it but cannot update it.
+fn install_pi() -> Fallible {
+    let root = Path::new("/usr/local/lib/cell/pi-1.3.0");
+    if root.join("pi").exists() {
         return Ok(());
     }
+    let (arch, digest) = match run("uname", &["-m"])?.trim() {
+        "x86_64" => (
+            "x64",
+            "24f5be328b66d4da36876296989501974f43ab8434fbb57c35c523a3ea505ded",
+        ),
+        "aarch64" => (
+            "arm64",
+            "7fd2ea14fca390ebf9f47438baaef07c4b3d13db7cc8e459831118391b7ea65b",
+        ),
+        other => return Err(format!("unsupported Pi architecture: {other}").into()),
+    };
+    let temp = PathBuf::from(format!("/tmp/cell-pi-{}", crate::RequestId::generate()));
+    fs::create_dir(&temp)?;
+    fs::set_permissions(&temp, fs::Permissions::from_mode(0o700))?;
+    let archive = temp.join("pi.tar.gz");
+    let url = format!(
+        "https://github.com/earendil-works/pi/releases/download/v1.3.0/pi-linux-{arch}.tar.gz"
+    );
     run(
-        "bash",
-        &["-c", "curl -fsSL https://claude.ai/install.sh | bash"],
+        "curl",
+        &[
+            "-fsSL",
+            "--max-time",
+            "120",
+            &url,
+            "-o",
+            archive.to_str().unwrap(),
+        ],
     )?;
-    let installed = run("readlink", &["-f", "/root/.local/bin/claude"])?;
-    let tmp = format!("{CLAUDE_BIN}.tmp");
-    fs::copy(installed.trim(), &tmp)?;
-    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))?;
-    fs::rename(&tmp, CLAUDE_BIN)?;
+    if Hash::of(&fs::read(&archive)?).to_string() != digest {
+        return Err("Pi release checksum mismatch".into());
+    }
+    run(
+        "tar",
+        &[
+            "-xzf",
+            archive.to_str().unwrap(),
+            "-C",
+            temp.to_str().unwrap(),
+        ],
+    )?;
+    fs::create_dir_all(root.parent().unwrap())?;
+    fs::rename(temp.join("pi"), root)?;
+    run("chown", &["-R", "root:root", root.to_str().unwrap()])?;
+    run("chmod", &["-R", "go-w", root.to_str().unwrap()])?;
+    fs::remove_dir_all(temp)?;
     Ok(())
 }
 
-fn agent_unit() -> String {
+fn agent_unit(workspace: &Path) -> String {
     format!(
         "[Unit]
-Description=cell agent: runs the harness on what the inbox brings
-After=cell-say.service
+Description=cell agent: persistent Pi sessions
+After=cell-say.service cell-proxy.service
 
 [Service]
 User={AGENT}
+Group=cell-chat
+SupplementaryGroups=agent
 WorkingDirectory={AGENT_HOME}
-Environment=HOME={AGENT_HOME}
+Environment=HOME={AGENT_HOME} PI_CODING_AGENT_DIR={AGENT_HOME}/.pi/agent
 Environment=HTTPS_PROXY=http://{PROXY_ADDR} HTTP_PROXY=http://{PROXY_ADDR} NO_PROXY=
 Environment=https_proxy=http://{PROXY_ADDR} http_proxy=http://{PROXY_ADDR} no_proxy=
-Environment={CLAUDE_ENV} GH_HOST={GITHUB_EDGE}
-ExecStart={BIN} run --cell {ETC}/cell.json --inbox {INBOX} --outbox {OUTBOX} --home {AGENT_HOME}
+Environment=GH_HOST={GITHUB_EDGE}
+RuntimeDirectory=cell-chat
+RuntimeDirectoryMode=0750
+ExecStart={BIN} chat --cell {ETC}/cell.json --workspace {workspace} --state {AGENT_HOME}/.kuggis/chat --socket /run/cell-chat/api.sock --agent-dir {AGENT_HOME}/.pi/agent --pi /usr/local/lib/cell/pi-1.3.0/pi --inbox {INBOX} --outbox {OUTBOX}
 Restart=always
 RestartSec=2
 NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths={AGENT_HOME} {OUTBOX}
+PrivateTmp=yes
+UMask=0077
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target
-"
-    )
+", workspace=workspace.display())
+}
+
+/// Keep the old runner, declarations, and named-session map for recovery. Signed
+/// logs and Claude transcript files remain in place and are never rewritten.
+fn preserve_before_upgrade() -> Fallible {
+    let backup = Path::new("/var/lib/cell/migrations/pi-v1");
+    if Path::new("/run/cell-chat/api.sock").exists() {
+        let body = run(
+            "curl",
+            &[
+                "-fsS",
+                "--max-time",
+                "5",
+                "--unix-socket",
+                "/run/cell-chat/api.sock",
+                "-H",
+                "Host: cell.internal",
+                "http://cell.internal/api/pi/threads?includeArchived=true",
+            ],
+        )?;
+        let sessions: Vec<serde_json::Value> = serde_json::from_str(&body)?;
+        if sessions.iter().any(|v| v["status"] == "running") {
+            return Err("stop active cell runs before setup".into());
+        }
+    }
+    if attempt("pgrep", &["-u", AGENT, "-x", "claude"]).0 {
+        return Err("a Claude session is active; wait for it before upgrading".into());
+    }
+    if backup.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(backup)?;
+    fs::set_permissions(backup, fs::Permissions::from_mode(0o700))?;
+    for (source, name) in [
+        (BIN, "cell"),
+        ("/etc/cell/cell.json", "cell.json"),
+        (
+            "/etc/systemd/system/cell-agent.service",
+            "cell-agent.service",
+        ),
+        ("/home/agent/.cell-sessions.json", "sessions.json"),
+        ("/home/agent/.cell-seen", "seen"),
+    ] {
+        if Path::new(source).exists() {
+            fs::copy(source, backup.join(name))?;
+        }
+    }
+    Ok(())
+}
+
+/// Remove only the exact Kuggis-owned legacy endpoint, preserving a backup and
+/// unrelated user model configuration. Pi subscriptions use openai-codex.
+fn upgrade_provider_config(agent_dir: &Path) -> Fallible {
+    let path = agent_dir.join("models.json");
+    let original = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut models: serde_json::Value = serde_json::from_slice(&original)?;
+    let legacy = serde_json::json!({"baseUrl":"https://codex.int.exe.xyz/v1","api":"openai-responses","apiKey":"cell-edge"});
+    if models["providers"]["openai"] != legacy {
+        return Ok(());
+    }
+    let backup = path.with_extension(format!("json.before-pi-signin-{}", Hash::of(&original)));
+    if !backup.exists() {
+        write_as_root(&backup, &original, 0o600)?;
+    }
+    let settings_path = agent_dir.join("settings.json");
+    if settings_path.exists() {
+        let mut settings: serde_json::Value = serde_json::from_slice(&fs::read(&settings_path)?)?;
+        if settings["defaultProvider"] == "openai" {
+            settings["defaultProvider"] = serde_json::json!("openai-codex");
+            write_as_root(
+                &settings_path,
+                &serde_json::to_vec_pretty(&settings)?,
+                0o600,
+            )?;
+        }
+    }
+    models["providers"]
+        .as_object_mut()
+        .unwrap()
+        .remove("openai");
+    write_as_root(&path, &serde_json::to_vec_pretty(&models)?, 0o600)?;
+    Ok(())
+}
+
+pub fn prepare_pi(cell: &Cell) -> Fallible<PathBuf> {
+    if run("id", &["-u"])?.trim() == "0" {
+        return Err("Pi state must be prepared as the agent, not root".into());
+    }
+    let agent_dir = Path::new(AGENT_HOME).join(".pi/agent");
+    let state = Path::new(AGENT_HOME).join(".kuggis/chat");
+    fs::create_dir_all(&agent_dir)?;
+    fs::create_dir_all(&state)?;
+    let cursor = state.join("inbox-seen");
+    if !cursor.exists() && Path::new(AGENT_HOME).join(".cell-seen").exists() {
+        fs::copy(Path::new(AGENT_HOME).join(".cell-seen"), cursor)?;
+    }
+    let auth_path = agent_dir.join("auth.json");
+    if !auth_path.exists() && cell.providers().contains(&Provider::Anthropic) {
+        if let Ok(bytes) = fs::read(Path::new(AGENT_HOME).join(".claude/.credentials.json")) {
+            let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+            let oauth = &value["claudeAiOauth"];
+            if oauth["accessToken"].is_string()
+                && oauth["refreshToken"].is_string()
+                && oauth["expiresAt"].is_number()
+            {
+                let auth = serde_json::json!({"anthropic":{"type":"oauth","access":oauth["accessToken"],"refresh":oauth["refreshToken"],"expires":oauth["expiresAt"]}});
+                write_as_root(&auth_path, &serde_json::to_vec(&auth)?, 0o600)?;
+            }
+        }
+    }
+    upgrade_provider_config(&agent_dir)?;
+    crate::pi::models::configure(&agent_dir, cell)?;
+    let settings = agent_dir.join("settings.json");
+    if !settings.exists() {
+        write_as_root(
+            &settings,
+            &serde_json::to_vec(&if cell.providers().contains(&Provider::Anthropic) {
+                serde_json::json!({"defaultProvider":"anthropic","defaultModel":"claude-sonnet-4-6"})
+            } else if cell.providers().contains(&Provider::OpenAi) {
+                serde_json::json!({"defaultProvider":"openai-codex","defaultModel":"gpt-5.4"})
+            } else if cell.providers().contains(&Provider::PaperInstruments) {
+                serde_json::json!({"defaultProvider":"paperinstruments","defaultModel":"ultramarine-1-flash","defaultThinkingLevel":"max"})
+            } else {
+                serde_json::json!({})
+            })?,
+            0o600,
+        )?;
+    }
+    // Existing clones are left intact. New grants clone through the same edge
+    // as the previous runner, under the agent UID and the network wall.
+    let work = Path::new(AGENT_HOME).join("work");
+    fs::create_dir_all(&work)?;
+    for grant in &cell.grants {
+        let crate::Grant::Code { repo, .. } = grant.carried() else {
+            continue;
+        };
+        let path = work.join(repo.as_str());
+        if !path.exists() {
+            run(
+                "git",
+                &[
+                    "clone",
+                    "-q",
+                    &format!("https://{GITHUB_EDGE}/{repo}.git"),
+                    path.to_str().unwrap(),
+                ],
+            )?;
+        }
+    }
+    let primary = cell
+        .grants
+        .iter()
+        .filter_map(|g| match g.carried() {
+            crate::Grant::Code {
+                repo, write: true, ..
+            } => Some(work.join(repo.as_str())),
+            _ => None,
+        })
+        .next()
+        .unwrap_or(work);
+    crate::migration::import_claude(cell, Path::new(AGENT_HOME), &primary, &state)?;
+    Ok(primary)
 }
 
 fn say_unit() -> String {
@@ -260,7 +464,7 @@ fn profile() -> String {
 if [ \"$(id -un)\" = {AGENT} ]; then
   export HTTPS_PROXY=http://{PROXY_ADDR} HTTP_PROXY=http://{PROXY_ADDR} NO_PROXY=
   export https_proxy=$HTTPS_PROXY http_proxy=$HTTP_PROXY no_proxy=
-  export {CLAUDE_ENV} GH_HOST={GITHUB_EDGE}
+  export PI_CODING_AGENT_DIR={AGENT_HOME}/.pi/agent GH_HOST={GITHUB_EDGE}
 fi
 "
     )
@@ -272,6 +476,8 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
         return Err("setup runs as root".into());
     }
     let cell: Cell = serde_json::from_str(&fs::read_to_string(cell_path)?)?;
+    preserve_before_upgrade()?;
+    let _ = attempt("systemctl", &["stop", "cell-agent"]);
     fs::create_dir_all(ETC)?;
     fs::create_dir_all(SAID)?;
     fs::create_dir_all(INBOX)?;
@@ -361,12 +567,40 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
         say_unit().as_bytes(),
         0o644,
     )?;
-    if cell.harnesses().contains(&Harness::Claude) {
-        install_claude()?;
+    install_pi()?;
+    if !attempt("getent", &["group", "cell-chat"]).0 {
+        run("groupadd", &["--system", "cell-chat"])?;
     }
+    run("usermod", &["-a", "-G", "cell-chat", AGENT])?;
+    if user_exists("exedev") {
+        run("usermod", &["-a", "-G", "cell-chat", "exedev"])?;
+    }
+    // The proxy must be running before cloning a newly granted repository.
+    run("systemctl", &["daemon-reload"])?;
+    run("systemctl", &["restart", "cell-proxy"])?;
+    run("nft", &["-f", &etc("wall.nft").to_string_lossy()])?;
+    let workspace = PathBuf::from(
+        run(
+            "runuser",
+            &[
+                "-u",
+                AGENT,
+                "--",
+                "setpriv",
+                "--no-new-privs",
+                "env",
+                &format!("HOME={AGENT_HOME}"),
+                &format!("HTTPS_PROXY=http://{PROXY_ADDR}"),
+                BIN,
+                "prepare",
+                &etc("cell.json").to_string_lossy(),
+            ],
+        )?
+        .trim(),
+    );
     write_as_root(
         Path::new("/etc/systemd/system/cell-agent.service"),
-        agent_unit().as_bytes(),
+        agent_unit(&workspace).as_bytes(),
         0o644,
     )?;
     write_as_root(
@@ -615,12 +849,14 @@ fn drop_in_outbox(stem: &str, body: &str) -> Result<Result<u64, String>, String>
 
 fn voice(cell: Option<&Cell>) -> Probe {
     let name = "the voice: a session statement through the outbox";
-    let Some(harness) = cell.and_then(|c| c.harnesses().into_iter().next()) else {
-        return Probe::new(name, "none", "none", "the cell runs no harness");
+    let Some(cell) = cell else {
+        return Probe::new(name, "none", "none", "no cell declaration");
     };
     let said = Said::Session {
-        name: "wall-check".parse().expect("a name"),
-        harness,
+        session: crate::SessionRef {
+            cell: cell.name.clone(),
+            id: crate::SessionId::generate(),
+        },
         state: State::Idle,
         text: Some("the agent can speak".into()),
     };
@@ -849,24 +1085,70 @@ pub fn check() -> Fallible<Statement> {
     Ok(statement)
 }
 
-/// Where each harness keeps its credential on the box. Claude Code writes
-/// its OAuth tokens here on Linux. Codex keeps none on the box: its
-/// credential is the edge's, so attachment there is its sign-in. Pi
-/// borrows whichever is present.
-const CREDENTIALS: &[(Harness, &str)] =
-    &[(Harness::Claude, "/home/agent/.claude/.credentials.json")];
-
-fn signed_in() -> BTreeSet<Harness> {
-    CREDENTIALS
-        .iter()
-        .filter(|(_, path)| fs::metadata(path).is_ok_and(|m| m.len() > 0))
-        .map(|(h, _)| *h)
-        .collect()
+fn signed_in() -> BTreeSet<Provider> {
+    let auth: serde_json::Value = fs::read(format!("{AGENT_HOME}/.pi/agent/auth.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    [
+        ("anthropic", Provider::Anthropic),
+        ("openai", Provider::OpenAi),
+        ("openai-codex", Provider::OpenAi),
+        ("paperinstruments", Provider::PaperInstruments),
+    ]
+    .into_iter()
+    .filter_map(|(name, provider)| auth.get(name).is_some().then_some(provider))
+    .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pi_signin_upgrade_preserves_custom_config_and_backs_up_legacy_endpoint() {
+        let dir = std::env::temp_dir().join(format!(
+            "cell-auth-upgrade-{}",
+            crate::RequestId::generate()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("models.json");
+        let legacy = serde_json::json!({"providers":{
+            "openai":{"baseUrl":"https://codex.int.exe.xyz/v1","api":"openai-responses","apiKey":"cell-edge"},
+            "custom":{"baseUrl":"https://custom.example"}
+        }});
+        let original = serde_json::to_vec(&legacy).unwrap();
+        fs::write(&path, &original).unwrap();
+        fs::write(
+            dir.join("settings.json"),
+            br#"{"defaultProvider":"openai","defaultModel":"gpt-5.4","other":true}"#,
+        )
+        .unwrap();
+        upgrade_provider_config(&dir).unwrap();
+        let upgraded: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(upgraded["providers"].get("openai").is_none());
+        assert_eq!(
+            upgraded["providers"]["custom"],
+            legacy["providers"]["custom"]
+        );
+        let settings: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(settings["defaultProvider"], "openai-codex");
+        assert_eq!(settings["other"], true);
+        assert_eq!(
+            fs::read(path.with_extension(format!("json.before-pi-signin-{}", Hash::of(&original))))
+                .unwrap(),
+            original
+        );
+        upgrade_provider_config(&dir).unwrap();
+        let custom =
+            br#"{"providers":{"openai":{"baseUrl":"https://custom.example","apiKey":"custom"}}}"#;
+        fs::write(&path, custom).unwrap();
+        upgrade_provider_config(&dir).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), custom);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn the_wall_names_both_users_and_only_the_proxy_port_for_the_agent() {
@@ -887,8 +1169,9 @@ mod tests {
         assert!(proxy_unit().contains("User=cell-proxy"));
         assert!(proxy_unit().contains("NoNewPrivileges=yes"));
         assert!(say_unit().contains("User=cell-say"));
-        assert!(agent_unit().contains("User=agent"));
-        assert!(agent_unit().contains("Environment=HTTPS_PROXY=http://127.0.0.1:3128"));
+        assert!(agent_unit(Path::new("/home/agent/work")).contains("User=agent"));
+        assert!(agent_unit(Path::new("/home/agent/work"))
+            .contains("Environment=HTTPS_PROXY=http://127.0.0.1:3128"));
         assert!(say_unit().contains("ReadWritePaths=/var/lib/cell/outbox /var/lib/cell/said"));
         assert!(profile().contains("HTTPS_PROXY=http://127.0.0.1:3128"));
         assert!(profile().contains("= agent ]"));

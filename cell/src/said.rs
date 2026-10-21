@@ -4,8 +4,9 @@
 //! public key, so verifying is not a step anyone can skip.
 
 use crate::canon;
-use crate::grant::Harness;
+use crate::grant::Provider;
 use crate::prim::{hex_bytes, hex_string, Commit, Hash, Invalid, Name, Repo, Url};
+use crate::{RequestId, SessionRef};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeSet;
@@ -41,16 +42,15 @@ pub enum Said {
     /// A session changed state, and what it says, when it has something
     /// to say: the question, the permission asked for, what blocked it.
     Session {
-        name: Name,
-        harness: Harness,
+        session: SessionRef,
         state: State,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
     },
     /// Text that wants to cross into another cell. Waits for you.
     Brief {
-        to: Name,
-        session: Name,
+        request: RequestId,
+        session: SessionRef,
         text: String,
     },
     /// A page the cell wants read. Waits for you unless you vouched for it.
@@ -63,8 +63,8 @@ pub enum Said {
         pass: bool,
     },
     /// The wall check from inside: which cell the box is running, under
-    /// which build, and which harnesses have a credential on the box.
-    /// Codex's credential is the edge's, so it never appears in `signed`.
+    /// which build, and which providers have a credential on the box.
+    /// Edge-held credentials never appear in `signed`.
     Checked {
         cell: Hash,
         ok: bool,
@@ -72,7 +72,7 @@ pub enum Said {
         #[serde(default = "Hash::zero", skip_serializing_if = "Hash::is_zero")]
         binary: Hash,
         #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-        signed: BTreeSet<Harness>,
+        signed: BTreeSet<Provider>,
     },
     /// An answer to a statement that waited, bound to its hash. You say
     /// this over ssh; a parent says it through the door.
@@ -208,19 +208,66 @@ impl<'de> Deserialize<'de> for Sig {
 
 /// The bytes that are signed: cell, sequence and content, canonical.
 #[derive(Serialize)]
-struct Body<'a> {
+struct Body<'a, T: Serialize> {
     cell: &'a Name,
     seq: u64,
-    said: &'a Said,
+    said: &'a T,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Statement {
     pub cell: Name,
     pub seq: u64,
     said: Said,
+    legacy: Option<crate::legacy::LegacySaid>,
     sig: Sig,
+}
+
+impl Serialize for Statement {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut out = serializer.serialize_struct("Statement", 4)?;
+        out.serialize_field("cell", &self.cell)?;
+        out.serialize_field("seq", &self.seq)?;
+        if let Some(legacy) = &self.legacy {
+            out.serialize_field("said", legacy)?;
+        } else {
+            out.serialize_field("said", &self.said)?;
+        }
+        out.serialize_field("sig", &self.sig)?;
+        out.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Statement {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Content {
+            Current(Said),
+            Legacy(crate::legacy::LegacySaid),
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            cell: Name,
+            seq: u64,
+            said: Content,
+            sig: Sig,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let (said, legacy) = match wire.said {
+            Content::Current(said) => (said, None),
+            Content::Legacy(old) => (old.upgrade(&wire.cell, wire.seq), Some(old)),
+        };
+        Ok(Self {
+            cell: wire.cell,
+            seq: wire.seq,
+            said,
+            legacy,
+            sig: wire.sig,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,6 +293,7 @@ impl Statement {
             cell,
             seq,
             said,
+            legacy: None,
             sig,
         }
     }
@@ -253,11 +301,19 @@ impl Statement {
     /// The only accessor. A statement that does not verify under `key`
     /// yields nothing, however well formed it looks.
     pub fn open(&self, key: &Key) -> Result<&Said, Unverified> {
-        let bytes = canon::bytes(&Body {
-            cell: &self.cell,
-            seq: self.seq,
-            said: &self.said,
-        });
+        let bytes = if let Some(legacy) = &self.legacy {
+            canon::bytes(&Body {
+                cell: &self.cell,
+                seq: self.seq,
+                said: legacy,
+            })
+        } else {
+            canon::bytes(&Body {
+                cell: &self.cell,
+                seq: self.seq,
+                said: &self.said,
+            })
+        };
         key.0
             .verify_strict(&bytes, &self.sig.0)
             .map(|()| &self.said)
@@ -287,6 +343,38 @@ mod tests {
             head: "a".repeat(40).parse().unwrap(),
             pass: true,
         }
+    }
+
+    #[test]
+    fn legacy_logs_verify_without_changing_signed_bytes_or_reply_hashes() {
+        let secret = Secret::generate();
+        let cell: Name = "dev".parse().unwrap();
+        let legacy = crate::legacy::LegacySaid::Session {
+            name: "s1".parse().unwrap(),
+            harness: crate::legacy::Harness::Claude,
+            state: State::Done,
+            text: Some("saved answer".into()),
+        };
+        let signed = Body {
+            cell: &cell,
+            seq: 7,
+            said: &legacy,
+        };
+        let sig = Sig(secret.0.sign(&canon::bytes(&signed)));
+        let old = format!(
+            r#"{{"cell":"dev","seq":7,"said":{},"sig":{}}}"#,
+            serde_json::to_string(&legacy).unwrap(),
+            serde_json::to_string(&sig).unwrap()
+        );
+        let parsed: Statement = serde_json::from_str(&old).unwrap();
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), old);
+        assert_eq!(parsed.hash(), Hash::of(old.as_bytes()));
+        assert!(
+            matches!(parsed.open(&secret.public()).unwrap(), Said::Session { session, .. } if session.cell == cell)
+        );
+        let tampered: Statement =
+            serde_json::from_str(&old.replace("saved answer", "forged answer")).unwrap();
+        assert!(tampered.open(&secret.public()).is_err());
     }
 
     #[test]
@@ -410,13 +498,15 @@ mod tests {
             "t".parse().unwrap(),
             3,
             Said::Session {
-                name: "x".parse().unwrap(),
-                harness: Harness::Pi,
+                session: SessionRef {
+                    cell: "t".parse().unwrap(),
+                    id: "00000000000000000000000000000001".parse().unwrap(),
+                },
                 state: State::Idle,
                 text: None,
             },
         );
-        let shuffled = r#"{"sig":"SIG","said":{"session":{"state":"idle","harness":"pi","name":"x"}},"seq":3,"cell":"t"}"#;
+        let shuffled = r#"{"sig":"SIG","said":{"session":{"state":"idle","session":{"id":"00000000000000000000000000000001","cell":"t"}}},"seq":3,"cell":"t"}"#;
         let json: serde_json::Value = serde_json::to_value(&s).unwrap();
         assert!(
             !json["said"]["session"]
@@ -439,8 +529,10 @@ mod tests {
             "t".parse().unwrap(),
             1,
             Said::Session {
-                name: "x".parse().unwrap(),
-                harness: Harness::Claude,
+                session: SessionRef {
+                    cell: "t".parse().unwrap(),
+                    id: crate::SessionId::generate(),
+                },
                 state: State::Question,
                 text: Some("merge or rebase?".into()),
             },
@@ -453,7 +545,7 @@ mod tests {
             &s.open(&k.public()).unwrap().clone()
         );
         assert!(serde_json::from_str::<Said>(
-            r#"{"session":{"name":"x","harness":"claude","state":"question","text":null}}"#
+            r#"{"session":{"session":{"cell":"t","id":"00000000000000000000000000000001"},"state":"question","text":null}}"#
         )
         .is_ok());
     }

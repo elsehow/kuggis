@@ -174,6 +174,7 @@ pub fn plans(
     names: &[Name],
 ) -> Fallible<BTreeMap<Name, Plan>> {
     let (vms, ints) = edge.listing()?;
+    exe::cell_vms(&vms)?;
     let seen = exe::observe(&vms, &ints);
     let mut boxes = Boxes::new(edge)?;
     names
@@ -196,12 +197,26 @@ pub fn apply(
     approved: &Approved,
     out: &mut dyn Write,
 ) -> Fallible<usize> {
+    apply_with_progress(edge, pins, tree, approved, out, &mut |_, _| Ok(()))
+}
+
+/// The operator uses the same reconciler, with durable progress before each
+/// action. A failed progress write stops before making the external change.
+pub fn apply_with_progress(
+    edge: &dyn Edge,
+    pins: &Path,
+    tree: &Tree,
+    approved: &Approved,
+    out: &mut dyn Write,
+    progress: &mut dyn FnMut(&Name, &Action) -> Fallible,
+) -> Fallible<usize> {
     let mut order: Vec<&Name> = approved.plans().keys().collect();
     order.sort_by_key(|n| std::cmp::Reverse(tree.depth(n)));
     let mut boxes = Boxes::new(edge)?;
     let mut done = 0;
     loop {
         let (vms, ints) = edge.listing()?;
+        exe::cell_vms(&vms)?;
         let seen = exe::observe(&vms, &ints);
         let mut next = None;
         for name in &order {
@@ -215,6 +230,7 @@ pub fn apply(
         let Some((name, action)) = next else {
             return Ok(done);
         };
+        progress(&name, &action)?;
         writeln!(out, "{name}: {action}")?;
         let cell = tree.get(&name).expect("planned, so in the tree");
         perform(edge, &vms, &ints, cell, &action, out)?;
@@ -309,21 +325,16 @@ fn perform(
 /// `vm:<me>` or our own tag. One by a tag other VMs may share is refused,
 /// not silently detached; one that does not reach `me` is `None`.
 fn ours<'a>(spec: &'a str, me: &Vm, cell: &Name, int: &str) -> Fallible<Option<&'a str>> {
-    if let Some(vm) = spec.strip_prefix("vm:") {
-        return Ok((vm == me.vm_name).then_some(spec));
-    }
-    if let Some(t) = spec.strip_prefix("tag:") {
-        if t == format!("{TAG_PREFIX}{cell}") {
-            return Ok(Some(spec));
-        }
-        if me.tags.iter().any(|x| x == t) {
-            return Err(format!(
+    match exe::AttachmentTarget::parse(spec) {
+        exe::AttachmentTarget::Vm(vm) => Ok((vm.as_str() == me.vm_name).then_some(spec)),
+        exe::AttachmentTarget::Tag(tag) if tag == format!("{TAG_PREFIX}{cell}") => Ok(Some(spec)),
+        exe::AttachmentTarget::Tag(tag) if me.tags.iter().any(|owned| owned == &tag) => {
+            Err(format!(
                 "{cell}: {int} reaches its VM by {spec}, which other VMs may share; detach it by hand"
-            )
-            .into());
+            ).into())
         }
+        exe::AttachmentTarget::Tag(_) | exe::AttachmentTarget::Auto(_) | exe::AttachmentTarget::Unknown(_) => Ok(None),
     }
-    Ok(None)
 }
 
 /// Attach exactly one integration that is exactly this grant. A repository
@@ -403,6 +414,7 @@ mod tests {
     impl Fake {
         fn vm(&self, name: &str, tags: &[&str]) {
             self.vms.borrow_mut().push(Vm {
+                created_at: Some("fixture-incarnation".into()),
                 vm_name: name.into(),
                 tags: tags.iter().map(|t| t.to_string()).collect(),
                 status: "running".into(),
@@ -567,9 +579,8 @@ mod tests {
         Approved::new(plans.clone(), &Approved::hash(&plans)).unwrap()
     }
 
-    const A: &str =
-        r#"{"name":"a","grants":[{"agent":"claude"},{"code":{"repo":"example/x","write":true}}]}"#;
-    const B: &str = r#"{"name":"b","grants":[{"agent":"claude"}]}"#;
+    const A: &str = r#"{"name":"a","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true}}]}"#;
+    const B: &str = r#"{"name":"b","grants":[{"provider":"anthropic"}]}"#;
 
     #[test]
     fn a_fresh_tree_converges_leaves_first_and_then_rests() {
@@ -607,8 +618,8 @@ mod tests {
     fn a_child_writes_its_fork_and_the_parent_writes_the_upstream() {
         let f = Fake::default();
         let pins = pins();
-        let p = r#"{"name":"p","grants":[{"agent":"claude"},{"code":{"repo":"example/x","write":true}},{"code":{"repo":"example/x","write":true,"via":"cells/x"}}]}"#;
-        let c = r#"{"name":"c","grants":[{"agent":"claude"},{"code":{"repo":"example/x","write":true,"via":"cells/x"}}]}"#;
+        let p = r#"{"name":"p","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true}},{"code":{"repo":"example/x","write":true,"via":"cells/x"}}]}"#;
+        let c = r#"{"name":"c","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true,"via":"cells/x"}}]}"#;
         let t = tree(&[("", p), ("p", c)]);
         apply(&f, &pins, &t, &approve(&f, &pins, &t), &mut Vec::new()).unwrap();
         let calls = f.calls();
@@ -666,7 +677,7 @@ mod tests {
 
         let wider = tree(&[(
             "",
-            r#"{"name":"a","grants":[{"agent":"claude"},{"code":{"repo":"example/x","write":true}},{"host":"pypi.org"}]}"#,
+            r#"{"name":"a","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true}},{"host":"pypi.org"}]}"#,
         )]);
         let e = apply(&f, &pins, &wider, &settled, &mut Vec::new())
             .unwrap_err()
@@ -901,8 +912,11 @@ mod tests {
         assert!(matches!(log[1].1, Said::Checked { .. }));
         assert_eq!(log[1].0.seq, 2);
         let brief = Said::Brief {
-            to: b.name.clone(),
-            session: "s".parse().unwrap(),
+            request: crate::RequestId::generate(),
+            session: crate::SessionRef {
+                cell: b.name.clone(),
+                id: crate::SessionId::generate(),
+            },
             text: "go".into(),
         };
         assert_eq!(f.knock("b", &brief).unwrap(), 1);

@@ -1,16 +1,18 @@
 # cell
 
-The typed core of a kuggis cell. A cell is a root, a set of grants and a
-key. This crate holds the types, the invariants, and the two pieces that
-sit on the trust boundary: the signed envelope for everything a cell says,
-and the CONNECT proxy that is the wall's one road out.
+The Rust implementation of kuggis. A cell is a VM root, a set of grants
+and a key. This crate holds the CLI, provisioning, the agent runner, and
+the boundary services: the network wall and proxy, the door, and the
+signed statement log. See the [repository README](../README.md) to build
+and run it.
 
-Sixteen types carry the design.
+The core types separate authority, durable sessions, and runtime state.
 
 | kind | types |
 |---|---|
-| parsed primitives | `Name`, `Host`, `Repo`, `Url`, `Commit`, `Hash` |
-| the cell | `Harness`, `Grant`, `Cell`, `Tree` |
+| parsed primitives | `Name`, `Host`, `Repo`, `Url`, `Commit`, `Hash`, `SessionId`, `RequestId` |
+| the cell | `Provider`, `Grant`, `Cell`, `Tree` |
+| conversations | `Session`, `SessionRef`, `SessionCommand`, `SessionAction`, `Prompt` |
 | the plan | `Action`, `Plan`, `Approved` |
 | what a cell says | `State`, `Said`, `Statement` |
 
@@ -42,22 +44,38 @@ plan, and on the box, to configure the proxy.
     cell probe
     cell door --listen ADDR --cell CELLFILE --said DIR --inbox DIR
     cell ship --cell CELLFILE --secret FILE --outbox DIR --said DIR [--once]
-    cell run --cell CELLFILE --inbox DIR --outbox DIR --home DIR
+    cell ui TREE [--bin LINUX_CELL] [--listen ADDR]
     cell knock --inbox DIR
-    cell brief DIR NAME SESSION TEXT
+    cell session new
+    cell brief DIR NAME SESSION_ID TEXT [--request REQUEST_ID]
     cell pull DIR NAME [--since N]
     cell login DIR NAME
+    cell chat --local DIR [--listen 127.0.0.1:8080] [--state DIR] [--assets DIR] [--pi PATH]
+
+`chat` serves the React frontend and persistent Pi RPC sessions on the
+operator's machine. It requires Pi 1.2+ and built assets at `web/dist`
+(or `--assets`). It binds only to loopback and validates browser origins.
+This local mode runs with the operator's permissions; it does not attest
+a cell boundary or write the signed statement log. See
+[the chat README](../web/README.md) for the transport and test details.
 
 A cell file:
 
 ```json
 {"name":"widget","grants":[
-  {"agent":"claude"},
+  {"provider":"anthropic"},
   {"code":{"repo":"example/widget","write":true}},
   {"code":{"repo":"upstream/widget","write":false}},
   {"host":"pypi.org"}
 ]}
 ```
+
+`Provider` describes authority, independently of the executable. Pi is a
+runtime, not a grant. Provider grants allow their API and sign-in hosts.
+OpenAI uses `api.openai.com`, `auth.openai.com`, and `chatgpt.com`; no exe.dev
+LLM integration is required. Paper Instruments allows `api.paperinstruments.com`.
+VM setup installs a pinned Pi runtime independently
+of provider grants.
 
 The edge is one GitHub App for every cell, so GitHub cannot tell a parent
 from a child. What tells them apart is which repository each carries. A
@@ -72,7 +90,7 @@ parent may carry the fork too, to sync it and fetch the child's branches.
 Clones land in `work/<owner>/<repo>`.
 
 A cell does not know where it sits. The directory is the tree:
-`cells/coordinator.json` is held by the human, `cells/coordinator/widget.json`
+`tree/coordinator.json` is held by the human, `tree/coordinator/widget.json`
 sits under coordinator, and re-parenting is `mv`. The box has no use for
 the edge, a name is not a capability, and the hash must mean "this box's
 configuration" and nothing else, so the edge lives in `Tree` alone.
@@ -114,7 +132,7 @@ wall check proves the proxy refuses it.
 
 The box's word is `Checked`. Setup ends with a check the box signs: the
 cell hash it runs, the sha256 of the binary that checked it, and which
-harnesses have a credential on the box. The laptop pulls the log over
+providers have a credential on the box. The laptop pulls the log over
 ssh, pins the box's key on first contact in `DIR/.pins`, verifies every
 statement and takes the last passing check as what the box runs. A key
 that changes is refused until the pin is removed by hand.
@@ -140,7 +158,7 @@ network; the signing key minted 0600 for `cell-say` alone; everything as hardene
 services. `cell check` then runs `cell probe` as the agent, which tries
 everything the threat model says the agent cannot do, adds what root can
 see, signs the result as `Checked`, with the binary's hash and which
-harnesses are signed in, and appends it to the log the laptop pulls.
+providers are signed in, and appends it to the log the laptop pulls.
 Both ran on a fresh exe.dev VM: every probe matched, setup is
 idempotent, and the wall survives a reboot.
 
@@ -168,8 +186,8 @@ is the agent's and the shipper's alone to write.
 
 Everything in the outbox is the adversary's. A file is read without
 following links, capped at 64 KiB, parsed strictly, and checked against
-the cell: only the wall check says `Checked`, a session names a harness
-the cell runs, a verdict names a repository the cell holds. What passes is
+the cell: only the wall check says `Checked`, a session reference names
+this cell as owner, a verdict names a repository the cell holds. What passes is
 renamed to `<name>.<seq>`, the receipt, and the agent reads its own
 statement back from the world-readable log. What fails is replaced by
 `<name>.refused` holding the reason. The agent gets no other feedback and
@@ -179,24 +197,89 @@ for the other.
 
 ## A session
 
-`cell run` is the adapter, running as the agent. It watches the inbox,
-clones every granted repository into the agent's `work` directory through
-the edge, and runs each brief as a headless Claude Code session there,
-full-auto, since the wall is the boundary. The event stream becomes
-session statements through the outbox: Starting, Working as the model
-talks, Done with its answer, or Blocked with what went wrong. A second
-brief to the same session name resumes it. The command line and the
-event translation are the only harness-specific code, and nothing below
-them knows which harness runs. Setup installs Claude Code as root, with
-root's open internet, and copies the binary where the agent can run it
-and nobody can change it.
+A `Session` has an opaque `SessionId`, an owning cell, a title, and an
+archive flag. Renaming, archiving, changing models, and restarting a
+runtime leave its identity intact. A chat is the UI for a session.
+Live run status, provider/model selection, queues, and process handles
+belong to the adapter and are not durable session metadata.
 
-From the laptop: `cell brief DIR NAME SESSION TEXT` files the brief in
-the box's inbox over ssh, as you; `cell pull DIR NAME` pulls the log,
-verifies it under the pinned key and prints it; `cell login DIR NAME`
-opens Claude Code on the box as the agent, for the one thing only you can
-do, the sign-in. A knock through the door names the parent cell; one over
-ssh names nobody, and the agent knows that means you.
+Commands carry a `RequestId` and a `SessionRef { cell, id }`. The receiver
+checks the cell and session before dispatch. Prompt and cancel commands
+have durable receipts: an accepted retry is a no-op; reuse of an ID for
+different work is refused. A crash before acknowledgement leaves the
+outcome unknown and requires inspection, rather than automatic resubmission.
+This prevents duplicate dispatch; it does not promise exactly-once execution.
+`Claim::Fresh` carries a single-use dispatch permit. Known pre-dispatch failures
+and explicit Pi rejections retain their distinct outcomes across retries and
+restarts. Model failures occur after acceptance and never cause redispatch.
+
+`ExecutionMode` distinguishes a loopback local runtime from a cell runtime.
+Cell execution requires its declaration, private socket, Pi directory, inbox,
+and outbox together; the cell's identity comes from its declaration.
+
+`cell-agent.service` runs `cell chat --cell /etc/cell/cell.json` as the
+agent, with a private Unix socket at `/run/cell-chat/api.sock`. Only the
+agent and the operator's `cell-chat` group can reach it. The agent's network
+allowlist is unchanged: its only TCP route is the existing CONNECT proxy.
+The service has no sudo, cannot change its runtime binary, and does not hold
+the signing key. Run events go through the outbox to the existing shipper.
+
+`cell ui TREE` serves the browser on loopback. SSH runs `cell relay`, carrying
+HTTP on stdin/stdout to the private cell socket. Every cell route resolves its
+name through the validated tree. The gateway does not own Pi processes or
+transcripts, so restarting it leaves remote runs alive. The cell service
+handles door/SSH briefs through the same session and request journal as chat.
+
+`cell session new` generates an ID; `cell brief DIR NAME SESSION_ID TEXT
+[--request REQUEST_ID]` files the brief. `cell login DIR NAME` opens Pi as
+the agent for terminal provider sign-in. Settings runs an isolated Pi extension
+that calls `ModelRuntime.login`/`logout` for all providers. Pi owns PKCE, device
+codes, token exchanges, credential locking, storage, and refresh. The bridge
+relays typed prompts/status only; it never runs a model or returns tokens.
+OpenAI subscriptions use `openai-codex` with browser or device-code sign-in;
+API keys use `openai`. Anthropic offers browser and copy-code sign-in. The shared
+UI relays Pi's method selector and manual callback prompt for remote cells.
+Paper Instruments uses a Pi-stored API key and the `ultramarine-1-flash` model
+configured in `models.json`. `ProviderConnection.login_methods` tells the UI
+which authentication methods a provider supports; the server enforces them.
+Closing settings cancels an unfinished sign-in. Git scopes use the
+existing plan/apply mechanism.
+MCP connections use granted HTTPS hosts on ports 443 or 8443 and store tokens
+only inside the selected cell.
+`ProviderConnection` keeps credential state, Pi authentication resolution,
+verified account observations, and inference results separate. Observations
+include timestamps and are tied to the credential that produced them. A
+provider's extra-usage error is not evidence of missing sign-in or exhausted
+subscription allowance. Settings' Check action resolves credentials through Pi
+and verifies Anthropic OAuth account identity without making a model request.
+
+`ConnectionConfig` contains a validated `McpEndpoint` and a cell-local credential
+reference. `ConnectionChanges` accepts unique names and explicit secret updates:
+keep, clear, or replace. Tokens cannot be retained when the endpoint changes.
+
+## Type migration
+
+Declarations use `{"provider":"anthropic"}`, `{"provider":"openai"}`, or
+`{"provider":"paperinstruments"}`.
+Pi has no grant of its own. Session statements and briefs carry a scoped
+session reference, and briefs require a request ID.
+
+The read-only legacy decoder verifies old statements using their original
+types and field order. It preserves statement hashes and signatures, while
+exposing stable session references to the new code. Old log files are never
+rewritten. Setup keeps the previous binary, declaration, unit, session map,
+and inbox cursor in `/var/lib/cell/migrations/pi-v1/` (root-only).
+
+The previous runner's conversations are imported into Pi as archived chats,
+following the active Claude message branch. Tool calls/results become text;
+original transcripts remain intact. Stable IDs are derived from the cell and
+old session name, matching the log decoder. Import is idempotent. Existing
+Anthropic credentials are adopted only within their original cell. Pi state
+preparation and repository clones run as the unprivileged agent.
+
+The local chat server also migrates its unsigned prototype metadata, preserving
+IDs, titles, archive flags, and transcripts, with `.json.bak` metadata backups.
+Local sessions keep the `local` owner; no local chat is reassigned to a VM cell.
 
 ## The proxy
 
@@ -210,7 +293,8 @@ end to end, so the proxy sees hostnames and never content.
 
 ## Tests
 
-`cargo test` runs the unit tests, the proxy over real sockets with an
+`cargo test --manifest-path cell/Cargo.toml --locked`, from the repository
+root, runs the unit tests, the proxy over real sockets with an
 injected resolver, the apply loop against an in-memory exe.dev with
 signing boxes, the shipper over a real outbox with a link and a
 directory left in it, four writers racing for the log's lock, and the

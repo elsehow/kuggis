@@ -127,18 +127,18 @@ fn tree_allow_plan_and_observe() {
     let coordinator = write(
         &cells,
         "coordinator.json",
-        r#"{"name":"coordinator","grants":[{"agent":"claude"},{"agent":"codex"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":false}},{"host":"pypi.org"},{"host":"files.pythonhosted.org"}]}"#,
+        r#"{"name":"coordinator","grants":[{"provider":"anthropic"},{"provider":"openai"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":false}},{"host":"pypi.org"},{"host":"files.pythonhosted.org"}]}"#,
     );
     let widget = write(
         &cells.join("coordinator"),
         "widget.json",
-        r#"{"name":"widget","grants":[{"agent":"claude"},{"agent":"codex"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":false}},{"host":"pypi.org"},{"host":"files.pythonhosted.org"}]}"#,
+        r#"{"name":"widget","grants":[{"provider":"anthropic"},{"provider":"openai"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":false}},{"host":"pypi.org"},{"host":"files.pythonhosted.org"}]}"#,
     );
     fs::create_dir_all(cells.join("coordinator/widget")).unwrap();
     let scratch = write(
         &cells.join("coordinator/widget"),
         "widget-scratch.json",
-        r#"{"name":"widget-scratch","grants":[{"agent":"claude"},{"code":{"repo":"example/widget","write":false}}]}"#,
+        r#"{"name":"widget-scratch","grants":[{"provider":"anthropic"},{"code":{"repo":"example/widget","write":false}}]}"#,
     );
     write(&cells, "README.md", "not a cell");
 
@@ -247,8 +247,10 @@ fn tree_allow_plan_and_observe() {
         out(&a).lines().collect::<Vec<_>>(),
         [
             "api.anthropic.com",
+            "api.openai.com",
+            "auth.openai.com",
+            "chatgpt.com",
             "claude.ai",
-            "codex.int.exe.xyz",
             "files.pythonhosted.org",
             "github.int.exe.xyz",
             "platform.claude.com",
@@ -288,8 +290,8 @@ fn tree_allow_plan_and_observe() {
     let plan: serde_json::Value = serde_json::from_str(&out(&p)).unwrap();
     assert_eq!(
         plan["widget"]["actions"],
-        serde_json::json!(["setup"]),
-        "edge and door match; only the box needs the file: {plan}"
+        serde_json::json!([{"detach":{"edge":"codex"}}, "setup"]),
+        "replace the legacy Codex edge with cell-local Pi sign-in: {plan}"
     );
     let approval = err(&p).rsplit(' ').next().unwrap().to_string();
     assert_eq!(approval.len(), 64);
@@ -301,7 +303,7 @@ fn tree_allow_plan_and_observe() {
     let plan: serde_json::Value = serde_json::from_str(&out(&p)).unwrap();
     assert_eq!(
         plan["widget"]["actions"],
-        serde_json::json!([{"close": "widget-scratch"}, "setup"]),
+        serde_json::json!([{"detach":{"edge":"codex"}}, {"close": "widget-scratch"}, "setup"]),
         "{plan}"
     );
     assert_ne!(err(&p).rsplit(' ').next().unwrap(), approval);
@@ -326,7 +328,7 @@ fn tree_allow_plan_and_observe() {
     assert_eq!(plan["coordinator"]["actions"][0], "create");
     assert_eq!(
         plan["widget"]["actions"],
-        serde_json::json!([{"close": "widget-scratch"}, "setup"])
+        serde_json::json!([{"detach":{"edge":"codex"}}, {"close": "widget-scratch"}, "setup"])
     );
 
     let p = run(&["apply", dir, "--approve", "00"], "");
@@ -347,7 +349,7 @@ fn the_agent_speaks_through_the_outbox() {
     let cell = write(
         &d,
         "cell.json",
-        r#"{"name":"a","grants":[{"agent":"claude"}]}"#,
+        r#"{"name":"a","grants":[{"provider":"anthropic"}]}"#,
     );
     let secret = d.join("secret");
     let k = run(&["key", "new", secret.to_str().unwrap()], "");
@@ -355,7 +357,7 @@ fn the_agent_speaks_through_the_outbox() {
     write(
         &outbox,
         "q.json",
-        r#"{"session":{"name":"s","harness":"claude","state":"question","text":"merge?"}}"#,
+        r#"{"session":{"session":{"cell":"a","id":"00000000000000000000000000000001"},"state":"question","text":"merge?"}}"#,
     );
     write(
         &outbox,
@@ -403,7 +405,7 @@ fn a_knock_from_root_has_no_name() {
     fs::create_dir_all(&inbox).unwrap();
     let k = run(
         &["knock", "--inbox", inbox.to_str().unwrap()],
-        r#"{"brief":{"to":"a","session":"s","text":"go"}}"#,
+        r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"a","id":"00000000000000000000000000000001"},"text":"go"}}"#,
     );
     assert!(k.status.success(), "{}", err(&k));
     assert_eq!(out(&k).trim(), "1");
@@ -413,6 +415,23 @@ fn a_knock_from_root_has_no_name() {
     assert_eq!(filed["said"]["brief"]["text"], "go");
     let k = run(&["knock", "--inbox", inbox.to_str().unwrap()], "junk");
     assert!(!k.status.success());
+}
+
+#[test]
+fn a_session_id_is_generated_before_submitting_a_brief() {
+    let first = run(&["session", "new"], "");
+    let second = run(&["session", "new"], "");
+    assert!(first.status.success(), "{}", err(&first));
+    assert!(out(&first).parse::<cell::SessionId>().is_ok());
+    assert_ne!(out(&first), out(&second));
+    let directory = tmp("session-id");
+    write(&directory, "dev.json", r#"{"name":"dev","grants":[]}"#);
+    let invalid = run(
+        &["brief", directory.to_str().unwrap(), "dev", "cleanup", "Go"],
+        "",
+    );
+    assert!(!invalid.status.success(), "session titles are not IDs");
+    assert!(err(&invalid).contains("session id"), "{}", err(&invalid));
 }
 
 #[test]

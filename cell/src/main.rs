@@ -4,9 +4,10 @@
 use cell::apply::{Edge, Fallible};
 use cell::door::{Door, Knock};
 use cell::exe::{Integration, Listing, Observed, Ssh};
-use cell::grant::Harness;
+use cell::grant::Provider;
 use cell::proxy::{system_resolver, Policy, Proxy};
-use cell::{Approved, Cell, Hash, Invalid, Key, Name, Plan, Said, Secret, Statement, Tree};
+use cell::{Approved, Cell, Hash, Key, Name, Plan, Said, Secret, Statement, Tree};
+use cell::{RequestId, SessionId, SessionRef};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read, Write};
@@ -51,14 +52,16 @@ usage:
                                   serve the statement log; file what a parent says
   cell ship --cell CELLFILE --secret FILE --outbox DIR --said DIR [--once]
                                   sign what the agent drops in the outbox into the log
-  cell run --cell CELLFILE --inbox DIR --outbox DIR --home DIR
-                                  as the agent on a box: run briefs from the inbox as
-                                  harness sessions; speak through the outbox
   cell knock --inbox DIR          as root on a box: file the Said on stdin in the inbox
-  cell brief DIR NAME SESSION TEXT
+  cell session new                generate a stable session ID
+  cell brief DIR NAME SESSION_ID TEXT [--request REQUEST_ID]
                                   brief NAME's SESSION, over ssh, as you
   cell pull DIR NAME [--since N]  pull NAME's log, verify it under its pinned key, print it
-  cell login DIR NAME             open Claude Code on NAME's box as the agent, to sign in
+  cell login DIR NAME             open Pi on NAME's box as the agent, to sign in
+  cell ui TREE [--bin LINUX_CELL] [--listen 127.0.0.1:8080]
+                                  browse cells and their chats over SSH
+  cell chat --local DIR [--listen 127.0.0.1:8080] [--state DIR] [--assets DIR] [--pi PATH]
+                                  serve the React chat UI with persistent local Pi sessions
 ";
 
 fn main() {
@@ -87,11 +90,29 @@ fn run(args: &[String]) -> Fallible {
         Some("probe") => probe(),
         Some("door") => door(rest),
         Some("ship") => ship(rest),
-        Some("run") => run_agent(rest),
         Some("knock") => knock(rest),
         Some("brief") => brief(rest),
+        Some("session") if rest == ["new"] => {
+            println!("{}", SessionId::generate());
+            Ok(())
+        }
         Some("pull") => pull(rest),
         Some("login") => login(rest),
+        Some("chat") => chat(rest),
+        Some("ui") => ui(rest),
+        Some("relay") => {
+            cell::operator::relay(Path::new(
+                flag(rest, "--socket").unwrap_or("/run/cell-chat/api.sock"),
+            ))?;
+            Ok(())
+        }
+        Some("prepare") => {
+            println!(
+                "{}",
+                cell::wall::prepare_pi(&load_cell(arg(rest, 0, "CELLFILE")?)?)?.display()
+            );
+            Ok(())
+        }
         _ => {
             eprint!("{USAGE}");
             Err("no such command".into())
@@ -110,6 +131,75 @@ fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
         .position(|a| a == name)
         .and_then(|i| args.get(i + 1))
         .map(String::as_str)
+}
+
+fn chat(args: &[String]) -> Fallible {
+    use cell::chat::ExecutionMode;
+    let required = |flag_name| {
+        flag(args, flag_name)
+            .map(PathBuf::from)
+            .ok_or_else(|| format!("cell chat requires {flag_name} PATH"))
+    };
+    let declaration = flag(args, "--cell").map(load_cell).transpose()?;
+    let (mode, workspace) = if let Some(declaration) = declaration {
+        if flag(args, "--local").is_some() || flag(args, "--listen").is_some() {
+            return Err("cell chat uses --workspace and a private --socket; --local/--listen are local-only".into());
+        }
+        (
+            ExecutionMode::Cell {
+                declaration,
+                socket: required("--socket")?,
+                agent_dir: required("--agent-dir")?,
+                inbox: required("--inbox")?,
+                outbox: required("--outbox")?,
+            },
+            required("--workspace")?,
+        )
+    } else {
+        for name in [
+            "--socket",
+            "--agent-dir",
+            "--inbox",
+            "--outbox",
+            "--workspace",
+        ] {
+            if flag(args, name).is_some() {
+                return Err(format!("{name} requires --cell").into());
+            }
+        }
+        (
+            ExecutionMode::Local {
+                listen: flag(args, "--listen").unwrap_or("127.0.0.1:8080").parse()?,
+            },
+            PathBuf::from(
+                flag(args, "--local")
+                    .ok_or("chat requires --local DIR or --cell FILE --workspace DIR")?,
+            ),
+        )
+    };
+    let state = flag(args, "--state")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace.join(".kuggis/chat"));
+    let config = cell::chat::Config {
+        mode,
+        workspace,
+        state,
+        assets: flag(args, "--assets").unwrap_or("web/dist").into(),
+        pi: flag(args, "--pi").unwrap_or("pi").into(),
+    };
+    tokio::runtime::Runtime::new()?.block_on(cell::chat::serve(config))
+}
+
+fn ui(args: &[String]) -> Fallible {
+    let config = cell::operator::Config {
+        tree: PathBuf::from(arg(args, 0, "TREE")?),
+        state: flag(args, "--state").unwrap_or(".kuggis/operator").into(),
+        assets: flag(args, "--assets").unwrap_or("web/dist").into(),
+        listen: flag(args, "--listen").unwrap_or("127.0.0.1:8080").parse()?,
+        binary: flag(args, "--bin").map(PathBuf::from),
+        sockets: flag(args, "--socket-dir").map(PathBuf::from),
+    };
+    tokio::runtime::Runtime::new()?.block_on(cell::operator::serve(config))
 }
 
 fn stdin_json<T: serde::de::DeserializeOwned>() -> Fallible<T> {
@@ -174,9 +264,7 @@ fn allow(args: &[String]) -> Fallible {
 }
 
 fn load_tree(dir: &str) -> Fallible<Tree> {
-    let mut cells = Vec::new();
-    walk(Path::new(dir), None, &mut cells)?;
-    Ok(Tree::new(cells)?)
+    Ok(cell::tree::load(Path::new(dir))?.0)
 }
 
 fn tree(args: &[String]) -> Fallible {
@@ -185,14 +273,12 @@ fn tree(args: &[String]) -> Fallible {
         let parent = tree
             .parent(&c.name)
             .map_or("-".to_string(), |p| p.name.to_string());
-        let room = if c.is_room() { " room" } else { "" };
         println!(
-            "{}\t{}\t{} grants\t{}{}",
+            "{}\t{}\t{} grants\t{}",
             c.name,
             parent,
             c.grants.len(),
-            c.hash(),
-            room
+            c.hash()
         );
     }
     Ok(())
@@ -201,34 +287,6 @@ fn tree(args: &[String]) -> Fallible {
 /// The directory is the tree: `DIR/x.json` is a cell under `DIR`'s own
 /// cell, and `DIR/x/` holds x's children. Re-parenting is `mv`. Dot
 /// entries and files that are not `.json` are skipped.
-fn walk(dir: &Path, under: Option<&Name>, out: &mut Vec<(Cell, Option<Name>)>) -> Fallible {
-    let mut entries = fs::read_dir(dir)
-        .map_err(|e| format!("{}: {e}", dir.display()))?
-        .collect::<Result<Vec<_>, _>>()?;
-    entries.sort_by_key(|e| e.file_name());
-    for entry in entries {
-        let path = entry.path();
-        let file = entry.file_name();
-        let file = file.to_string_lossy();
-        if file.starts_with('.') {
-            continue;
-        }
-        let at = |e: Invalid| format!("{}: {e}", path.display());
-        if path.is_dir() {
-            let name: Name = file.parse().map_err(at)?;
-            walk(&path, Some(&name), out)?;
-        } else if let Some(stem) = file.strip_suffix(".json") {
-            let name: Name = stem.parse().map_err(at)?;
-            let cell = load_cell(&path)?;
-            if cell.name != name {
-                return Err(format!("{}: holds cell {}", path.display(), cell.name).into());
-            }
-            out.push((cell, under.cloned()));
-        }
-    }
-    Ok(())
-}
-
 /// The cells named on the command line: NAME alone, or every cell in the tree.
 fn named(tree: &Tree, args: &[String]) -> Fallible<Vec<Name>> {
     match args.get(1).filter(|a| !a.starts_with("--")) {
@@ -314,6 +372,7 @@ fn observe(args: &[String]) -> Fallible {
         }
         None => Ssh { bin: None }.listing()?,
     };
+    cell::exe::cell_vms(&vms)?;
     let seen = cell::exe::observe(&vms, &ints);
     println!("{}", serde_json::to_string_pretty(&seen)?);
     Ok(())
@@ -324,8 +383,8 @@ fn setup(args: &[String]) -> Fallible {
     checked(cell::wall::setup(path)?)
 }
 
-/// The harnesses with a credential on the box, one word each.
-fn signed_in(signed: &BTreeSet<Harness>) -> String {
+/// The providers with a credential on the box, one word each.
+fn signed_in(signed: &BTreeSet<Provider>) -> String {
     if signed.is_empty() {
         return "nothing".into();
     }
@@ -404,15 +463,6 @@ fn ship(args: &[String]) -> Fallible {
     Ok(())
 }
 
-fn run_agent(args: &[String]) -> Fallible {
-    let cell = load_cell(flag(args, "--cell").ok_or("run: --cell CELLFILE")?)?;
-    let inbox = Path::new(flag(args, "--inbox").ok_or("run: --inbox DIR")?);
-    let outbox = Path::new(flag(args, "--outbox").ok_or("run: --outbox DIR")?);
-    let home = Path::new(flag(args, "--home").ok_or("run: --home DIR")?);
-    cell::run::serve(cell, inbox, outbox, home)?;
-    Ok(())
-}
-
 fn knock(args: &[String]) -> Fallible {
     let inbox = Path::new(flag(args, "--inbox").ok_or("knock: --inbox DIR")?);
     let said: Said = stdin_json()?;
@@ -426,7 +476,8 @@ fn root_of(ssh: &Ssh, tree: &Tree, name: &Name) -> Fallible<String> {
     tree.get(name)
         .ok_or_else(|| format!("{name}: not in the tree"))?;
     let (vms, _) = ssh.listing()?;
-    cell::exe::vm_of(&vms, name)
+    cell::exe::cell_vm(&vms, name)
+        .map_err(io::Error::other)?
         .map(|vm| vm.vm_name.clone())
         .ok_or_else(|| format!("{name}: no VM carries its tag; apply it first").into())
 }
@@ -434,15 +485,23 @@ fn root_of(ssh: &Ssh, tree: &Tree, name: &Name) -> Fallible<String> {
 fn brief(args: &[String]) -> Fallible {
     let tree = load_tree(arg(args, 0, "DIR")?)?;
     let name: Name = arg(args, 1, "NAME")?.parse()?;
-    let session: Name = arg(args, 2, "SESSION")?.parse()?;
+    let session: SessionId = arg(args, 2, "SESSION_ID")?.parse()?;
+    let request = flag(args, "--request")
+        .map(str::parse)
+        .transpose()?
+        .unwrap_or_else(RequestId::generate);
     let text = arg(args, 3, "TEXT")?.to_string();
     let ssh = Ssh { bin: None };
     let vm = root_of(&ssh, &tree, &name)?;
     let said = Said::Brief {
-        to: name.clone(),
-        session,
+        request,
+        session: SessionRef {
+            cell: name.clone(),
+            id: session,
+        },
         text,
     };
+    eprintln!("request {request}; reuse --request {request} when retrying this brief");
     let n = ssh.knock(&vm, &said)?;
     println!("{name}: inbox {n}");
     Ok(())
@@ -479,7 +538,7 @@ fn login(args: &[String]) -> Fallible {
     let tree = load_tree(arg(args, 0, "DIR")?)?;
     let name: Name = arg(args, 1, "NAME")?.parse()?;
     let vm = root_of(&Ssh { bin: None }, &tree, &name)?;
-    eprintln!("opening Claude Code as the agent on {vm}; use /login there");
+    eprintln!("opening Pi as the agent on {vm}; use /login there");
     let status = std::process::Command::new("ssh")
         .args([
             "-t",
@@ -487,7 +546,7 @@ fn login(args: &[String]) -> Fallible {
             "sudo",
             "-iu",
             cell::wall::AGENT,
-            "claude",
+            cell::wall::PI_BIN,
         ])
         .status()?;
     if !status.success() {

@@ -4,7 +4,7 @@
 
 use crate::apply::{Edge, Fallible};
 use crate::cell::{Cell, TAG_PREFIX};
-use crate::grant::{Grant, Harness, EDGE_SUFFIX};
+use crate::grant::{Grant, EDGE_SUFFIX};
 use crate::prim::{Hash, Host, Name};
 use crate::said::{Key, Said, Statement};
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,105 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::Duration;
+
+/// exe.dev names are a separate namespace from Kuggis cell names. Keep them
+/// validated before they become routing or destructive-operation targets.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct VmName(String);
+
+impl VmName {
+    pub fn parse(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        let bytes = value.as_bytes();
+        let label_char =
+            |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-';
+        if bytes.is_empty()
+            || bytes.len() > 63
+            || !bytes[0].is_ascii_alphanumeric()
+            || !bytes[bytes.len() - 1].is_ascii_alphanumeric()
+            || !bytes.iter().all(|byte| label_char(*byte))
+        {
+            return Err("Invalid exe.dev VM name".into());
+        }
+        Ok(Self(value))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl std::fmt::Display for VmName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl TryFrom<String> for VmName {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+impl From<VmName> for String {
+    fn from(value: VmName) -> Self {
+        value.0
+    }
+}
+
+/// Parsed exe.dev attachment syntax. Unrecognized external forms remain
+/// observable but never gain ownership authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttachmentTarget {
+    Vm(VmName),
+    Tag(String),
+    Auto(String),
+    Unknown(String),
+}
+impl AttachmentTarget {
+    pub fn parse(raw: &str) -> Self {
+        if let Some(name) = raw.strip_prefix("vm:") {
+            return VmName::parse(name.to_owned())
+                .map(Self::Vm)
+                .unwrap_or_else(|_| Self::Unknown(raw.into()));
+        }
+        if let Some(tag) = raw.strip_prefix("tag:") {
+            return if tag.is_empty() || tag.chars().any(char::is_whitespace) {
+                Self::Unknown(raw.into())
+            } else {
+                Self::Tag(tag.into())
+            };
+        }
+        if let Some(target) = raw.strip_prefix("auto:") {
+            return if target.is_empty() || target.chars().any(char::is_whitespace) {
+                Self::Unknown(raw.into())
+            } else {
+                Self::Auto(target.into())
+            };
+        }
+        Self::Unknown(raw.into())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrationKind<'a> {
+    GitHub,
+    HttpProxy,
+    Llm,
+    Brave,
+    Exa,
+    Other(&'a str),
+}
+impl<'a> IntegrationKind<'a> {
+    pub fn parse(raw: &'a str) -> Self {
+        match raw {
+            "github" => Self::GitHub,
+            "http-proxy" => Self::HttpProxy,
+            "llm" => Self::Llm,
+            "brave" => Self::Brave,
+            "exa" => Self::Exa,
+            value => Self::Other(value),
+        }
+    }
+}
 
 /// A door is an http-proxy integration named `door-<child>`, targeting the
 /// child's VM with `--peer`, attached to the parent's VM. The edge stamps
@@ -50,6 +149,9 @@ fn null_is_empty<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Vm {
     pub vm_name: String,
+    /// Binds destructive operations to this VM incarnation, not a reusable name.
+    #[serde(default)]
+    pub created_at: Option<String>,
     #[serde(default, deserialize_with = "null_is_empty")]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -88,15 +190,75 @@ pub fn vm_of<'a>(vms: &'a [Vm], cell: &Name) -> Option<&'a Vm> {
     vms.iter().find(|v| v.cell_name().as_ref() == Some(cell))
 }
 
+/// Resolve a cell's root VM only when its ownership tag is unique and the VM
+/// carries no competing cell tag. Callers that may act on a VM use this rather
+/// than treating the first matching tag as authority.
+pub fn cell_vm<'a>(vms: &'a [Vm], cell: &Name) -> Result<Option<&'a Vm>, String> {
+    let tag = format!("{TAG_PREFIX}{cell}");
+    let matches: Vec<_> = vms.iter().filter(|vm| vm.tags.contains(&tag)).collect();
+    if matches.len() > 1 {
+        return Err(format!("Multiple VMs carry {tag}"));
+    }
+    let Some(vm) = matches.first().copied() else {
+        return Ok(None);
+    };
+    if vm
+        .tags
+        .iter()
+        .filter(|candidate| candidate.starts_with(TAG_PREFIX))
+        .count()
+        != 1
+    {
+        return Err(format!("VM {} carries tags for multiple cells", vm.vm_name));
+    }
+    VmName::parse(vm.vm_name.clone())
+        .map_err(|_| format!("Cell VM has an invalid exe.dev name: {}", vm.vm_name))?;
+    Ok(Some(vm))
+}
+
+/// Validate all declared cell ownership before a reconciliation or route map
+/// is built. An ambiguous listing cannot be partially interpreted.
+pub fn cell_vms(vms: &[Vm]) -> Result<BTreeMap<Name, &Vm>, String> {
+    let mut result = BTreeMap::new();
+    for vm in vms {
+        let tags: Vec<_> = vm
+            .tags
+            .iter()
+            .filter(|tag| tag.starts_with(TAG_PREFIX))
+            .collect();
+        if tags.is_empty() {
+            continue;
+        }
+        VmName::parse(vm.vm_name.clone())
+            .map_err(|_| format!("Cell VM has an invalid exe.dev name: {}", vm.vm_name))?;
+        if tags.len() != 1 {
+            return Err(format!("VM {} carries tags for multiple cells", vm.vm_name));
+        }
+        let raw = tags[0].strip_prefix(TAG_PREFIX).unwrap();
+        let cell: Name = raw
+            .parse()
+            .map_err(|_| format!("VM {} carries an invalid cell tag", vm.vm_name))?;
+        if result.insert(cell.clone(), vm).is_some() {
+            return Err(format!("Multiple VMs carry the cell-{cell} tag"));
+        }
+    }
+    Ok(result)
+}
+
 impl Integration {
+    pub fn kind(&self) -> IntegrationKind<'_> {
+        IntegrationKind::parse(&self.kind)
+    }
     /// Attached to this VM, by name or by one of its tags. `auto:all` is
     /// not an attachment anyone declared, so it is not a grant.
     pub fn attached_to(&self, vm: &Vm) -> bool {
-        self.attachments.iter().any(|a| {
-            a.strip_prefix("vm:").is_some_and(|n| n == vm.vm_name)
-                || a.strip_prefix("tag:")
-                    .is_some_and(|t| vm.tags.iter().any(|x| x == t))
-        })
+        self.attachments
+            .iter()
+            .any(|raw| match AttachmentTarget::parse(raw) {
+                AttachmentTarget::Vm(name) => name.as_str() == vm.vm_name,
+                AttachmentTarget::Tag(tag) => vm.tags.iter().any(|x| x == &tag),
+                AttachmentTarget::Auto(_) | AttachmentTarget::Unknown(_) => false,
+            })
     }
 
     /// The child this integration is a door to, by its name.
@@ -125,18 +287,9 @@ impl Integration {
                     })
                     .collect()
             }
-            "llm" => {
-                let chatgpt = self
-                    .config
-                    .pointer("/providers/openai/source")
-                    .and_then(|v| v.as_str())
-                    == Some("chatgpt");
-                if chatgpt {
-                    vec![Grant::Agent(Harness::Codex)]
-                } else {
-                    vec![]
-                }
-            }
+            // Provider credentials now belong to Pi in each cell. A named
+            // integration remains an explicit edge grant if still attached.
+            "llm" if self.name == "llm" => vec![],
             _ => self.name.parse().map(Grant::Edge).into_iter().collect(),
         }
     }
@@ -331,12 +484,61 @@ mod tests {
     use crate::said::Secret;
 
     #[test]
+    fn ownership_lookup_refuses_ambiguous_vm_tags() {
+        let name: Name = "dev".parse().unwrap();
+        let vm = |vm_name: &str, tags: &[&str]| Vm {
+            vm_name: vm_name.into(),
+            created_at: Some("fixture".into()),
+            tags: tags.iter().map(|tag| (*tag).into()).collect(),
+            status: "running".into(),
+        };
+        assert_eq!(
+            cell_vm(&[vm("dev", &["cell-dev"])], &name)
+                .unwrap()
+                .unwrap()
+                .vm_name,
+            "dev"
+        );
+        assert!(cell_vm(&[vm("a", &["cell-dev"]), vm("b", &["cell-dev"])], &name).is_err());
+        assert!(cell_vm(&[vm("a", &["cell-dev", "cell-other"])], &name).is_err());
+        assert!(cell_vms(&[vm("a", &["cell-dev"]), vm("b", &["cell-dev"])]).is_err());
+    }
+
+    #[test]
+    fn attachment_parser_keeps_targets_typed_and_unknown_targets_inert() {
+        assert_eq!(
+            AttachmentTarget::parse("vm:dev"),
+            AttachmentTarget::Vm(VmName::parse("dev").unwrap())
+        );
+        assert_eq!(
+            AttachmentTarget::parse("tag:cell-dev"),
+            AttachmentTarget::Tag("cell-dev".into())
+        );
+        assert_eq!(
+            AttachmentTarget::parse("auto:all"),
+            AttachmentTarget::Auto("all".into())
+        );
+        assert_eq!(
+            AttachmentTarget::parse("vm:bad name"),
+            AttachmentTarget::Unknown("vm:bad name".into())
+        );
+        assert_eq!(
+            AttachmentTarget::parse("future:selector"),
+            AttachmentTarget::Unknown("future:selector".into())
+        );
+        assert!(serde_json::from_str::<VmName>("\"-unsafe\"").is_err());
+        assert!(serde_json::from_str::<VmName>("\"dev;echo-pwned\"").is_err());
+    }
+
+    #[test]
     fn a_log_in_name_order_is_put_in_sequence() {
         let secret = Secret::generate();
         let name: Name = "a".parse().unwrap();
         let said = Said::Session {
-            name: "s".parse().unwrap(),
-            harness: Harness::Claude,
+            session: crate::SessionRef {
+                cell: name.clone(),
+                id: crate::SessionId::generate(),
+            },
             state: crate::said::State::Idle,
             text: None,
         };
@@ -389,7 +591,7 @@ mod tests {
         assert!(vm_of(&vms.vms, &"plain".parse().unwrap()).is_none());
         let widget: Name = "widget".parse().unwrap();
         let want: Cell = serde_json::from_str(
-            r#"{"name":"widget","grants":[{"agent":"codex"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":true}},{"code":{"repo":"o/r","write":false}}]}"#,
+            r#"{"name":"widget","grants":[{"edge":"codex"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":true}},{"code":{"repo":"o/r","write":false}}]}"#,
         )
         .unwrap();
         let (cell, doors) = seen.of(&widget).unwrap();
