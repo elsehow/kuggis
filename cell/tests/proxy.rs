@@ -83,7 +83,7 @@ fn split(out: &[u8]) -> (String, Vec<u8>) {
 }
 
 fn allowed_policy() -> Policy {
-    let c = cell(r#"{"name":"t","grants":[{"agent":"claude"},{"host":"pypi.org"}]}"#);
+    let c = cell(r#"{"name":"t","grants":[{"provider":"anthropic"},{"host":"pypi.org"}]}"#);
     let mut p = Policy::for_cell(&c);
     p.private_ok = true; // the target lives on loopback
     p
@@ -175,7 +175,7 @@ fn refuses_an_allowed_name_that_resolves_somewhere_private() {
 #[test]
 fn edge_hosts_must_sit_at_the_gateway_and_ordinary_hosts_must_not() {
     let c = cell(
-        r#"{"name":"t","grants":[{"agent":"claude"},{"agent":"codex"},{"code":{"repo":"o/r","write":true}},{"host":"pypi.org"}]}"#,
+        r#"{"name":"t","grants":[{"provider":"anthropic"},{"provider":"openai"},{"edge":"codex"},{"code":{"repo":"o/r","write":true}},{"host":"pypi.org"}]}"#,
     );
     let policy = Policy::for_cell(&c);
     assert_eq!(
@@ -397,7 +397,7 @@ fn many_clients_at_once() {
 #[test]
 fn doors_pass_without_a_grant_but_only_at_the_gateway() {
     // the cell file names no door; the tree and the gateway decide
-    let policy = Policy::for_cell(&cell(r#"{"name":"t","grants":[{"agent":"claude"}]}"#));
+    let policy = Policy::for_cell(&cell(r#"{"name":"t","grants":[{"provider":"anthropic"}]}"#));
     assert!(policy
         .hosts
         .iter()
@@ -450,11 +450,11 @@ fn doors_pass_without_a_grant_but_only_at_the_gateway() {
 
 #[test]
 fn policy_for_a_cell_is_443_and_8443_and_never_private() {
-    let p = Policy::for_cell(&cell(r#"{"name":"t","grants":[{"agent":"codex"}]}"#));
+    let p = Policy::for_cell(&cell(r#"{"name":"t","grants":[{"provider":"openai"}]}"#));
     assert_eq!(p.ports, BTreeSet::from([443, 8443]));
     assert!(!p.private_ok);
     assert_eq!(
         p.hosts.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        ["codex.int.exe.xyz"]
+        ["api.openai.com", "auth.openai.com", "chatgpt.com"]
     );
 }

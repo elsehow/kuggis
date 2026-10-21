@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase", deny_unknown_fields)]
 pub enum Action {
     /// Make the VM and tag it with the cell's name.
@@ -37,7 +37,7 @@ impl fmt::Display for Action {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
     /// Hash of the declared cell: what the box must report in `Checked`.
@@ -187,7 +187,6 @@ impl Approved {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::grant::Harness;
 
     fn cell(json: &str) -> Cell {
         serde_json::from_str(json).unwrap()
@@ -197,7 +196,7 @@ mod tests {
         list.iter().map(|n| n.parse().unwrap()).collect()
     }
 
-    const WANT: &str = r#"{"name":"widget","grants":[{"agent":"claude"},{"agent":"codex"},{"code":{"repo":"example/widget","write":true}},{"host":"pypi.org"}]}"#;
+    const WANT: &str = r#"{"name":"widget","grants":[{"provider":"anthropic"},{"provider":"openai"},{"code":{"repo":"example/widget","write":true}},{"host":"pypi.org"}]}"#;
 
     #[test]
     fn a_new_cell() {
@@ -208,7 +207,6 @@ mod tests {
             p.actions,
             vec![
                 Action::Create,
-                Action::Attach(Grant::Agent(Harness::Codex)),
                 Action::Attach(Grant::Code {
                     repo: "example/widget".parse().unwrap(),
                     write: true,
@@ -219,17 +217,17 @@ mod tests {
             ]
         );
         assert_eq!(
-            serde_json::to_value(&p.actions[3]).unwrap(),
+            serde_json::to_value(&p.actions[2]).unwrap(),
             serde_json::json!({"open": "scratch"})
         );
-        assert_eq!(p.actions[3].to_string(), r#"{"open":"scratch"}"#);
+        assert_eq!(p.actions[2].to_string(), r#"{"open":"scratch"}"#);
     }
 
     #[test]
     fn a_settled_cell_plans_nothing() {
         let want = cell(WANT);
         let have = cell(
-            r#"{"name":"widget","grants":[{"agent":"codex"},{"code":{"repo":"example/widget","write":true}}]}"#,
+            r#"{"name":"widget","grants":[{"provider":"openai"},{"code":{"repo":"example/widget","write":true}}]}"#,
         );
         let doors = names(&["scratch"]);
         let p = Plan::new(
@@ -259,7 +257,6 @@ mod tests {
         assert_eq!(
             p.actions,
             vec![
-                Action::Attach(Grant::Agent(Harness::Codex)),
                 Action::Attach(Grant::Code {
                     repo: "example/widget".parse().unwrap(),
                     write: true,
@@ -280,7 +277,7 @@ mod tests {
 
     #[test]
     fn a_door_is_edge_work_and_leaves_the_box_alone() {
-        let want = cell(r#"{"name":"a","grants":[{"agent":"claude"}]}"#);
+        let want = cell(r#"{"name":"a","grants":[{"provider":"anthropic"}]}"#);
         let none = BTreeSet::new();
         let p = Plan::new(
             &want,
@@ -302,7 +299,9 @@ mod tests {
 
     #[test]
     fn box_side_grants_only_need_setup() {
-        let want = cell(r#"{"name":"a","grants":[{"agent":"claude"},{"host":"pypi.org"}]}"#);
+        let want = cell(
+            r#"{"name":"a","grants":[{"provider":"anthropic"},{"provider":"openai"},{"host":"pypi.org"}]}"#,
+        );
         let have = cell(r#"{"name":"a"}"#);
         let none = BTreeSet::new();
         let p = Plan::new(&want, &none, Some((&have, &none)), None, None);
@@ -314,7 +313,7 @@ mod tests {
 
     #[test]
     fn a_new_binary_needs_setup_and_the_approval_binds_it() {
-        let want = cell(r#"{"name":"a","grants":[{"agent":"claude"}]}"#);
+        let want = cell(r#"{"name":"a","grants":[{"provider":"anthropic"}]}"#);
         let none = BTreeSet::new();
         let (old, new) = (Hash::of(b"v1"), Hash::of(b"v2"));
         let have = Some((&want, &none));

@@ -24,17 +24,19 @@ impl fmt::Display for Invalid {
 
 impl std::error::Error for Invalid {}
 
-/// Words the `cell` binary uses as subcommands. A cell or session may not
+/// Words the `cell` binary uses as subcommands. A cell may not
 /// take one of these as its name.
 pub const RESERVED: &[&str] = &[
     "cell", "key", "say", "open", "allow", "tree", "plan", "observe", "proxy", "setup", "check",
     "probe", "door", "help", "apply", "adopt", "ship", "knock", "brief", "pull", "run", "login",
+    "chat", "session", "ui", "prepare", "relay",
 ];
 
 macro_rules! text {
     ($(#[$meta:meta])* $t:ident, $what:literal, $check:ident) => {
         $(#[$meta])*
-        #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, ts_rs::TS)]
+        #[ts(type = "string")]
         pub struct $t(String);
 
         impl $t {
@@ -84,7 +86,7 @@ macro_rules! text {
 }
 
 text!(
-    /// A cell, session or integration name: `[a-z0-9][a-z0-9-]*[a-z0-9]`, at
+    /// A cell or integration name: `[a-z0-9][a-z0-9-]*[a-z0-9]`, at
     /// most 63 bytes, not a command word. Doubles as a DNS label.
     Name, "name", name
 );
@@ -233,7 +235,8 @@ impl Url {
 macro_rules! digest {
     ($(#[$meta:meta])* $t:ident, $what:literal, $n:literal) => {
         $(#[$meta])*
-        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, ts_rs::TS)]
+        #[ts(type = "string")]
         pub struct $t([u8; $n]);
 
         impl $t {
@@ -294,6 +297,29 @@ digest!(
     /// replies to statements.
     Hash, "hash", 32
 );
+
+digest!(
+    /// An opaque, stable session identity: 128 random bits, 32 lowercase hex digits.
+    SessionId, "session id", 16
+);
+digest!(
+    /// One submission attempt. Retries reuse this ID; new instructions get a new ID.
+    RequestId, "request id", 16
+);
+
+macro_rules! random_id {
+    ($t:ident) => {
+        impl $t {
+            pub fn generate() -> Self {
+                let mut bytes = [0; 16];
+                getrandom::getrandom(&mut bytes).expect("OS random source");
+                Self(bytes)
+            }
+        }
+    };
+}
+random_id!(SessionId);
+random_id!(RequestId);
 
 impl Hash {
     pub const ZERO: Hash = Hash([0; 32]);

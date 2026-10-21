@@ -4,10 +4,50 @@
 //! invariants.
 
 use crate::cell::Cell;
-use crate::grant::{Grant, Harness};
+use crate::grant::Grant;
 use crate::prim::{Name, Repo};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::path::{Path, PathBuf};
+
+pub fn load(dir: &Path) -> crate::apply::Fallible<(Tree, BTreeMap<Name, PathBuf>)> {
+    fn walk(
+        dir: &Path,
+        parent: Option<Name>,
+        cells: &mut Vec<(Cell, Option<Name>)>,
+        paths: &mut BTreeMap<Name, PathBuf>,
+    ) -> crate::apply::Fallible {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let file = entry.file_name().to_string_lossy().to_string();
+            if file.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            if entry.file_type()?.is_symlink() {
+                return Err(
+                    format!("{}: symlinks are not cell declarations", path.display()).into(),
+                );
+            }
+            if path.is_dir() {
+                walk(&path, Some(file.parse()?), cells, paths)?;
+            } else if let Some(stem) = file.strip_suffix(".json") {
+                let name: Name = stem.parse()?;
+                let cell: Cell = serde_json::from_slice(&std::fs::read(&path)?)?;
+                if cell.name != name {
+                    return Err(format!("{}: holds cell {}", path.display(), cell.name).into());
+                }
+                paths.insert(name, path);
+                cells.push((cell, parent.clone()));
+            }
+        }
+        Ok(())
+    }
+    let mut cells = vec![];
+    let mut paths = BTreeMap::new();
+    walk(dir, None, &mut cells, &mut paths)?;
+    Ok((Tree::new(cells)?, paths))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeError {
@@ -25,13 +65,6 @@ pub enum TreeError {
     },
     /// More than one writable repository.
     TwoWritable(Name),
-    /// The vault beside something that could carry it out.
-    VaultBeside {
-        cell: Name,
-        grant: Grant,
-    },
-    /// pi needs Claude or Codex in the same cell to talk to a model.
-    PiAlone(Name),
 }
 
 impl fmt::Display for TreeError {
@@ -50,10 +83,6 @@ impl fmt::Display for TreeError {
                 write!(f, "{child}: {grant:?} is not covered by its parent")
             }
             TreeError::TwoWritable(n) => write!(f, "{n}: more than one writable repository"),
-            TreeError::VaultBeside { cell, grant } => {
-                write!(f, "{cell}: the vault beside {grant:?}")
-            }
-            TreeError::PiAlone(n) => write!(f, "{n}: pi needs claude or codex beside it"),
         }
     }
 }
@@ -180,26 +209,6 @@ fn check_cell(cell: &Cell) -> Result<(), TreeError> {
     if writable.len() > 1 {
         return Err(TreeError::TwoWritable(cell.name.clone()));
     }
-    if cell.grants.contains(&Grant::Vault) {
-        for g in &cell.grants {
-            let carries_out = matches!(
-                g,
-                Grant::Code { write: true, .. } | Grant::Edge(_) | Grant::Host(_)
-            );
-            if carries_out {
-                return Err(TreeError::VaultBeside {
-                    cell: cell.name.clone(),
-                    grant: g.clone(),
-                });
-            }
-        }
-    }
-    if cell.grants.contains(&Grant::Agent(Harness::Pi))
-        && !cell.grants.contains(&Grant::Agent(Harness::Claude))
-        && !cell.grants.contains(&Grant::Agent(Harness::Codex))
-    {
-        return Err(TreeError::PiAlone(cell.name.clone()));
-    }
     Ok(())
 }
 
@@ -220,10 +229,10 @@ mod tests {
     #[test]
     fn a_good_tree() {
         let t = Tree::new([
-            node("", r#"{"name":"coordinator","grants":[{"agent":"claude"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":false}},{"host":"pypi.org"}]}"#),
-            node("coordinator", r#"{"name":"widget","grants":[{"agent":"claude"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":false}},{"host":"pypi.org"}]}"#),
-            node("widget", r#"{"name":"widget-scratch","grants":[{"agent":"claude"},{"code":{"repo":"example/widget","write":false}}]}"#),
-            node("", r#"{"name":"thinker","grants":["vault",{"agent":"claude"},{"agent":"pi"}]}"#),
+            node("", r#"{"name":"coordinator","grants":[{"provider":"anthropic"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":false}},{"host":"pypi.org"}]}"#),
+            node("coordinator", r#"{"name":"widget","grants":[{"provider":"anthropic"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":false}},{"host":"pypi.org"}]}"#),
+            node("widget", r#"{"name":"widget-scratch","grants":[{"provider":"anthropic"},{"code":{"repo":"example/widget","write":false}}]}"#),
+            node("", r#"{"name":"research","grants":[{"provider":"anthropic"}]}"#),
         ])
         .unwrap();
         assert_eq!(t.len(), 4);
@@ -231,15 +240,15 @@ mod tests {
         assert_eq!(t.parent(&scratch).unwrap().name.as_str(), "widget");
         assert_eq!(t.children(&"coordinator".parse().unwrap()).count(), 1);
         assert!(t.parent(&"coordinator".parse().unwrap()).is_none());
-        assert!(t.get(&"thinker".parse().unwrap()).unwrap().is_room());
+        assert!(t.parent(&"research".parse().unwrap()).is_none());
     }
 
     #[test]
     fn the_edge_is_not_in_the_cell() {
         // the same cell, moved: same hash, different parent
-        let json = r#"{"name":"widget","grants":[{"agent":"claude"}]}"#;
-        let p = r#"{"name":"p","grants":[{"agent":"claude"}]}"#;
-        let q = r#"{"name":"q","grants":[{"agent":"claude"}]}"#;
+        let json = r#"{"name":"widget","grants":[{"provider":"anthropic"}]}"#;
+        let p = r#"{"name":"p","grants":[{"provider":"anthropic"}]}"#;
+        let q = r#"{"name":"q","grants":[{"provider":"anthropic"}]}"#;
         let a = Tree::new([node("", p), node("", q), node("p", json)]).unwrap();
         let b = Tree::new([node("", p), node("", q), node("q", json)]).unwrap();
         let widget: Name = "widget".parse().unwrap();
@@ -269,8 +278,8 @@ mod tests {
         // child wider than parent, three ways
         assert!(matches!(
             err(&[
-                ("", r#"{"name":"p","grants":[{"agent":"claude"}]}"#),
-                ("p", r#"{"name":"c","grants":[{"agent":"codex"}]}"#)
+                ("", r#"{"name":"p","grants":[{"provider":"anthropic"}]}"#),
+                ("p", r#"{"name":"c","grants":[{"provider":"openai"}]}"#)
             ]),
             TreeError::Wider { .. }
         ));
@@ -298,8 +307,8 @@ mod tests {
         assert!(matches!(
             err(&[
                 ("", r#"{"name":"g","grants":[]}"#),
-                ("g", r#"{"name":"p","grants":[{"agent":"claude"}]}"#),
-                ("p", r#"{"name":"c","grants":[{"agent":"claude"}]}"#)
+                ("g", r#"{"name":"p","grants":[{"provider":"anthropic"}]}"#),
+                ("p", r#"{"name":"c","grants":[{"provider":"anthropic"}]}"#)
             ]),
             TreeError::Wider { child, .. } if child.as_str() == "p"
         ));
@@ -309,26 +318,6 @@ mod tests {
                 r#"{"name":"a","grants":[{"code":{"repo":"o/r","write":true}},{"code":{"repo":"o/s","write":true}}]}"#
             )]),
             TreeError::TwoWritable("a".parse().unwrap())
-        );
-        assert!(matches!(
-            err(&[("", r#"{"name":"a","grants":["vault",{"host":"pypi.org"}]}"#)]),
-            TreeError::VaultBeside { .. }
-        ));
-        assert!(matches!(
-            err(&[("", r#"{"name":"a","grants":["vault",{"edge":"brave"}]}"#)]),
-            TreeError::VaultBeside { .. }
-        ));
-        assert!(matches!(
-            err(&[(
-                "",
-                r#"{"name":"a","grants":["vault",{"code":{"repo":"o/r","write":true}}]}"#
-            )]),
-            TreeError::VaultBeside { .. }
-        ));
-        assert!(Tree::new([node("", r#"{"name":"a","grants":["vault",{"code":{"repo":"o/r","write":false}},{"agent":"claude"}]}"#)]).is_ok());
-        assert_eq!(
-            err(&[("", r#"{"name":"a","grants":[{"agent":"pi"}]}"#)]),
-            TreeError::PiAlone("a".parse().unwrap())
         );
     }
 

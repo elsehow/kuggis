@@ -21,7 +21,7 @@ fn tmp(name: &str) -> PathBuf {
 
 fn start(dir: &Path) -> SocketAddr {
     let cell: Cell =
-        serde_json::from_str(r#"{"name":"child","grants":[{"agent":"claude"}]}"#).unwrap();
+        serde_json::from_str(r#"{"name":"child","grants":[{"provider":"anthropic"}]}"#).unwrap();
     let door = Arc::new(
         Door::new(&cell, dir.join("said"), dir.join("inbox")).with_limits(Limits {
             header_bytes: 2048,
@@ -107,7 +107,7 @@ fn the_log_is_served_from_where_you_left_off() {
 fn a_vouched_brief_or_reply_is_filed_and_nothing_else_is() {
     let d = tmp("knock");
     let addr = start(&d);
-    let brief = r#"{"brief":{"to":"child","session":"dev","text":"fix the tests"}}"#;
+    let brief = r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"child","id":"00000000000000000000000000000001"},"text":"fix the tests"}}"#;
 
     let (status, _) = post(addr, None, brief);
     assert_eq!(
@@ -138,9 +138,9 @@ fn a_vouched_brief_or_reply_is_filed_and_nothing_else_is() {
 
     // a brief for someone else, and things that only go upward
     for wrong in [
-        r#"{"brief":{"to":"other","session":"dev","text":"hi"}}"#,
+        r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"other","id":"00000000000000000000000000000001"},"text":"hi"}}"#,
         r#"{"verdict":{"repo":"o/r","head":"0123456789abcdef0123456789abcdef01234567","pass":true}}"#,
-        r#"{"session":{"name":"dev","harness":"claude","state":"idle"}}"#,
+        r#"{"session":{"session":{"cell":"child","id":"00000000000000000000000000000001"},"state":"idle"}}"#,
         r#"{"fetch":{"url":"https://example.com/"}}"#,
         &format!(
             r#"{{"checked":{{"cell":"{}","ok":true,"report":""}}}}"#,
@@ -152,14 +152,14 @@ fn a_vouched_brief_or_reply_is_filed_and_nothing_else_is() {
     }
     for bad in [
         "not json",
-        r#"{"brief":{"to":"child","session":"dev","text":"x","extra":1}}"#,
-        r#"{"brief":{"to":"child","session":"plan","text":"a command word"}}"#,
+        r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"child","id":"00000000000000000000000000000001"},"text":"x","extra":1}}"#,
+        r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"child","id":"plan"},"text":"a command word"}}"#,
     ] {
         let (status, _) = post(addr, Some("parent"), bad);
         assert_eq!(status, "HTTP/1.1 400 Bad Request", "{bad}");
     }
     let big = format!(
-        r#"{{"brief":{{"to":"child","session":"dev","text":"{}"}}}}"#,
+        r#"{{"brief":{{"request":"00000000000000000000000000000002","session":{{"cell":"child","id":"00000000000000000000000000000001"}},"text":"{}"}}}}"#,
         "x".repeat(5000)
     );
     let (status, _) = post(addr, Some("parent"), &big);

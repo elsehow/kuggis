@@ -23,7 +23,7 @@ use std::time::Duration;
 pub const MAX_BYTES: usize = 65536;
 
 /// What the agent may say, checked at the edge. The wall check alone says
-/// `Checked`; a session names a harness the cell runs; a verdict names a
+/// `Checked`; a session belongs to this cell; a verdict names a
 /// repository the cell holds. The rest is its to say, and the laptop or
 /// the parent decides what it means.
 pub fn admit(cell: &Cell, bytes: &[u8]) -> Result<Said, String> {
@@ -38,9 +38,10 @@ pub fn admit(cell: &Cell, bytes: &[u8]) -> Result<Said, String> {
     };
     match &said {
         Said::Checked { .. } => Err("only the wall check says checked".into()),
-        Said::Session { harness, .. } if !cell.harnesses().contains(harness) => {
-            Err(format!("no grant to run {harness}"))
-        }
+        Said::Session { session, .. } if &session.cell != &cell.name => Err(format!(
+            "session belongs to {}, not {}",
+            session.cell, cell.name
+        )),
         Said::Verdict { repo, .. } if !holds(repo) => Err(format!("no grant on {repo}")),
         _ => Ok(said),
     }
@@ -129,8 +130,7 @@ mod tests {
     use crate::said::Statement;
     use std::path::PathBuf;
 
-    const CELL: &str =
-        r#"{"name":"a","grants":[{"agent":"claude"},{"code":{"repo":"example/x","write":true}}]}"#;
+    const CELL: &str = r#"{"name":"a","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true}}]}"#;
 
     fn cell() -> Cell {
         serde_json::from_str(CELL).unwrap()
@@ -149,8 +149,12 @@ mod tests {
         let c = cell();
         let ok = |s: &str| admit(&c, s.as_bytes()).unwrap();
         let no = |s: &str| admit(&c, s.as_bytes()).unwrap_err();
-        ok(r#"{"session":{"name":"s","harness":"claude","state":"question","text":"which?"}}"#);
-        ok(r#"{"brief":{"to":"b","session":"s","text":"go"}}"#);
+        ok(
+            r#"{"session":{"session":{"cell":"a","id":"00000000000000000000000000000001"},"state":"question","text":"which?"}}"#,
+        );
+        ok(
+            r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"b","id":"00000000000000000000000000000001"},"text":"go"}}"#,
+        );
         ok(r#"{"fetch":{"url":"https://docs.example/"}}"#);
         ok(&format!(
             r#"{{"verdict":{{"repo":"example/x","head":"{}","pass":true}}}}"#,
@@ -162,8 +166,8 @@ mod tests {
         ));
         assert!(no(r#"{"checked":{"cell":"0000000000000000000000000000000000000000000000000000000000000000","ok":true,"report":""}}"#).contains("wall check"));
         assert!(
-            no(r#"{"session":{"name":"s","harness":"codex","state":"working"}}"#)
-                .contains("no grant to run \"codex\"")
+            no(r#"{"session":{"session":{"cell":"other","id":"00000000000000000000000000000001"},"state":"working"}}"#)
+                .contains("session belongs to other, not a")
         );
         assert!(no(&format!(
             r#"{{"verdict":{{"repo":"o/y","head":"{}","pass":true}}}}"#,
@@ -187,7 +191,7 @@ mod tests {
         let drop = |name: &str, body: &str| fs::write(outbox.join(name), body).unwrap();
         drop(
             "a.json",
-            r#"{"session":{"name":"s","harness":"claude","state":"working"}}"#,
+            r#"{"session":{"session":{"cell":"a","id":"00000000000000000000000000000001"},"state":"working"}}"#,
         );
         drop(
             "b.json",
