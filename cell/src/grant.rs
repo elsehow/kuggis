@@ -22,8 +22,18 @@ pub enum Grant {
     /// May run this harness. Claude's token lives on the box; Codex talks
     /// to exe.dev's edge; pi borrows whichever of those is present.
     Agent(Harness),
-    /// A repository at exe.dev's GitHub edge, read or write.
-    Code { repo: Repo, write: bool },
+    /// A repository at exe.dev's GitHub edge, read or write. `via` names a
+    /// fork the grant is carried by: the edge then holds the fork, and the
+    /// authority is still on `repo`. The edge is one GitHub App for every
+    /// cell, so what tells a parent from a child is which repository each
+    /// carries: the child its fork, the parent the upstream. Merging is
+    /// writing the upstream.
+    Code {
+        repo: Repo,
+        write: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        via: Option<Repo>,
+    },
     /// BigBrain's door: read and drop. Only on the laptop.
     Vault,
     /// Any other exe.dev integration, by name, attached by tag.
@@ -79,6 +89,22 @@ impl Grant {
         )
     }
 
+    /// The grant as the edge carries it: the fork in place of its upstream.
+    pub fn carried(&self) -> Grant {
+        match self {
+            Grant::Code {
+                write,
+                via: Some(fork),
+                ..
+            } => Grant::Code {
+                repo: fork.clone(),
+                write: *write,
+                via: None,
+            },
+            other => other.clone(),
+        }
+    }
+
     /// Does `self` reach at least as far as `other`? Equal grants do; a
     /// writable repo covers the same repo read-only; nothing else covers
     /// anything.
@@ -87,10 +113,15 @@ impl Grant {
             (
                 Grant::Code {
                     repo: a,
-                    write: true,
+                    write: wa,
+                    via: va,
                 },
-                Grant::Code { repo: b, .. },
-            ) => a == b,
+                Grant::Code {
+                    repo: b,
+                    write: wb,
+                    via: vb,
+                },
+            ) => a == b && (*wa || !*wb) && (va.is_none() || va == vb),
             _ => self == other,
         }
     }
@@ -104,7 +135,42 @@ mod tests {
         Grant::Code {
             repo: repo.parse().unwrap(),
             write,
+            via: None,
         }
+    }
+
+    fn via(repo: &str, write: bool, fork: &str) -> Grant {
+        Grant::Code {
+            repo: repo.parse().unwrap(),
+            write,
+            via: Some(fork.parse().unwrap()),
+        }
+    }
+
+    #[test]
+    fn a_fork_carries_the_upstream_grant() {
+        let g = via("o/r", true, "cells/r");
+        assert_eq!(
+            serde_json::to_string(&g).unwrap(),
+            r#"{"code":{"repo":"o/r","write":true,"via":"cells/r"}}"#
+        );
+        assert_eq!(g.carried(), code("cells/r", true));
+        assert_eq!(code("o/r", true).carried(), code("o/r", true));
+        assert!(
+            code("o/r", true).covers(&g),
+            "upstream write covers any fork"
+        );
+        assert!(via("o/r", true, "cells/r").covers(&g));
+        assert!(
+            !via("o/r", true, "other/r").covers(&g),
+            "another fork does not"
+        );
+        assert!(
+            !g.covers(&code("o/r", true)),
+            "a fork does not cover the upstream"
+        );
+        assert!(!code("o/r", false).covers(&g));
+        assert_eq!(g.hosts()[0].as_str(), GITHUB_EDGE);
     }
 
     #[test]

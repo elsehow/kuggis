@@ -110,16 +110,23 @@ impl Agent {
         self.home.join("work")
     }
 
-    /// Every granted repository, cloned once through the edge.
+    /// Every granted repository, cloned once through the edge, with
+    /// commits in the cell's name.
     fn clone_repos(&self) {
         let _ = fs::create_dir_all(self.work());
+        for (key, value) in [
+            ("user.name", self.cell.name.to_string()),
+            ("user.email", format!("{}@cell.invalid", self.cell.name)),
+        ] {
+            let _ = Command::new("git")
+                .args(["config", "--global", key, &value])
+                .status();
+        }
         for g in &self.cell.grants {
-            let Grant::Code { repo, .. } = g else {
+            let Grant::Code { repo, .. } = g.carried() else {
                 continue;
             };
-            let dir = self
-                .work()
-                .join(repo.as_str().rsplit('/').next().unwrap_or("repo"));
+            let dir = self.work().join(repo.as_str());
             if dir.exists() {
                 continue;
             }

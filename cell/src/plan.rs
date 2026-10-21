@@ -100,18 +100,19 @@ impl Plan {
         match have {
             None => {
                 actions.push(Action::Create);
-                actions.extend(want.edge_grants().cloned().map(Action::Attach));
+                actions.extend(want.edge_grants().map(Grant::carried).map(Action::Attach));
                 actions.extend(children.iter().cloned().map(Action::Open));
                 actions.push(Action::Setup);
             }
             Some((have, doors)) => {
-                for g in want.edge_grants() {
+                let carried: BTreeSet<Grant> = want.edge_grants().map(Grant::carried).collect();
+                for g in &carried {
                     if !have.grants.contains(g) {
                         actions.push(Action::Attach(g.clone()));
                     }
                 }
                 for g in have.edge_grants() {
-                    if !want.grants.contains(g) {
+                    if !carried.contains(g) {
                         actions.push(Action::Detach(g.clone()));
                     }
                 }
@@ -210,7 +211,8 @@ mod tests {
                 Action::Attach(Grant::Agent(Harness::Codex)),
                 Action::Attach(Grant::Code {
                     repo: "elsehow/airo".parse().unwrap(),
-                    write: true
+                    write: true,
+                    via: None
                 }),
                 Action::Open("scratch".parse().unwrap()),
                 Action::Setup,
@@ -260,11 +262,13 @@ mod tests {
                 Action::Attach(Grant::Agent(Harness::Codex)),
                 Action::Attach(Grant::Code {
                     repo: "elsehow/airo".parse().unwrap(),
-                    write: true
+                    write: true,
+                    via: None
                 }),
                 Action::Detach(Grant::Code {
                     repo: "elsehow/airo".parse().unwrap(),
-                    write: false
+                    write: false,
+                    via: None
                 }),
                 Action::Detach(Grant::Edge("brave".parse().unwrap())),
                 Action::Open("new".parse().unwrap()),

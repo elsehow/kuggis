@@ -59,6 +59,18 @@ A cell file:
 ]}
 ```
 
+The edge is one GitHub App for every cell, so GitHub cannot tell a parent
+from a child. What tells them apart is which repository each carries. A
+child's grant `{"code":{"repo":"elsehow/kuggis","write":true,"via":"cells/kuggis"}}`
+is authority on the upstream carried by a fork under an org you own: the
+edge holds the fork, the child pushes there and reports a branch upward.
+Its parent carries the upstream, opens the pull request and merges it.
+Merging is writing the upstream, and nothing else enforces it. A parent
+writing the upstream covers a child writing it through any fork, and a
+codebase counts once toward the one-writable-repository rule, so the
+parent may carry the fork too, to sync it and fetch the child's branches.
+Clones land in `work/<owner>/<repo>`.
+
 A cell does not know where it sits. The directory is the tree:
 `cells/forecasting.json` is held by the human, `cells/forecasting/airo.json`
 sits under forecasting, and re-parenting is `mv`. The box has no use for

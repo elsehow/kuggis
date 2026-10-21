@@ -5,8 +5,8 @@
 
 use crate::cell::Cell;
 use crate::grant::{Grant, Harness};
-use crate::prim::Name;
-use std::collections::BTreeMap;
+use crate::prim::{Name, Repo};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,12 +167,17 @@ impl Tree {
 }
 
 fn check_cell(cell: &Cell) -> Result<(), TreeError> {
-    let writable = cell
+    let writable: BTreeSet<&Repo> = cell
         .grants
         .iter()
-        .filter(|g| matches!(g, Grant::Code { write: true, .. }))
-        .count();
-    if writable > 1 {
+        .filter_map(|g| match g {
+            Grant::Code {
+                repo, write: true, ..
+            } => Some(repo),
+            _ => None,
+        })
+        .collect();
+    if writable.len() > 1 {
         return Err(TreeError::TwoWritable(cell.name.clone()));
     }
     if cell.grants.contains(&Grant::Vault) {

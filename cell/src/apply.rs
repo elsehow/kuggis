@@ -336,32 +336,33 @@ fn attach(edge: &dyn Edge, ints: &[Integration], cell: &Name, tag: &str, g: &Gra
         edge.run(&["integrations", "attach", &i.name, tag])?;
         return Ok(());
     }
-    match g {
-        Grant::Code { repo, write } => {
-            let mut args = vec![
-                "integrations".to_string(),
-                "add".into(),
-                "github".into(),
-                format!("--name={}", github_name(repo, *write)),
-                format!("--repository={repo}"),
-            ];
-            if !write {
-                args.push("--readonly".into());
-            }
-            args.push(format!("--attach={tag}"));
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            edge.run(&args)?;
-            Ok(())
-        }
-        other => Err(format!(
-            "{cell}: no exe.dev integration is exactly {other}; add one, then apply again"
+    let Grant::Code { repo, write, .. } = g else {
+        return Err(format!(
+            "{cell}: no exe.dev integration is exactly {g}; add one, then apply again"
         )
-        .into()),
-    }
+        .into());
+    };
+    let (flag, suffix) = if *write {
+        (None, "")
+    } else {
+        (Some("--readonly"), "-ro")
+    };
+    let mut args = vec![
+        "integrations".to_string(),
+        "add".into(),
+        "github".into(),
+        format!("--name={}", github_name(repo, suffix)),
+        format!("--repository={repo}"),
+    ];
+    args.extend(flag.map(str::to_string));
+    args.push(format!("--attach={tag}"));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    edge.run(&args)?;
+    Ok(())
 }
 
-/// `gh-<owner>-<repo>`, `-ro` when read-only, in the characters a name allows.
-fn github_name(repo: &Repo, write: bool) -> String {
+/// `gh-<owner>-<repo>` and a suffix, in the characters a name allows.
+fn github_name(repo: &Repo, suffix: &str) -> String {
     let mut name = String::from("gh-");
     for c in repo.as_str().chars() {
         if c.is_ascii_alphanumeric() {
@@ -371,9 +372,7 @@ fn github_name(repo: &Repo, write: bool) -> String {
         }
     }
     let mut name = name.trim_end_matches('-').to_string();
-    if !write {
-        name.push_str("-ro");
-    }
+    name.push_str(suffix);
     name.chars().take(63).collect()
 }
 
@@ -605,6 +604,25 @@ mod tests {
     }
 
     #[test]
+    fn a_child_writes_its_fork_and_the_parent_writes_the_upstream() {
+        let f = Fake::default();
+        let pins = pins();
+        let p = r#"{"name":"p","grants":[{"agent":"claude"},{"code":{"repo":"elsehow/x","write":true}},{"code":{"repo":"elsehow/x","write":true,"via":"cells/x"}}]}"#;
+        let c = r#"{"name":"c","grants":[{"agent":"claude"},{"code":{"repo":"elsehow/x","write":true,"via":"cells/x"}}]}"#;
+        let t = tree(&[("", p), ("p", c)]);
+        apply(&f, &pins, &t, &approve(&f, &pins, &t), &mut Vec::new()).unwrap();
+        let calls = f.calls();
+        for call in [
+            "integrations add github --name=gh-cells-x --repository=cells/x --attach=tag:cell-c",
+            "integrations attach gh-cells-x tag:cell-p",
+            "integrations add github --name=gh-elsehow-x --repository=elsehow/x --attach=tag:cell-p",
+        ] {
+            assert!(calls.contains(&call.to_string()), "{call}\n{calls:?}");
+        }
+        assert!(approve(&f, &pins, &t).plans().values().all(Plan::is_empty));
+    }
+
+    #[test]
     fn a_new_binary_rolls_out_through_setup() {
         let f = Fake::default();
         let pins = pins();
@@ -675,7 +693,8 @@ mod tests {
             approved.plans()[&a].actions,
             [Action::Detach(Grant::Code {
                 repo: "o/y".parse().unwrap(),
-                write: true
+                write: true,
+                via: None
             })]
         );
         let e = apply(&f, &pins, &t, &approved, &mut Vec::new())
@@ -892,9 +911,9 @@ mod tests {
 
     #[test]
     fn github_integration_names() {
-        let n = |r: &str, w| github_name(&r.parse().unwrap(), w);
-        assert_eq!(n("elsehow/airo", true), "gh-elsehow-airo");
-        assert_eq!(n("elsehow/airo", false), "gh-elsehow-airo-ro");
-        assert_eq!(n("Some-Org/my.repo_x", true), "gh-some-org-my-repo-x");
+        let n = |r: &str, s| github_name(&r.parse().unwrap(), s);
+        assert_eq!(n("elsehow/airo", ""), "gh-elsehow-airo");
+        assert_eq!(n("elsehow/airo", "-ro"), "gh-elsehow-airo-ro");
+        assert_eq!(n("Some-Org/my.repo_x", ""), "gh-some-org-my-repo-x");
     }
 }

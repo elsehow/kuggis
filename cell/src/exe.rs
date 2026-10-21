@@ -42,10 +42,15 @@ pub fn door_of_host(host: &Host) -> Option<Name> {
         .ok()
 }
 
+/// exe.dev prints an empty list as `null`.
+fn null_is_empty<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    Ok(Option::<Vec<String>>::deserialize(d)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Vm {
     pub vm_name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_is_empty")]
     pub tags: Vec<String>,
     #[serde(default)]
     pub status: String,
@@ -61,7 +66,7 @@ pub struct Integration {
     pub name: String,
     #[serde(rename = "type")]
     pub kind: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_is_empty")]
     pub attachments: Vec<String>,
     #[serde(default)]
     pub config: serde_json::Value,
@@ -106,18 +111,18 @@ impl Integration {
         }
         match self.kind.as_str() {
             "github" => {
-                let write = !self
-                    .config
-                    .get("readonly")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                let readonly = self.config.get("readonly").and_then(|v| v.as_bool()) == Some(true);
                 self.config
                     .get("repositories")
                     .and_then(|r| r.as_array())
                     .into_iter()
                     .flatten()
                     .filter_map(|r| r.as_str()?.parse().ok())
-                    .map(|repo| Grant::Code { repo, write })
+                    .map(|repo| Grant::Code {
+                        repo,
+                        write: !readonly,
+                        via: None,
+                    })
                     .collect()
             }
             "llm" => {
@@ -357,6 +362,7 @@ mod tests {
     const INTS: &str = r#"[
       {"name":"gh-airo-dev","type":"github","attachments":["vm:airo-dev"],"config":{"repositories":["elsehow/airo","forecastingresearch/AIRO"],"installation_id":1}},
       {"name":"gh-ro","type":"github","attachments":["tag:cell-airo"],"config":{"repositories":["o/r"],"readonly":true}},
+      {"name":"gh-loose","type":"github","attachments":null,"config":{"repositories":["o/loose"]}},
       {"name":"codex","type":"llm","attachments":["tag:cell-airo"],"config":{"providers":{"openai":{"enabled":true,"source":"chatgpt"}}}},
       {"name":"llm","type":"llm","attachments":["auto:all"],"config":{"providers":{"openai":{"enabled":true,"source":"managed"}}}},
       {"name":"brave","type":"brave","attachments":["vm:scratch"],"config":{}},

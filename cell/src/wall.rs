@@ -12,7 +12,7 @@
 //! agent, and signs what it saw.
 
 use crate::cell::Cell;
-use crate::grant::{Harness, EDGE_SUFFIX};
+use crate::grant::{Harness, EDGE_SUFFIX, GITHUB_EDGE};
 use crate::log;
 use crate::prim::Hash;
 use crate::said::{Said, Secret, State, Statement};
@@ -200,7 +200,7 @@ WorkingDirectory={AGENT_HOME}
 Environment=HOME={AGENT_HOME}
 Environment=HTTPS_PROXY=http://{PROXY_ADDR} HTTP_PROXY=http://{PROXY_ADDR} NO_PROXY=
 Environment=https_proxy=http://{PROXY_ADDR} http_proxy=http://{PROXY_ADDR} no_proxy=
-Environment={CLAUDE_ENV}
+Environment={CLAUDE_ENV} GH_HOST={GITHUB_EDGE}
 ExecStart={BIN} run --cell {ETC}/cell.json --inbox {INBOX} --outbox {OUTBOX} --home {AGENT_HOME}
 Restart=always
 RestartSec=2
@@ -260,7 +260,7 @@ fn profile() -> String {
 if [ \"$(id -un)\" = {AGENT} ]; then
   export HTTPS_PROXY=http://{PROXY_ADDR} HTTP_PROXY=http://{PROXY_ADDR} NO_PROXY=
   export https_proxy=$HTTPS_PROXY http_proxy=$HTTP_PROXY no_proxy=
-  export {CLAUDE_ENV}
+  export {CLAUDE_ENV} GH_HOST={GITHUB_EDGE}
 fi
 "
     )
