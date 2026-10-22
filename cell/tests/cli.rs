@@ -276,8 +276,7 @@ fn tree_allow_plan_and_observe() {
         serde_json::json!({"widget": ["widget-scratch"]})
     );
     assert!(
-        observed["cells"].get("svc-1").is_none()
-            && observed["cells"].get("toolbox-dev").is_none(),
+        observed["cells"].get("svc-1").is_none() && observed["cells"].get("toolbox-dev").is_none(),
         "a VM without a cell tag is not a cell: {}",
         observed["cells"]
     );

@@ -28,7 +28,8 @@ Build the frontend and start the operator UI:
 ```sh
 npm ci --prefix web
 npm run build --prefix web
-cargo run --manifest-path cell/Cargo.toml -- ui tree \
+mkdir -p .kuggis/tree
+cargo run --manifest-path cell/Cargo.toml -- ui .kuggis/tree \
   --bin cell/target/x86_64-unknown-linux-musl/release/cell
 ```
 
@@ -70,14 +71,25 @@ cells. See [web/README.md](web/README.md) for development and test commands.
 
 ## Declare and run cells
 
-[tree/](tree/README.md) holds the checked-in cell declarations and pinned
-public keys. A cell file is `<name>.json`; its children live in the
-`<name>/` directory beside it. The current tree gives `kuggis` upstream
-write authority and `project-worker` a development fork.
+Keep live declarations and identity pins in an ignored local directory such
+as `.kuggis/tree/`, or outside the source checkout. They describe your
+repositories, permissions, providers, and deployment topology. Operator state,
+chat data, and raw run evidence are private local state too.
+`python3 scripts/check-private-state.py` checks the Git index for these paths;
+add `--history` before publishing. `scripts/pre-push` provides the same check
+for every outgoing commit when installed as a Git hook. Review content before
+publishing reports or fixtures; the check enforces paths, not arbitrary secrets.
+
+[examples/tree/](examples/tree/README.md) contains synthetic declarations for
+learning the format. A cell file is `<name>.json`; its children live in the
+`<name>/` directory beside it. Development happens in a cell's own workspace;
+optional subcells provide separate environments for delegated work.
+
+After creating a cell named `project` in the UI:
 
 ```sh
-cell tree tree
-cell allow tree/kuggis/project-worker.json
+cell tree .kuggis/tree
+cell allow .kuggis/tree/project.json
 ```
 
 Provisioning uses the operator's SSH access to exe.dev. Build a Linux
@@ -86,27 +98,27 @@ cargo-zigbuild, Zig, and the Rust target:
 
 ```sh
 cargo zigbuild --manifest-path cell/Cargo.toml --release --locked --target x86_64-unknown-linux-musl
-cell plan tree --bin cell/target/x86_64-unknown-linux-musl/release/cell
+cell plan .kuggis/tree --bin cell/target/x86_64-unknown-linux-musl/release/cell
 ```
 
 Inspect the plan, then repeat its approval hash with the same binary:
 
 ```sh
-cell apply tree --bin cell/target/x86_64-unknown-linux-musl/release/cell --approve HASH
+cell apply .kuggis/tree --bin cell/target/x86_64-unknown-linux-musl/release/cell --approve HASH
 ```
 
 Apply observes and replans between actions. It stops if the required changes
 exceed the approval. Setup installs the wall and services, runs boundary
 probes, and signs the result. Keys are pinned on first contact in
-`tree/.pins/`.
+`.kuggis/tree/.pins/`.
 
 Sign in, send a brief, and read the verified log:
 
 ```sh
-cell login tree project-worker
+cell login .kuggis/tree project
 session_id=$(cell session new)
-cell brief tree project-worker "$session_id" "Inspect the code and propose a cleanup."
-cell pull tree project-worker
+cell brief .kuggis/tree project "$session_id" "Inspect the code and propose a cleanup."
+cell pull .kuggis/tree project
 ```
 
 Another brief to the same session ID resumes its conversation. For a retry
@@ -145,7 +157,7 @@ files stay untouched. Imported conversations are archived; Claude tool exchanges
 are represented as text in their Pi history. The inbox continues through the
 same cell-scoped Pi service, and run state is shipped to the signed log.
 
-The UI uses the checked-in tree. It does not invent projects or automatically
+The UI uses the local tree you select. It does not invent projects or automatically
 connect external accounts. Add cells in the UI or through declarations; enter each
 connection's MCP URL/token in its settings. Provider credentials belong to the
 selected cell.
@@ -156,9 +168,9 @@ selected cell.
 systemd-nspawn environment. The agent can use `sudo`, install packages, edit
 `/etc`, and run localhost services. The VM host retains the authoritative
 declaration, CONNECT proxy, firewall, signing key, inbox, and signed log. Guest
-root maps to host UID 524288. Package downloads require explicit host grants;
-the Kuggis declaration includes Ubuntu, Rust, Node/npm, crates.io and GitHub
-release hosts. Child declarations are not automatically expanded.
+root maps to host UID 524288. Package downloads require explicit host grants
+for the registries and release hosts a cell needs. Child declarations are not
+automatically expanded.
 
 Before migrating, setup refuses active runs and saves the previous runtime,
 units, declaration, firewall and home archive under the root-only directory

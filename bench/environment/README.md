@@ -1,6 +1,6 @@
 # Environment autonomy bench
 
-Production integration: [migration acceptance and live rollout](PRODUCTION-REPORT.md).
+Production integration: [migration acceptance results](PRODUCTION-REPORT.md).
 
 Architecture experiment result: [22/22 cases passed on exe.dev](REPORT.md), including a
 full VM reboot. The report also records an intermittent existing auth-test failure.
@@ -37,7 +37,9 @@ source commit and binary hash. Deletion requires matching both the tag and VM
 incarnation. Evidence includes command arguments, exit statuses, timings, stdout,
 stderr, host namespace/mount observations, service journals, and JSON/Markdown
 reports. These contain no real provider credentials; the signing key is synthetic
-and remains on the disposable VM. The report always includes all required cases:
+and remains on the disposable VM. Raw evidence can still identify an account's
+VMs, source revisions, network, and local paths. Keep it in ignored `results/`
+or private storage; publish only reviewed aggregate results. The report always includes all required cases:
 unrun or dependency-blocked cases are `unverified`, never `pass`. Any non-pass
 gives the controller a nonzero exit status.
 

@@ -252,7 +252,10 @@ mod tests {
         let a = Tree::new([node("", p), node("", q), node("p", json)]).unwrap();
         let b = Tree::new([node("", p), node("", q), node("q", json)]).unwrap();
         let widget: Name = "widget".parse().unwrap();
-        assert_eq!(a.get(&widget).unwrap().hash(), b.get(&widget).unwrap().hash());
+        assert_eq!(
+            a.get(&widget).unwrap().hash(),
+            b.get(&widget).unwrap().hash()
+        );
         assert_ne!(a.parent(&widget), b.parent(&widget));
         assert_ne!(a, b);
     }
