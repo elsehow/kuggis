@@ -212,5 +212,7 @@ remote revocation. No RunPod/exe.dev API lifecycle implementation is claimed.
 ## Execution log
 
 - Planning: this document records the agreed sequence and merge gates.
-- Prerequisite #40: pending review/merge.
-- PRs 1–5: not yet implemented.
+- Planning document merged in #41.
+- Prerequisite #40: self-reviewed, verified, and merged (31cf7ff).
+- PR 1: shared contracts/invariants implemented; review and merge tracked in its PR.
+- PRs 2–5: not yet implemented.

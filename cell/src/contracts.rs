@@ -8,6 +8,8 @@ mod tests {
     #[test]
     fn generate_types() {
         let config = Config::from_env();
+        crate::resource::ResourcePlan::export_all(&config).unwrap();
+        crate::resource::ResourceOperation::export_all(&config).unwrap();
         crate::publish::PublicationReceipt::export_all(&config).unwrap();
         crate::chat::oauth::AuthFlow::export_all(&config).unwrap();
         crate::chat::oauth::LoginRequest::export_all(&config).unwrap();
