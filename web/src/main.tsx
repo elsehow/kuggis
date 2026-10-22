@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useMemo, useState, type FormEvent } from "react";
+import { StrictMode, Fragment, createContext, useContext, useEffect, useMemo, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AssistantRuntimeProvider, AttachmentPrimitive, ComposerPrimitive, MessagePrimitive,
@@ -10,7 +10,7 @@ import {
 import {
   createPiHttpClient, usePiRuntime, usePiRuntimeExtras, usePiSession,
   usePiHostUiRequests, type PiHostUiRequest, type PiHostUiResponse,
-  type PiModelInfo,
+  type PiModelInfo, type PiThreadMetadata, type PiThinkingLevel,
 } from "@assistant-ui/react-pi";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -43,7 +43,10 @@ const guardedImageAttachments: AttachmentAdapter = {
   remove: () => imageAttachments.remove(),
 };
 
+const ChatMetadata = createContext<PiThreadMetadata[]>([]);
+
 function App() {
+  const [cellsHidden, setCellsHidden] = useState(false);
   const [cells, setCells] = useState<CellInfo[]>([]);
   const [mode, setMode] = useState("cells");
   const [canApply, setCanApply] = useState(false);
@@ -108,7 +111,7 @@ function App() {
   const creation = creating && <CreateCell cells={cells} parent={newParent} id={creationId} onId={setCreation} onClose={() => { setCreating(false); setCreation(null); void load(); }} onStarted={load} onDelete={canDelete ? openDeletion : undefined} onReady={async (job) => { await load(); setCreating(false); setCreation(null); choose(job.cell.name, job.phase.session.id, true); }} />;
   const deletion = deleting && <DeleteCell name={deleteName} id={deletionId} onId={setDeletion} onClose={() => { setDeleting(false); setDeletion(null); void load(); }} onChanged={load} onDeleted={async () => { await load(); setDeleting(false); setDeletion(null); choose(null); }} />;
   const standalone = mode === "standalone";
-  const cellsPane = !standalone && <aside className="cells-pane" aria-label="Cells">
+  const cellsPane = !standalone && !cellsHidden && <aside className="cells-pane" aria-label="Cells">
     <div className="pane-title">Cells</div>
     {canCreate && <button className="new-cell-button" onClick={() => openCreation(null)}>＋ Cell</button>}
     {error && <div role="alert" className="inline-error">{error}<button onClick={() => void load()}>Retry</button></div>}
@@ -117,17 +120,19 @@ function App() {
   const content = cell
     ? <CellWorkspace key={cell.name} cell={cell} standalone={standalone} local={mode !== "cells"} canApply={canApply} reload={load} onDelete={canDelete ? () => openDeletion(cell.name, cell.deletion?.id) : undefined} />
     : <main className="empty-main">{!loaded ? "" : cells.length === 0 ? (canCreate ? "No cells yet. Create one with ＋ Cell." : "No cells are declared.") : "No cell is available. Choose one from the list to see its status."}</main>;
-  return <><div className={standalone ? "shell standalone" : "shell"}>{cellsPane}{content}</div>{creation}{deletion}</>;
+  return <><div className={standalone || cellsHidden ? "shell standalone" : "shell"}>{cellsPane}{content}{!standalone && <button className="cell-menu" aria-label={cellsHidden ? "Show cells" : "Hide cells"} aria-expanded={!cellsHidden} onClick={() => setCellsHidden(!cellsHidden)}>☰</button>}</div>{creation}{deletion}</>;
 }
 
 function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: { cell: CellInfo; standalone: boolean; local: boolean; canApply: boolean; reload: () => Promise<void>; onDelete?: () => void }) {
   const [error, setError] = useState("");
+  const [metadata, setMetadata] = useState<PiThreadMetadata[]>([]);
   const [models, setModels] = useState<PiModelInfo[]>([]);
   const [changingModel, setChangingModel] = useState(false);
   const [archived, setArchived] = useState(false);
   const [settings, setSettings] = useState(new URLSearchParams(location.search).get("setup") === "1");
   const base = standalone ? "/api" : `/api/cells/${cell.name}`;
-  const client = useMemo(() => createPiHttpClient({ baseUrl: `${base}/pi`, fetchImpl(input, init) {
+  const client = useMemo(() => {
+    const transport = createPiHttpClient({ baseUrl: `${base}/pi`, fetchImpl(input, init) {
     const headers = new Headers(init?.headers);
     if (init?.method === "POST" && !headers.has("X-Request-ID")) headers.set("X-Request-ID", crypto.randomUUID().replaceAll("-", ""));
     // Reject oversized bodies before the server does (413) so the error is explainable.
@@ -135,7 +140,36 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
       return Promise.reject(new Error(`Message too large (${mib(utf8Length(init.body))} MiB, limit ${mib(MAX_MESSAGE_BODY_BYTES)} MiB). Remove some images and retry.`));
     }
     return fetch(input, { ...init, headers });
-  } }), [base]);
+  } });
+    const key = `kuggis:model:${base}`;
+    const remember = (model: { provider: string; modelId: string }) => { try { localStorage.setItem(key, JSON.stringify(model)); } catch {} };
+    return { ...transport,
+      async setModel(id: string, model: { provider: string; modelId: string }) { await transport.setModel(id, model); remember(model); },
+      async sendMessage(...args: Parameters<typeof transport.sendMessage>) {
+        await transport.sendMessage(...args);
+        try {
+          const { config } = (await transport.getThread(args[0])).metadata;
+          if (config?.provider && config.modelId) remember({ provider: config.provider, modelId: config.modelId });
+        } catch { /* Sending succeeded; a preference refresh must not report failure. */ }
+      },
+      async createThread(input: Parameters<typeof transport.createThread>[0]) {
+        const snapshot = await transport.createThread(input);
+        let model;
+        try { model = JSON.parse(localStorage.getItem(key) ?? "null"); } catch {}
+        if (!model) {
+          const recent = (await transport.listThreads({ includeArchived: true })).filter((row) => row.id !== snapshot.metadata.id)
+            .sort((a, b) => (Date.parse(b.updatedAt ?? b.createdAt ?? "") || 0) - (Date.parse(a.updatedAt ?? a.createdAt ?? "") || 0))
+            .find((row) => row.config?.provider && row.config.modelId);
+          if (recent?.config) model = { provider: recent.config.provider, modelId: recent.config.modelId };
+        }
+        if (model?.provider && model?.modelId) {
+          await transport.setModel(snapshot.metadata.id, model);
+          return transport.getThread(snapshot.metadata.id);
+        }
+        return snapshot;
+      },
+    };
+  }, [base]);
   const runtime = usePiRuntime({
     client, initialThreadId: new URLSearchParams(location.search).get("chat") ?? undefined, includeArchived: true,
     isSendDisabled: changingModel,
@@ -145,7 +179,13 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
   });
   const loadModels = () => client.getAvailableModels().then(setModels).catch((e) => setError(explain(e)));
   useEffect(() => { void loadModels(); }, [client]);
-  return <AssistantRuntimeProvider runtime={runtime}>
+  useEffect(() => {
+    let disposed = false;
+    const poll = async () => { try { const rows = await client.listThreads({ includeArchived: true }); if (!disposed) setMetadata(rows); } catch {} };
+    void poll(); const timer = setInterval(() => void poll(), 3000);
+    return () => { disposed = true; clearInterval(timer); };
+  }, [client]);
+  return <AssistantRuntimeProvider runtime={runtime}><ChatMetadata.Provider value={metadata}>
     <div className="workspace">
       <aside className="sidebar" aria-label="Chats">
         <header className="sidebar-header"><span className="sidebar-cell" title={cell.name}>{label(cell)}</span>
@@ -154,8 +194,8 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
         </header>
         <ThreadListPrimitive.Root className="thread-list">
           <ThreadListPrimitive.New className="new-chat">＋ New chat</ThreadListPrimitive.New>
-          <ThreadListPrimitive.Items components={{ ThreadListItem: ChatItem }} />
-          {archived && <><div className="section-label">Archived</div><ThreadListPrimitive.Items archived components={{ ThreadListItem: ChatItem }} /></>}
+          <SortedChats />
+          {archived && <><div className="section-label">Archived</div><SortedChats archived /></>}
         </ThreadListPrimitive.Root><label className="archive-toggle"><input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} />Archived</label></aside>
       <main className="chat-main"><ChatHeader client={client} models={models} changingModel={changingModel} setChangingModel={setChangingModel} onError={setError} />
         {error && <div className="error-banner" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError("")}>×</button></div>}
@@ -163,15 +203,40 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
       </main>
     </div>
     {settings && <Settings cell={cell} base={base} canApply={canApply} onClose={() => { setSettings(false); const url = new URL(location.href); url.searchParams.delete("setup"); history.replaceState(null, "", url); void loadModels(); }} onApplied={reload} onDelete={onDelete ? () => { setSettings(false); onDelete(); } : undefined} />}
-  </AssistantRuntimeProvider>;
+  </ChatMetadata.Provider></AssistantRuntimeProvider>;
+}
+
+function SortedChats({ archived = false }: { archived?: boolean }) {
+  const aui = useAui();
+  const rows = useContext(ChatMetadata);
+  const ids = useAuiState((s) => archived ? s.threads.archivedThreadIds : s.threads.threadIds);
+  const items = ids.map((id, index) => {
+    const remoteId = aui.threads().item({ index, archived }).getState().remoteId;
+    const row = rows.find((r) => r.id === remoteId);
+    return { id, index, time: Date.parse(row?.updatedAt ?? row?.createdAt ?? "") || 0 };
+  }).sort((a, b) => b.time - a.time);
+  let previous = "";
+  return <>{items.map(({ id, index, time }) => {
+    const date = new Date(time);
+    const today = new Date(); const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
+    const day = !time ? "Other chats" : date.toDateString() === today.toDateString() ? "Today" : date.toDateString() === yesterday.toDateString() ? "Yesterday" : date.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", ...(date.getFullYear() !== today.getFullYear() ? { year: "numeric" as const } : {}) });
+    const heading = day !== previous; previous = day;
+    return <Fragment key={id}>{heading && <div className="section-label">{day}</div>}<ThreadListPrimitive.ItemByIndex index={index} archived={archived} components={{ ThreadListItem: ChatItem }} /></Fragment>;
+  })}</>;
 }
 
 function ChatItem() {
   const archived = useAuiState((s) => s.threadListItem.status === "archived");
   const remoteId = useAuiState((s) => s.threadListItem.remoteId);
   const session = usePiSession();
+  const rows = useContext(ChatMetadata);
+  const row = rows.find((r) => r.id === remoteId);
+  const extras = usePiRuntimeExtras();
+  const current = session?.id === remoteId;
+  const waiting = current && extras.allHostUiRequests.length > 0;
+  const completed = row?.status === "idle" && (row.messageCount ?? 0) > 0;
   return <ThreadListItemPrimitive.Root className="chat-item">
-    <ThreadListItemPrimitive.Trigger className="chat-link"><span className="chat-glyph">◌</span><span>{session && session.id === remoteId ? session.title ?? "New chat" : <ThreadListItemPrimitive.Title fallback="New chat" />}</span></ThreadListItemPrimitive.Trigger>
+    <ThreadListItemPrimitive.Trigger className="chat-link"><span className="chat-glyph" title={waiting ? "Input needed" : completed ? "Completed" : "Chat"} aria-label={waiting ? "Input needed" : completed ? "Completed" : undefined}>{waiting ? "●" : completed ? "✓" : "◌"}</span><span>{session && session.id === remoteId ? session.title ?? "New chat" : <ThreadListItemPrimitive.Title fallback="New chat" />}</span></ThreadListItemPrimitive.Trigger>
     {archived ? <ThreadListItemPrimitive.Unarchive className="item-action" title="Restore chat" aria-label="Restore chat"><ArchiveIcon restore /></ThreadListItemPrimitive.Unarchive>
       : <ThreadListItemPrimitive.Archive className="item-action" title="Archive chat" aria-label="Archive chat"><ArchiveIcon /></ThreadListItemPrimitive.Archive>}
   </ThreadListItemPrimitive.Root>;
@@ -227,6 +292,18 @@ function ChatHeader({ client, models, changingModel, setChangingModel, onError }
           finally { setChangingModel(false); }
         })();
       }} />
+      <select aria-label="Model effort" title="Model effort" value={session?.config?.thinkingLevel ?? "off"} disabled={changingModel || extras.status === "running"} onChange={(e) => {
+        const level = e.target.value as PiThinkingLevel;
+        void (async () => {
+          setChangingModel(true);
+          try {
+            if (attached) await extras.setThinkingLevel(level);
+            else { const { remoteId } = await aui.threadListItem().initialize(); await client.setThinkingLevel(remoteId, level); await extras.refresh(); }
+          } catch (error) { onError(explain(error)); } finally { setChangingModel(false); }
+        })();
+      }}>
+        {(models.find((m) => `${m.provider}/${m.modelId}` === selection)?.availableThinkingLevels ?? ["off", "minimal", "low", "medium", "high", "xhigh"]).map((level) => <option key={level} value={level}>{level}</option>)}
+      </select>
     </div>
   </header>;
 }
