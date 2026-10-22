@@ -213,7 +213,8 @@ pub(super) async fn preview(
     let name = cell.name.clone();
     let plans = tokio::task::spawn_blocking(move || -> std::result::Result<_, String> {
         let (vms, _) = edge.listing().map_err(|e| e.to_string())?;
-        if vms.iter().any(|v| v.vm_name == name.as_str() || v.cell_name().as_ref() == Some(&name)) {
+        let vm_name = crate::exe::provision_name(&name);
+        if vms.iter().any(|v| v.vm_name == vm_name || v.cell_name().as_ref() == Some(&name)) {
             return Err("A VM with this cell's name already exists; choose another name".into());
         }
         let plans = apply::plans(edge.as_ref(), &pins, &after, &names).map_err(|e| e.to_string())?;
@@ -701,6 +702,18 @@ mod tests {
         });
         assert!(fixture
             .preview("taken", None, json!([]))
+            .await
+            .unwrap_err()
+            .1
+            .contains("already exists"));
+        fixture.edge.vms.lock().unwrap().push(Vm {
+            created_at: Some("fixture-incarnation".into()),
+            vm_name: "cell-app".into(),
+            tags: vec![],
+            status: "running".into(),
+        });
+        assert!(fixture
+            .preview("app", None, json!([]))
             .await
             .unwrap_err()
             .1
