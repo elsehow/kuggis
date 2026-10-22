@@ -128,7 +128,7 @@ fn walk(
             .to_str()
             .ok_or_else(|| bad("non-ASCII artifact name"))?;
         let path = format!("{prefix}{text}");
-        check_path(&path)?;
+        check_path(&path).map_err(|e| bad(&format!("{path}: {e}")))?;
         let c_name = CString::new(name.as_bytes()).map_err(|_| bad("invalid name"))?;
         // O_NONBLOCK ensures a hostile FIFO cannot hang the packer.
         let fd = unsafe {
