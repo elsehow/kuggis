@@ -4,10 +4,11 @@ import type { CellInfo, Grant, Creation, CreationStep as Step, CreationPhase as 
 import type { ProviderId } from "./settings-types";
 import { ProviderChoices } from "./provider-choices";
 import { providerLabel } from "./providers";
+import { publishLabel } from "./grants";
 
 const steps: Record<Step, string> = { preparing: "Preparing…", creating_vm: "Creating cell…", configuring_access: "Configuring access…", installing_runtime: "Setting up workspace…", connecting_parent: "Connecting parent…", opening_chat: "Opening chat…" };
 export const creationLabel = (creation: Creation) => creation.phase.state === "provisioning" ? steps[creation.phase.step] : creation.phase.state === "failed" ? "Setup failed" : "";
-const describe = (g: Grant) => "provider" in g ? providerLabel(g.provider) : "code" in g ? `${g.code.write ? "Write" : "Read"} ${g.code.repo}${g.code.via ? ` via ${g.code.via}` : ""}` : "host" in g ? g.host : g.edge;
+const describe = (g: Grant) => "provider" in g ? providerLabel(g.provider) : "code" in g ? `${g.code.write ? "Write" : "Read"} ${g.code.repo}${g.code.via ? ` via ${g.code.via}` : ""}` : "host" in g ? g.host : "publish" in g ? publishLabel(g.publish) : g.edge;
 
 export function CreateCell({ cells, parent: initialParent, id, onId, onClose, onStarted, onReady, onDelete }: {
   cells: CellInfo[]; parent: string | null; id: string | null;

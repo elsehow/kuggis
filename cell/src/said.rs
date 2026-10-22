@@ -123,6 +123,26 @@ impl Secret {
     pub fn public(&self) -> Key {
         Key(self.0.verifying_key())
     }
+
+    /// A separate signature domain from signed statements. Only the publisher
+    /// protocol uses this; never expose raw signing to agent RPCs.
+    pub(crate) fn sign_publisher(&self, body: &[u8]) -> [u8; 64] {
+        self.0.sign(&publisher_bytes(body)).to_bytes()
+    }
+}
+
+fn publisher_bytes(body: &[u8]) -> Vec<u8> {
+    let mut bytes = b"kuggis.publisher.request.v1\0".to_vec();
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+impl Key {
+    pub(crate) fn verify_publisher(&self, body: &[u8], signature: &[u8; 64]) -> bool {
+        self.0
+            .verify_strict(&publisher_bytes(body), &Signature::from_bytes(signature))
+            .is_ok()
+    }
 }
 
 impl fmt::Debug for Secret {

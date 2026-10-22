@@ -6,10 +6,10 @@ import { api, explain } from "./api";
 import { connectionNames, type ConnectionConfig, type ConnectionUpdate, type SettingsView } from "./settings-types";
 
 import type { Grant, CellInfo, ChangePreview } from "./api-types";
-import { sameGrants as same } from "./grants";
+import { sameGrants as same, publishLabel, preservedGrants } from "./grants";
 type ConnectionDraft = ConnectionConfig & Pick<ConnectionUpdate, "credential">;
 type Preview = ChangePreview & { grants: Grant[] };
-const grantLabel = (grant: Grant) => "provider" in grant ? providerLabel(grant.provider) : "code" in grant ? `${grant.code.write ? "Write" : "Read"} ${grant.code.repo}${grant.code.via ? ` via ${grant.code.via}` : ""}` : "host" in grant ? `Connect to ${grant.host}` : `Connect to ${grant.edge}`;
+const grantLabel = (grant: Grant) => "provider" in grant ? providerLabel(grant.provider) : "code" in grant ? `${grant.code.write ? "Write" : "Read"} ${grant.code.repo}${grant.code.via ? ` via ${grant.code.via}` : ""}` : "host" in grant ? `Connect to ${grant.host}` : "publish" in grant ? publishLabel(grant.publish) : `Connect to ${grant.edge}`;
 
 export function Settings({ cell, base, canApply, onClose, onApplied, onDelete }: { cell: CellInfo; base: string; canApply: boolean; onClose: () => void; onApplied: () => Promise<void>; onDelete?: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -39,7 +39,7 @@ export function Settings({ cell, base, canApply, onClose, onApplied, onDelete }:
       ...providers.map((provider) => ({ provider })),
       ...repos.filter((r) => r.repo.trim()).map((r) => ({ code: { repo: r.repo.trim(), write: r.write, ...(r.via?.trim() ? { via: r.via.trim() } : {}) } })),
       ...[...grantedHosts].map((host) => ({ host })),
-      ...cell.grants.filter((g) => "edge" in g),
+      ...preservedGrants(cell.grants),
     ];
     if (same(grants, cell.grants)) { await storeConnections(); await refresh(); setSaved(true); }
     else { if (!canApply) throw new Error("Configuration changes require the UI server's Linux deployment binary."); setPreview({ ...await api<Preview>(`${base}/plan`, { method: "POST", body: JSON.stringify({ grants }) }), grants }); }

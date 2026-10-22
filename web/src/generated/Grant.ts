@@ -2,6 +2,7 @@
 import type { Host } from "./Host";
 import type { Name } from "./Name";
 import type { Provider } from "./Provider";
+import type { PublishScope } from "./PublishScope";
 import type { Repo } from "./Repo";
 
-export type Grant = { "provider": Provider } | { "code": { repo: Repo, write: boolean, via?: Repo | null, } } | { "edge": Name } | { "host": Host };
+export type Grant = { "provider": Provider } | { "code": { repo: Repo, write: boolean, via?: Repo | null, } } | { "edge": Name } | { "host": Host } | { "publish": PublishScope };

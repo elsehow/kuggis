@@ -4,6 +4,7 @@
 
 use crate::canon;
 use crate::prim::{Host, Name, Repo};
+use crate::publish::PublishScope;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -66,6 +67,8 @@ pub enum Grant {
     Edge(Name),
     /// A host the proxy may tunnel to, with nothing injected.
     Host(Host),
+    /// Publishing authority only; does not grant network or exe.dev access.
+    Publish(PublishScope),
 }
 
 impl fmt::Display for Provider {
@@ -103,6 +106,7 @@ impl Grant {
             Grant::Code { .. } => vec![fixed(GITHUB_EDGE)],
             Grant::Edge(name) => vec![fixed(&format!("{name}{EDGE_SUFFIX}"))],
             Grant::Host(h) => vec![h.clone()],
+            Grant::Publish(_) => vec![],
         }
     }
 
@@ -129,7 +133,8 @@ impl Grant {
     }
 
     /// Does `self` reach at least as far as `other`? Equal grants do; a
-    /// writable repo covers the same repo read-only; nothing else covers
+    /// writable repo covers the same repo read-only; a publishing namespace
+    /// covers its sites. Nothing else covers
     /// anything.
     pub fn covers(&self, other: &Grant) -> bool {
         match (self, other) {
@@ -145,6 +150,7 @@ impl Grant {
                     via: vb,
                 },
             ) => a == b && (*wa || !*wb) && (va.is_none() || va == vb),
+            (Grant::Publish(a), Grant::Publish(b)) => a.covers(b),
             _ => self == other,
         }
     }
