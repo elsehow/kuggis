@@ -1,7 +1,10 @@
 //! Explicit, durable deletion. Provisioning's apply loop remains non-destructive.
 //! Approval binds a leaf, its VM incarnation, and the exact owned attachments.
+use super::resource_cleanup::{self, CleanupView, Coverage};
 use super::*;
 use crate::exe::{Integration, Vm};
+use crate::publish::registry::resources::CleanupReceipt;
+use crate::resource::{ResourceId, ResourceOwner};
 use std::{io::Write, os::unix::fs::OpenOptionsExt, path::Path as FsPath};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +31,8 @@ struct Target {
     attachments: Vec<Attachment>,
     door: Option<Door>,
     pin: Option<Hash>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resources: Option<Coverage>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -48,6 +53,7 @@ pub(crate) enum DeletionPhase {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DeletionStep {
+    CleaningUpResources,
     Disconnecting,
     DeletingVm,
     RemovingDeclaration,
@@ -59,6 +65,12 @@ pub(super) struct Deletion {
     target: Target,
     pub approval: Hash,
     pub phase: DeletionPhase,
+    #[serde(default)]
+    resources_done: BTreeMap<RequestId, CleanupReceipt>,
+    #[serde(default)]
+    superseded: bool,
+    #[serde(default)]
+    begun: bool,
 }
 #[derive(Clone, Debug, Serialize, ts_rs::TS)]
 pub(crate) struct DeletionView {
@@ -68,6 +80,8 @@ pub(crate) struct DeletionView {
     vm: Option<String>,
     approval: Hash,
     phase: DeletionPhase,
+    resources: Vec<CleanupView>,
+    resources_reviewed: bool,
 }
 impl Deletion {
     pub fn cell(&self) -> &Cell {
@@ -77,14 +91,18 @@ impl Deletion {
         &self.target.parent
     }
     pub fn active(&self) -> bool {
-        matches!(self.phase, DeletionPhase::Deleting { .. })
-            || matches!(
-                self.phase,
-                DeletionPhase::Failed {
-                    recovery: RecoveryAction::Retry,
-                    ..
-                }
-            )
+        !self.superseded
+            && !matches!(self.phase, DeletionPhase::Deleted)
+            && (self.begun
+                || !self.resources_done.is_empty()
+                || matches!(
+                    self.phase,
+                    DeletionPhase::Deleting { .. }
+                        | DeletionPhase::Failed {
+                            recovery: RecoveryAction::Retry,
+                            ..
+                        }
+                ))
     }
     pub fn view(&self) -> DeletionView {
         DeletionView {
@@ -94,6 +112,13 @@ impl Deletion {
             vm: self.target.vm.as_ref().map(|v| v.name.to_string()),
             approval: self.approval,
             phase: self.phase.clone(),
+            resources: self
+                .target
+                .resources
+                .as_ref()
+                .map(|r| r.view(&self.resources_done))
+                .unwrap_or_default(),
+            resources_reviewed: self.target.resources.is_some(),
         }
     }
     fn save(&self, state: &FsPath) -> std::io::Result<()> {
@@ -304,9 +329,38 @@ fn check_tree(op: &Operator, target: &Target) -> Result<()> {
     Ok(())
 }
 
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Options {
+    #[serde(default)]
+    choices: BTreeMap<ResourceId, ResourceOwner>,
+}
+pub(super) async fn preview_request(
+    State(op): State<Arc<Operator>>,
+    Path(name): Path<Name>,
+    body: axum::body::Bytes,
+) -> Result<Json<DeletionView>> {
+    if body.len() > crate::resource_rpc::MAX_RPC_BYTES {
+        return Err(bad("Deletion choices exceed limit"));
+    }
+    let options = if body.is_empty() {
+        Options::default()
+    } else {
+        serde_json::from_slice(&body).map_err(bad)?
+    };
+    preview_with(op, name, options).await
+}
+#[cfg(test)]
 pub(super) async fn preview(
     State(op): State<Arc<Operator>>,
     Path(name): Path<Name>,
+) -> Result<Json<DeletionView>> {
+    preview_with(op, name, Options::default()).await
+}
+async fn preview_with(
+    op: Arc<Operator>,
+    name: Name,
+    options: Options,
 ) -> Result<Json<DeletionView>> {
     let _lock = op.applying.try_lock().map_err(|_| {
         Error(
@@ -317,10 +371,14 @@ pub(super) async fn preview(
     if op.config.sockets.is_some() {
         return Err(bad("Local development workspaces cannot be deleted here"));
     }
-    if let Some(job) = list(&op.config.state)
+    let prior = list(&op.config.state)
         .map_err(fail)?
         .into_iter()
-        .find(|j| j.active() && j.cell().name == name)
+        .filter(|j| j.cell().name == name && !matches!(j.phase, DeletionPhase::Deleted))
+        .max_by_key(|j| (j.resources_done.len(), j.active()));
+    if let Some(job) = prior
+        .as_ref()
+        .filter(|j| matches!(j.phase, DeletionPhase::Deleting { .. }))
     {
         return Ok(Json(job.view()));
     }
@@ -342,6 +400,7 @@ pub(super) async fn preview(
         attachments: vec![],
         door: None,
         pin: pin(&op.config.tree, &name).map_err(fail)?,
+        resources: None,
     };
     check_tree(&op, &target)?;
     let edge = op.edge.clone();
@@ -353,11 +412,50 @@ pub(super) async fn preview(
     target.vm = identity(&vms, &name)?;
     (target.attachments, target.door) =
         owned(&vms, &integrations, &name, &target.parent, &target.vm)?;
+    let done = prior
+        .as_ref()
+        .map(|j| j.resources_done.clone())
+        .unwrap_or_default();
+    let previous = prior.as_ref().and_then(|j| j.target.resources.clone());
+    let worker = op.clone();
+    let cell = target.cell.clone();
+    let (coverage, done) = tokio::task::spawn_blocking(move || {
+        let mut done = done;
+        let coverage = resource_cleanup::prepare(
+            &worker,
+            &cell,
+            &options.choices,
+            previous.as_ref(),
+            &mut done,
+        )?;
+        Ok::<_, Error>((coverage, done))
+    })
+    .await
+    .map_err(fail)??;
+    target.resources = Some(coverage);
+    // New approvals supersede failed/review jobs for this cell, but not their
+    // historical resource receipts. They remain inspectable and cannot run.
+    for mut old in list(&op.config.state)
+        .map_err(fail)?
+        .into_iter()
+        .filter(|j| j.cell().name == name && !matches!(j.phase, DeletionPhase::Deleted))
+    {
+        old.superseded = true;
+        old.phase = DeletionPhase::Failed {
+            message: "Superseded by a new deletion review".into(),
+            step: None,
+            recovery: RecoveryAction::Review,
+        };
+        old.save(&op.config.state).map_err(fail)?;
+    }
     let job = Deletion {
         id: RequestId::generate(),
         approval: ApprovedHash::of(&target),
         target,
         phase: DeletionPhase::Review,
+        resources_done: done,
+        superseded: false,
+        begun: prior.as_ref().is_some_and(|j| j.begun),
     };
     job.save(&op.config.state).map_err(fail)?;
     Ok(Json(job.view()))
@@ -368,6 +466,8 @@ pub(super) async fn preview(
 pub(super) struct Confirm {
     approval: Hash,
     name: Name,
+    #[serde(default)]
+    acknowledge_manual: bool,
 }
 pub(super) async fn get(
     State(op): State<Arc<Operator>>,
@@ -381,6 +481,11 @@ pub(super) async fn start(
     Json(body): Json<Confirm>,
 ) -> Result<Json<DeletionView>> {
     let mut job = Deletion::load(&op.config.state, id)?;
+    if job.superseded {
+        return Err(bad(
+            "This deletion approval was superseded; use the new review",
+        ));
+    }
     if body.approval != job.approval || body.name != job.target.cell.name {
         return Err(bad("Confirm the cell name and its deletion plan"));
     }
@@ -410,9 +515,13 @@ pub(super) async fn start(
         check_tree(&op, &job.target)?;
         let check = op.clone();
         let target = job.target.clone();
-        tokio::task::spawn_blocking(move || remaining(&check, &target))
-            .await
-            .map_err(fail)??;
+        let done = job.resources_done.clone();
+        tokio::task::spawn_blocking(move || {
+            remaining(&check, &target)?;
+            resource_cleanup::check(&check, target.resources.as_ref(), &done)
+        })
+        .await
+        .map_err(fail)??;
         check_tree(&op, &job.target)?;
         Ok::<(), Error>(())
     }
@@ -421,26 +530,50 @@ pub(super) async fn start(
         job.phase = DeletionPhase::Failed {
             message: error.1,
             step: None,
-            recovery: RecoveryAction::Review,
+            recovery: if error.0 == StatusCode::BAD_GATEWAY {
+                RecoveryAction::Retry
+            } else {
+                RecoveryAction::Review
+            },
         };
         job.save(&op.config.state).map_err(fail)?;
         return Ok(Json(job.view()));
     }
+    if job.target.resources.as_ref().is_some_and(Coverage::manual) && !body.acknowledge_manual {
+        return Err(bad(
+            "Acknowledge continuing costs and manual provider cleanup before deleting",
+        ));
+    }
+    job.begun = true;
     job.phase = DeletionPhase::Deleting {
-        step: DeletionStep::Disconnecting,
+        step: DeletionStep::CleaningUpResources,
     };
     job.save(&op.config.state).map_err(fail)?;
     let initial = job.view();
     tokio::spawn(async move {
         let worker = op.clone();
         let work = job.clone();
-        let result =
-            tokio::task::spawn_blocking(move || execute(&worker, ConfirmedDeletion(work))).await;
+        let result = tokio::task::spawn_blocking(move || {
+            execute_with_manual(&worker, ConfirmedDeletion(work), body.acknowledge_manual)
+        })
+        .await;
         match result {
             Ok(Ok(())) => {
                 op.vms.write().await.remove(&job.cell().name);
             }
             failure => {
+                let recovery = match &failure {
+                    Ok(Err(Error(status, _)))
+                        if *status == StatusCode::BAD_REQUEST
+                            || *status == StatusCode::CONFLICT =>
+                    {
+                        RecoveryAction::Review
+                    }
+                    _ => RecoveryAction::Retry,
+                };
+                if let Ok(persisted) = Deletion::load(&op.config.state, job.id) {
+                    job = persisted;
+                }
                 let message = match failure {
                     Ok(Err(e)) => e.1,
                     Err(e) => e.to_string(),
@@ -457,7 +590,7 @@ pub(super) async fn start(
                 job.phase = DeletionPhase::Failed {
                     message,
                     step,
-                    recovery: RecoveryAction::Retry,
+                    recovery,
                 };
                 if let Err(e) = job.save(&op.config.state) {
                     eprintln!("Could not save deletion failure: {e}");
@@ -519,8 +652,31 @@ fn remaining(op: &Operator, target: &Target) -> Result<Remaining> {
 
 struct ConfirmedDeletion(Deletion);
 
-fn execute(op: &Operator, ConfirmedDeletion(mut job): ConfirmedDeletion) -> Result<()> {
+fn execute_with_manual(
+    op: &Operator,
+    ConfirmedDeletion(mut job): ConfirmedDeletion,
+    acknowledge_manual: bool,
+) -> Result<()> {
     let target = job.target.clone();
+    check_tree(op, &target)?;
+    remaining(op, &target)?;
+    resource_cleanup::check(op, target.resources.as_ref(), &job.resources_done)?;
+    let coverage = target
+        .resources
+        .as_ref()
+        .ok_or_else(|| bad("Resource review required"))?;
+    for binding in &coverage.bindings {
+        if job.resources_done.contains_key(&binding.operation) {
+            continue;
+        }
+        job.phase = DeletionPhase::Deleting {
+            step: DeletionStep::CleaningUpResources,
+        };
+        job.save(&op.config.state).map_err(fail)?;
+        let receipt = resource_cleanup::perform(op, binding, acknowledge_manual)?;
+        job.resources_done.insert(binding.operation, receipt);
+        job.save(&op.config.state).map_err(fail)?;
+    }
     let mut previous = None;
     loop {
         check_tree(op, &target)?;
@@ -637,6 +793,7 @@ mod tests {
         integrations: StdMutex<Vec<Integration>>,
         calls: StdMutex<Vec<Vec<String>>>,
         lose_delete_reply: AtomicBool,
+        before_command: StdMutex<Option<Box<dyn Fn() + Send + Sync>>>,
     }
     impl Edge for Fake {
         fn listing(&self) -> apply::Fallible<(Vec<Vm>, Vec<Integration>)> {
@@ -649,6 +806,9 @@ mod tests {
             Ok(None)
         }
         fn run(&self, args: &[&str]) -> apply::Fallible<String> {
+            if let Some(check) = self.before_command.lock().unwrap().as_ref() {
+                check();
+            }
             self.calls
                 .lock()
                 .unwrap()
@@ -706,6 +866,7 @@ mod tests {
         edge: Arc<Fake>,
         dir: PathBuf,
         creation: RequestId,
+        secret: crate::Secret,
     }
     impl Fixture {
         fn new() -> Self {
@@ -723,7 +884,12 @@ mod tests {
                 br#"{"name":"project-dev","grants":[]}"#,
             )
             .unwrap();
-            fs::write(dir.join("tree/.pins/project-dev.pub"), "original-pin").unwrap();
+            let secret = crate::Secret::generate();
+            fs::write(
+                dir.join("tree/.pins/project-dev.pub"),
+                secret.public().to_string(),
+            )
+            .unwrap();
             let creation = RequestId::generate();
             fs::write(dir.join("state/creations").join(format!("{creation}.json")), json!({
                 "id":creation,"cell":{"name":"project-dev","grants":[]},"parent":"project","before":Hash::ZERO,"approval":Hash::ZERO,"plans":{},
@@ -773,6 +939,7 @@ mod tests {
                 edge,
                 dir,
                 creation,
+                secret,
             }
         }
         async fn preview(&self, name: &str) -> Result<Deletion> {
@@ -788,6 +955,7 @@ mod tests {
                 Json(Confirm {
                     name: job.cell().name.clone(),
                     approval: job.approval,
+                    acknowledge_manual: false,
                 }),
             )
             .await
@@ -826,7 +994,8 @@ mod tests {
                 Path(job.id),
                 Json(Confirm {
                     name: name.parse().unwrap(),
-                    approval
+                    approval,
+                    acknowledge_manual: false,
                 })
             )
             .await
@@ -1067,4 +1236,5 @@ mod tests {
         assert_eq!(f.settled(job.id).await.phase, DeletionPhase::Deleted);
         assert!(f.edge.calls.lock().unwrap().iter().all(|a| a[0] != "rm"));
     }
+    mod resources;
 }

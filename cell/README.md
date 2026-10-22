@@ -493,3 +493,38 @@ PUBLISH_SMOKE_PLAYWRIGHT=/path/to/node_modules/playwright python3 scripts/test-r
 
 The test covers absent original cells, plan/apply, connection drift, a lost reply
 followed by reload, unpublish, operator custody, and unavailable-backend errors.
+
+### Resource-aware cell deletion
+
+Delete cell now reviews every configured resource backend before VM removal.
+The approval binds the cell identity, backend connections, and complete resource
+inventory. Publishing grants without backend coverage, offline unfinished
+backends, changed inventories, and old approvals without resource coverage
+block deletion rather than being treated as empty inventories.
+
+Owned sites default to unpublish plus retained operator custody. Review can
+instead explicitly keep a site live under operator or another pinned cell's
+custody. Deleting a delegate removes only its access. Each backend atomically
+fences the departing identity and commits its cleanup/receipt before any VM
+operation. This is not a distributed atomic transaction across backends.
+Partial completion is durable: retries reconcile the same operation IDs, and
+new reviews preserve completed receipts. Already completed cleanup does not
+require the backend to remain online to finish removing the VM.
+
+Once cleanup begins, the cell remains blocked until deletion finishes, including
+when a changed inventory requires a new review. Closing the dialog does not
+cancel a running deletion. External provider cleanup/revocation and continuing
+costs require explicit acknowledgement; local detachment is not remote cleanup.
+Unregistered resources created outside Kuggis cannot be discovered automatically.
+
+Verified backend identities are remembered in private operator state. Removing
+one from `.resources.json` cannot silently remove its cleanup obligations:
+restore its connection. Automatic backend decommissioning is not implemented.
+
+Opt-in real browser coverage uses the real operator HTTP routes and resource
+registry, but a fake VM edge (it does not delete an exe.dev VM):
+
+```sh
+PUBLISH_SMOKE_PLAYWRIGHT=/path/to/node_modules/playwright cargo test \
+  --manifest-path cell/Cargo.toml --lib browser_resource_aware_deletion -- --ignored
+```
