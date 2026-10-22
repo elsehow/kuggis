@@ -5,3 +5,5 @@ web/dist/
 web/*.tsbuildinfo
 .kuggis/
 .claude/worktrees/
+
+__pycache__/

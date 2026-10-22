@@ -543,10 +543,7 @@ fn login(args: &[String]) -> Fallible {
         .args([
             "-t",
             &format!("{vm}.exe.xyz"),
-            "sudo",
-            "-iu",
-            cell::wall::AGENT,
-            cell::wall::PI_BIN,
+            "if test -f /etc/cell/environment-initialized; then sudo machinectl shell agent@cell-env /bin/bash -lc 'exec /usr/local/lib/cell/pi-1.3.0/pi'; else sudo -iu agent /usr/local/lib/cell/pi-1.3.0/pi; fi",
         ])
         .status()?;
     if !status.success() {

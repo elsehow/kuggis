@@ -13,9 +13,9 @@ use crate::cell::Cell;
 use crate::grant::Grant;
 use crate::log;
 use crate::said::{Said, Secret};
-use std::fs::{self, File};
-use std::io::{self, Read};
-use std::os::unix::fs::MetadataExt;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -54,9 +54,13 @@ fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
     if !named.is_file() {
         return Err("not a regular file".into());
     }
-    let file = File::open(path).map_err(|e| e.to_string())?;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|e| e.to_string())?;
     let opened = file.metadata().map_err(|e| e.to_string())?;
-    if opened.ino() != named.ino() || opened.dev() != named.dev() {
+    if !opened.is_file() || opened.ino() != named.ino() || opened.dev() != named.dev() {
         return Err("not a regular file".into());
     }
     let mut bytes = Vec::new();
@@ -91,7 +95,16 @@ pub fn ship(
                 Ok(statement.seq)
             }
             Err(why) => {
-                fs::write(outbox.join(format!("{stem}.refused")), format!("{why}\n"))?;
+                // A guest can pre-create this name as a link to a host secret.
+                // Replace the directory entry; never open its target for writing.
+                let temp = outbox.join(format!(".refused-{}", crate::RequestId::generate()));
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o644)
+                    .open(&temp)?;
+                writeln!(file, "{why}")?;
+                fs::rename(&temp, outbox.join(format!("{stem}.refused")))?;
                 if fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
                     fs::remove_dir_all(&path)?;
                 } else {
@@ -203,6 +216,9 @@ mod tests {
         let elsewhere = outbox.join("..").join("fetch");
         fs::write(&elsewhere, r#"{"fetch":{"url":"https://linked.example/"}}"#).unwrap();
         std::os::unix::fs::symlink(&elsewhere, outbox.join("e.json")).unwrap();
+        let protected = outbox.join("..").join("protected");
+        fs::write(&protected, "host secret must survive").unwrap();
+        std::os::unix::fs::symlink(&protected, outbox.join("e.refused")).unwrap();
 
         let done = ship(&c, &secret, &outbox, &said).unwrap();
         let names: Vec<&str> = done.iter().map(|(n, _)| n.as_str()).collect();
@@ -221,6 +237,13 @@ mod tests {
         assert!(!outbox.join("d.json").exists() && !outbox.join("e.json").exists());
         assert!(outbox.join("f.tmp").exists(), "a half-written file waits");
         assert!(elsewhere.exists(), "the link's target is untouched");
+        assert_eq!(
+            fs::read_to_string(&protected).unwrap(),
+            "host secret must survive"
+        );
+        assert!(!fs::symlink_metadata(outbox.join("e.refused"))
+            .unwrap()
+            .is_symlink());
 
         // root's check appends to the same log, under the same lock
         let checked = log::append(

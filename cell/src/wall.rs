@@ -3,13 +3,9 @@
 //! would, so the wall reads as a script and leaves files an operator can
 //! inspect.
 //!
-//! After setup the box has two users that matter. `agent` runs the
-//! harness, owns nothing outside its home, has no sudo, and can open one
-//! socket: the proxy on loopback. `cell-proxy` runs the proxy, may resolve
-//! names at the gateway and may open TLS ports, nothing else. Root owns the
-//! cell file, the signing key, the firewall and the services. The agent
-//! never touches the key: `cell check` runs as root, runs the probes as the
-//! agent, and signs what it saw.
+//! The agent owns a persistent user-namespaced environment, including sudo.
+//! The host owns the proxy, grants, signing key and veth firewall. The legacy
+//! host agent account remains locked down; it no longer runs the harness.
 
 use crate::cell::Cell;
 use crate::grant::{Provider, EDGE_SUFFIX, GITHUB_EDGE};
@@ -96,26 +92,7 @@ fn user_exists(name: &str) -> bool {
 }
 
 fn wall_nft() -> String {
-    format!(
-        "table inet cell {{}}
-flush table inet cell
-table inet cell {{
-  chain out {{
-    type filter hook output priority filter; policy accept;
-    # the agent reaches the proxy on loopback and nothing else, in any protocol
-    meta skuid \"{AGENT}\" oif \"lo\" tcp dport {port} accept
-    meta skuid \"{AGENT}\" counter reject
-    # the proxy answers the agent, resolves at the gateway, and opens tls ports
-    meta skuid \"{PROXY_USER}\" oif \"lo\" accept
-    meta skuid \"{PROXY_USER}\" ip daddr {RESOLVER} udp dport 53 accept
-    meta skuid \"{PROXY_USER}\" ip daddr {RESOLVER} tcp dport 53 accept
-    meta skuid \"{PROXY_USER}\" tcp dport {{ 443, 8443 }} accept
-    meta skuid \"{PROXY_USER}\" counter reject
-  }}
-}}
-",
-        port = PROXY_ADDR.rsplit(':').next().unwrap_or("3128")
-    )
+    crate::environment::firewall()
 }
 
 fn proxy_unit() -> String {
@@ -126,7 +103,7 @@ After=network-online.target
 
 [Service]
 User={PROXY_USER}
-ExecStart={BIN} proxy --listen {PROXY_ADDR} --cell {ETC}/cell.json
+ExecStart={BIN} proxy --listen 0.0.0.0:3128 --cell {ETC}/cell.json
 Restart=always
 RestartSec=1
 NoNewPrivileges=yes
@@ -218,38 +195,6 @@ fn install_pi() -> Fallible {
     Ok(())
 }
 
-fn agent_unit(workspace: &Path) -> String {
-    format!(
-        "[Unit]
-Description=cell agent: persistent Pi sessions
-After=cell-say.service cell-proxy.service
-
-[Service]
-User={AGENT}
-Group=cell-chat
-SupplementaryGroups=agent
-WorkingDirectory={AGENT_HOME}
-Environment=HOME={AGENT_HOME} PI_CODING_AGENT_DIR={AGENT_HOME}/.pi/agent
-Environment=HTTPS_PROXY=http://{PROXY_ADDR} HTTP_PROXY=http://{PROXY_ADDR} NO_PROXY=
-Environment=https_proxy=http://{PROXY_ADDR} http_proxy=http://{PROXY_ADDR} no_proxy=
-Environment=GH_HOST={GITHUB_EDGE}
-RuntimeDirectory=cell-chat
-RuntimeDirectoryMode=0750
-ExecStart={BIN} chat --cell {ETC}/cell.json --workspace {workspace} --state {AGENT_HOME}/.kuggis/chat --socket /run/cell-chat/api.sock --agent-dir {AGENT_HOME}/.pi/agent --pi /usr/local/lib/cell/pi-1.3.0/pi --inbox {INBOX} --outbox {OUTBOX}
-Restart=always
-RestartSec=2
-NoNewPrivileges=yes
-ProtectSystem=strict
-ReadWritePaths={AGENT_HOME} {OUTBOX}
-PrivateTmp=yes
-UMask=0077
-TimeoutStopSec=30
-
-[Install]
-WantedBy=multi-user.target
-", workspace=workspace.display())
-}
-
 /// Keep the old runner, declarations, and named-session map for recovery. Signed
 /// logs and Claude transcript files remain in place and are never rewritten.
 fn preserve_before_upgrade() -> Fallible {
@@ -275,6 +220,48 @@ fn preserve_before_upgrade() -> Fallible {
     }
     if attempt("pgrep", &["-u", AGENT, "-x", "claude"]).0 {
         return Err("a Claude session is active; wait for it before upgrading".into());
+    }
+    // Freeze the home before copying transcripts and credentials for recovery.
+    // This also closes the old API before its runtime is replaced.
+    if Path::new("/etc/systemd/system/cell-agent.service").exists() {
+        run("systemctl", &["stop", "cell-agent"])?;
+    }
+    // Separate recovery generation: Pi's earlier migration snapshot is stale.
+    let environment_backup = Path::new("/var/lib/cell/migrations/environment-v1");
+    if !crate::environment::installed() && !environment_backup.join("complete").exists() {
+        fs::create_dir_all(environment_backup)?;
+        fs::set_permissions(environment_backup, fs::Permissions::from_mode(0o700))?;
+        for (source, name) in [
+            (BIN, "cell"),
+            ("/etc/cell/cell.json", "cell.json"),
+            ("/etc/cell/wall.nft", "wall.nft"),
+            (
+                "/etc/systemd/system/cell-agent.service",
+                "cell-agent.service",
+            ),
+            (
+                "/etc/systemd/system/cell-proxy.service",
+                "cell-proxy.service",
+            ),
+            ("/etc/systemd/system/cell-wall.service", "cell-wall.service"),
+        ] {
+            if Path::new(source).exists() {
+                fs::copy(source, environment_backup.join(name))?;
+            }
+        }
+        if Path::new(AGENT_HOME).exists() {
+            run(
+                "tar",
+                &[
+                    "-cpf",
+                    environment_backup.join("home.tar").to_str().unwrap(),
+                    "-C",
+                    "/home",
+                    "agent",
+                ],
+            )?;
+        }
+        fs::write(environment_backup.join("complete"), "1\n")?;
     }
     if backup.exists() {
         return Ok(());
@@ -458,18 +445,6 @@ WantedBy=multi-user.target
     )
 }
 
-fn profile() -> String {
-    format!(
-        "# the agent's roads all go through the proxy
-if [ \"$(id -un)\" = {AGENT} ]; then
-  export HTTPS_PROXY=http://{PROXY_ADDR} HTTP_PROXY=http://{PROXY_ADDR} NO_PROXY=
-  export https_proxy=$HTTPS_PROXY http_proxy=$HTTP_PROXY no_proxy=
-  export PI_CODING_AGENT_DIR={AGENT_HOME}/.pi/agent GH_HOST={GITHUB_EDGE}
-fi
-"
-    )
-}
-
 /// Build the wall. Idempotent: run it again after changing the cell file.
 pub fn setup(cell_path: &Path) -> Fallible<Statement> {
     if run("id", &["-u"])?.trim() != "0" {
@@ -552,6 +527,9 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
         0o644,
     )?;
     write_as_root(&etc("wall.nft"), wall_nft().as_bytes(), 0o644)?;
+    // Package installation can restart services. Protect the wider proxy bind
+    // before writing its unit, rather than waiting until bootstrap completes.
+    run("nft", &["-f", &etc("wall.nft").to_string_lossy()])?;
     write_as_root(
         Path::new("/etc/systemd/system/cell-proxy.service"),
         proxy_unit().as_bytes(),
@@ -575,52 +553,23 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
     if user_exists("exedev") {
         run("usermod", &["-a", "-G", "cell-chat", "exedev"])?;
     }
-    // The proxy must be running before cloning a newly granted repository.
-    run("systemctl", &["daemon-reload"])?;
-    run("systemctl", &["restart", "cell-proxy"])?;
-    run("nft", &["-f", &etc("wall.nft").to_string_lossy()])?;
-    let workspace = PathBuf::from(
-        run(
-            "runuser",
-            &[
-                "-u",
-                AGENT,
-                "--",
-                "setpriv",
-                "--no-new-privs",
-                "env",
-                &format!("HOME={AGENT_HOME}"),
-                &format!("HTTPS_PROXY=http://{PROXY_ADDR}"),
-                BIN,
-                "prepare",
-                &etc("cell.json").to_string_lossy(),
-            ],
-        )?
-        .trim(),
-    );
-    write_as_root(
-        Path::new("/etc/systemd/system/cell-agent.service"),
-        agent_unit(&workspace).as_bytes(),
-        0o644,
-    )?;
+    crate::environment::install()?;
     write_as_root(
         Path::new("/etc/systemd/system/cell-wall.service"),
         wall_unit().as_bytes(),
-        0o644,
-    )?;
-    write_as_root(
-        Path::new("/etc/profile.d/cell.sh"),
-        profile().as_bytes(),
         0o644,
     )?;
 
     run("systemctl", &["daemon-reload"])?;
     run("systemctl", &["enable", "--now", "cell-wall"])?;
     run("nft", &["-f", &etc("wall.nft").to_string_lossy()])?;
+    let expected = run("nft", &["-j", "list", "table", "inet", "cell"])?;
+    write_as_root(&etc("wall.expected.json"), expected.as_bytes(), 0o644)?;
     let units = ["cell-proxy", "cell-door", "cell-say", "cell-agent"];
     run("systemctl", &[&["enable"][..], &units].concat())?;
     run("systemctl", &[&["restart"][..], &units].concat())?;
-    std::thread::sleep(Duration::from_millis(300));
+    crate::environment::helper("configure")?;
+    std::thread::sleep(Duration::from_secs(2));
 
     check()
 }
@@ -999,38 +948,43 @@ pub fn check() -> Fallible<Statement> {
     let hash = Hash::of(&cell_bytes);
     let secret: Secret = fs::read_to_string(etc("secret"))?.parse()?;
 
-    let raw = run("runuser", &["-u", AGENT, "--", BIN, "probe"])?;
-    let mut probes: Vec<Probe> = raw
-        .lines()
-        .map(serde_json::from_str)
-        .collect::<Result<_, _>>()?;
+    let mut probes: Vec<Probe> = if crate::environment::installed() {
+        serde_json::from_str(&crate::environment::helper("check")?)?
+    } else {
+        let raw = run("runuser", &["-u", AGENT, "--", BIN, "probe"])?;
+        let mut probes: Vec<Probe> = raw
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<_, _>>()?;
 
-    let (_, sudo) = attempt("sudo", &["-l", "-U", AGENT]);
-    probes.push(Probe::new(
-        "root: sudo rules for the agent",
-        "none",
-        if sudo.contains("is not allowed to run sudo") || sudo.contains("unknown user") {
-            "none"
-        } else {
-            "some"
-        },
-        sudo.lines().last().unwrap_or(""),
-    ));
-    let (_, groups) = attempt("id", &["-nG", AGENT]);
-    let risky: Vec<&str> = groups
-        .split_whitespace()
-        .filter(|g| ["sudo", "admin", "wheel", "docker", "adm", "root"].contains(g))
-        .collect();
-    probes.push(Probe::new(
-        "root: the agent's groups",
-        "harmless",
-        if risky.is_empty() {
-            "harmless"
-        } else {
-            "risky"
-        },
-        groups.trim(),
-    ));
+        let (_, sudo) = attempt("sudo", &["-l", "-U", AGENT]);
+        probes.push(Probe::new(
+            "root: sudo rules for the agent",
+            "none",
+            if sudo.contains("is not allowed to run sudo") || sudo.contains("unknown user") {
+                "none"
+            } else {
+                "some"
+            },
+            sudo.lines().last().unwrap_or(""),
+        ));
+        let (_, groups) = attempt("id", &["-nG", AGENT]);
+        let risky: Vec<&str> = groups
+            .split_whitespace()
+            .filter(|g| ["sudo", "admin", "wheel", "docker", "adm", "root"].contains(g))
+            .collect();
+        probes.push(Probe::new(
+            "root: the agent's groups",
+            "harmless",
+            if risky.is_empty() {
+                "harmless"
+            } else {
+                "risky"
+            },
+            groups.trim(),
+        ));
+        probes
+    };
     let (_, owner) = attempt("stat", &["-c", "%U:%a", &etc("secret").to_string_lossy()]);
     probes.push(Probe::new(
         "root: the key's owner and mode",
@@ -1086,6 +1040,15 @@ pub fn check() -> Fallible<Statement> {
 }
 
 fn signed_in() -> BTreeSet<Provider> {
+    if crate::environment::installed() {
+        return crate::environment::helper("providers")
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|name| Provider::from_pi(name))
+            .collect();
+    }
     let auth: serde_json::Value = fs::read(format!("{AGENT_HOME}/.pi/agent/auth.json"))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
@@ -1151,30 +1114,12 @@ mod tests {
     }
 
     #[test]
-    fn the_wall_names_both_users_and_only_the_proxy_port_for_the_agent() {
-        let nft = wall_nft();
-        assert!(nft.contains("meta skuid \"agent\" oif \"lo\" tcp dport 3128 accept"));
-        assert!(nft.contains("meta skuid \"agent\" counter reject"));
-        assert!(nft.contains("meta skuid \"cell-proxy\" tcp dport { 443, 8443 } accept"));
-        assert!(nft.contains("meta skuid \"cell-proxy\" counter reject"));
-        assert!(
-            nft.starts_with("table inet cell {}\nflush table inet cell\n"),
-            "idempotent load"
-        );
-        assert_eq!(nft.matches("accept").count(), 6);
-    }
-
-    #[test]
     fn the_proxy_runs_unprivileged_and_the_agent_is_pointed_at_it() {
         assert!(proxy_unit().contains("User=cell-proxy"));
         assert!(proxy_unit().contains("NoNewPrivileges=yes"));
         assert!(say_unit().contains("User=cell-say"));
-        assert!(agent_unit(Path::new("/home/agent/work")).contains("User=agent"));
-        assert!(agent_unit(Path::new("/home/agent/work"))
-            .contains("Environment=HTTPS_PROXY=http://127.0.0.1:3128"));
+        assert!(proxy_unit().contains("--listen 0.0.0.0:3128"));
         assert!(say_unit().contains("ReadWritePaths=/var/lib/cell/outbox /var/lib/cell/said"));
-        assert!(profile().contains("HTTPS_PROXY=http://127.0.0.1:3128"));
-        assert!(profile().contains("= agent ]"));
     }
 
     #[test]

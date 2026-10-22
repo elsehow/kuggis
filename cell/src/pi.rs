@@ -191,8 +191,13 @@ impl Rpc {
         if let Some(dir) = agent_dir {
             command.env("PI_CODING_AGENT_DIR", dir);
         }
+        let system_prompt = if Path::new("/run/cell-runtime/environment-guest.py").exists() {
+            format!("{SYSTEM_PROMPT} You control this persistent Linux environment and have passwordless sudo. You may install toolchains and packages, change system configuration, and run local services. Use the configured HTTPS proxy for external downloads; the host enforces network grants. Changes survive restarts. The host signing key and authority controls are outside your environment.")
+        } else {
+            SYSTEM_PROMPT.to_string()
+        };
         let mut child = command
-            .args(["--system-prompt", SYSTEM_PROMPT])
+            .args(["--system-prompt", &system_prompt])
             .args(["--mode", "rpc", "--session-id", id, "--session-dir"])
             .arg(sessions)
             .current_dir(workspace)
