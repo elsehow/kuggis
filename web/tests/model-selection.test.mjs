@@ -12,10 +12,10 @@ const playwright = process.env.KUGGIS_TEST_PLAYWRIGHT;
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-test("new-chat model selection refreshes the header before the first prompt", { skip: !playwright, timeout: 45000 }, async t => {
+for (const noDefault of [false, true]) test(`new-chat model selection ${noDefault ? "recovers from an empty catalog without a default model" : "refreshes the header before the first prompt"}`, { skip: !playwright, timeout: 45000 }, async t => {
   const { chromium } = await import(playwright);
   const state = await mkdtemp(join(tmpdir(), "kuggis-model-browser-"));
-  const server = spawn(join(root, "cell/target/debug/cell"), ["chat", "--local", root, "--state", state, "--listen", "127.0.0.1:0", "--assets", join(root, "web/dist"), "--pi", join(root, "web/tests/fake-pi.mjs")]);
+  const server = spawn(join(root, "cell/target/debug/cell"), ["chat", "--local", root, "--state", state, "--listen", "127.0.0.1:0", "--assets", join(root, "web/dist"), "--pi", join(root, "web/tests/fake-pi.mjs")], { env: { ...process.env, KUGGIS_FIXTURE_NO_MODEL: noDefault ? "1" : "" } });
   let output = "";
   server.stderr.on("data", bytes => { output += bytes; });
   server.on("error", error => { output += error.message; });
@@ -37,6 +37,15 @@ test("new-chat model selection refreshes the header before the first prompt", { 
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
+  if (noDefault) {
+    let catalogRequests = 0;
+    await page.route("**/api/pi/models", route => {
+      catalogRequests++;
+      if (catalogRequests === 1) return route.fulfill({ json: [] });
+      if (catalogRequests === 2) return route.fulfill({ status: 502, json: { error: "Catalog temporarily unavailable" } });
+      return route.continue();
+    });
+  }
   const requestModel = name => page.getByRole("button", { name: /^Model:/ }).click()
     .then(() => page.getByRole("menuitem", { name: "fixture" }).click())
     .then(() => page.getByRole("menuitem", { name, exact: true }).click());
@@ -56,9 +65,26 @@ test("new-chat model selection refreshes the header before the first prompt", { 
   await page.goto(url);
   // The first available cell now opens automatically in the sidebar layout.
   await page.getByRole("textbox", { name: "Message", exact: true }).fill("Keep this draft");
+  if (noDefault) {
+    // A cell with no chat credentials returns no models. It must still offer
+    // provider setup, preserve the draft, and recover without a page reload.
+    await page.getByRole("button", { name: "Model: Choose model", exact: true }).click();
+    await page.getByText("No models available.", { exact: false }).waitFor();
+    await page.getByRole("menuitem", { name: "Provider settings", exact: true }).click();
+    await page.getByRole("dialog").waitFor();
+    await page.getByRole("button", { name: "Close settings", exact: true }).click();
+    await page.getByRole("button", { name: "Model: Choose model", exact: true }).click();
+    await page.getByRole("alert").filter({ hasText: "Could not load models" }).waitFor();
+    await page.getByRole("menuitem", { name: "Retry loading models", exact: true }).click();
+    await page.getByRole("menuitem", { name: "fixture", exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    assert.equal(await page.getByRole("textbox", { name: "Message", exact: true }).inputValue(), "Keep this draft");
+    assert.equal((await (await fetch(`${url}/api/pi/threads`)).json()).length, 0);
+  }
   await requestModel("Second model");
   await modelRequest;
-  await page.getByRole("button", { name: "Model: Test model", exact: true }).waitFor();
+  if (noDefault) await page.getByText("Choose a model above.", { exact: false }).waitFor();
+  else await page.getByRole("button", { name: "Model: Test model", exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Send message", exact: true }).isDisabled(), true);
   assert.equal(await page.getByRole("textbox", { name: "Message", exact: true }).inputValue(), "Keep this draft");
   releaseModel();
