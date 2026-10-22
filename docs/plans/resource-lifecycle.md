@@ -214,5 +214,6 @@ remote revocation. No RunPod/exe.dev API lifecycle implementation is claimed.
 - Planning: this document records the agreed sequence and merge gates.
 - Planning document merged in #41.
 - Prerequisite #40: self-reviewed, verified, and merged (31cf7ff).
-- PR 1: shared contracts/invariants implemented; review and merge tracked in its PR.
-- PRs 2–5: not yet implemented.
+- PR 1: shared contracts/invariants merged in #42 (e330688); 163 Rust tests and frontend/contract checks passed.
+- PR 2: site metadata migration, resource ownership/actions, and atomic cleanup/fencing implemented; review/merge tracked in its PR.
+- PRs 3–5: not yet implemented.
