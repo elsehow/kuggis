@@ -31,8 +31,10 @@ cargo run --manifest-path cell/Cargo.toml -- ui .kuggis/tree \
   --bin cell/target/x86_64-unknown-linux-musl/release/cell
 ```
 
-Open http://127.0.0.1:8080. The tree comes from declarations. Selecting a cell
-opens its chat sidebar, transcript, composer, and settings. The gateway uses
+Open http://127.0.0.1:8080. The tree comes from declarations and is shown in
+the first sidebar pane; the second lists the selected cell's chats, with its
+settings gear. There is no separate cell index: a missing or stale selection
+opens the first available cell. The gateway uses
 SSH and private Unix sockets; Pi runs persistently on the cell VM. `--bin`
 enables configuration review/apply; omit it for chatting without deployment.
 Use `--listen`, `--state`, and `--assets` to override the local UI defaults.

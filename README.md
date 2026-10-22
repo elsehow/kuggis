@@ -33,9 +33,11 @@ cargo run --manifest-path cell/Cargo.toml -- ui .kuggis/tree \
   --bin cell/target/x86_64-unknown-linux-musl/release/cell
 ```
 
-Open **http://127.0.0.1:8080**. Choose a cell, then create or resume a chat.
-The sidebar supports archive/restore; click a chat title to rename it.
-The gear opens provider sign-in, Git scopes, and BigBrain/Portal MCP connections.
+Open **http://127.0.0.1:8080**. The sidebar has two panes: the cell tree, then
+the selected cell's chats. The first available cell opens by default. The chat
+pane supports archive/restore; click a chat title to rename it. While the agent
+is working, a spinner appears at the bottom of the transcript.
+The gear beside the cell name opens provider sign-in, Git scopes, and BigBrain/Portal MCP connections.
 Configuration changes are previewed and applied through the existing plan and
 approval mechanism, including parent/child grant containment.
 
