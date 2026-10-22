@@ -381,7 +381,9 @@ artifacts. Use relative asset URLs (`base: "./"` for Vite). The privileged bridg
 never reads artifact files: it signs a typed command containing their digest,
 using fixed identity/audience and generated request ID/expiry. Its Unix socket
 checks the agent's OS UID, and the bridge runs as a different key-holding user.
-The agent never reads the host signing key.
+The agent never reads the host signing key. The bridge's socket and public
+configuration live in `/run/cell-publish`, which is bound read-only into the
+cell environment; `cell setup` installs the bridge for the environment's agent.
 
 The client uploads through HTTPS using the existing proxy environment. Both the
 root-owned local declaration and the publisher's current approved grants must
@@ -418,9 +420,8 @@ account credentials or public routes are created by running the tests.
 ### Deployment and practical tests
 
 [examples/publishing/README.md](../examples/publishing/README.md) documents the
-operator deployment, nginx/systemd templates, bridge configuration, and proxy
-grants. Actual exe.dev sharing/routing still requires an operator with account
-access and must be verified on the destination VM.
+operator deployment, nginx/systemd templates, bridge configuration, proxy
+grants, and the exe.dev sharing commands for the publisher VM.
 
 ```sh
 cargo test --manifest-path cell/Cargo.toml --locked

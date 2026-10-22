@@ -34,6 +34,14 @@ impl Default for BoundarySpec {
     }
 }
 
+impl BoundarySpec {
+    /// The guest's `agent` (UID 1000) as host processes see it, e.g. through
+    /// SO_PEERCRED. The host's own legacy `agent` user is a different UID.
+    pub fn host_agent_uid(&self) -> u32 {
+        self.uid_base + 1000
+    }
+}
+
 pub fn installed() -> bool {
     Path::new(SPEC).exists()
 }

@@ -1,10 +1,9 @@
 # Static publishing deployment
 
-This is an operator-run deployment recipe, not automatic provisioning. The
-Rust API/CLI, separate-UID bridge, HTTPS workflow, and browser isolation have
-local integration coverage. The exe.dev routing and these systemd/nginx units
-must be verified on the target VM before calling a live rollout complete.
-No account credentials are installed in cells.
+This is an operator-run recipe for the publisher VM; `cell setup` installs the
+signer on each cell. It has been exercised end to end on exe.dev: a dedicated
+publisher VM, a cell whose agent publishes from inside its environment, public
+HTTPS, and a browser. No account credentials are installed in cells.
 
 ## Publisher VM (separate from every agent/private door)
 
@@ -30,11 +29,18 @@ No account credentials are installed in cells.
    public unit's mount namespace is read-only except for the coordination lock.
    Migrate any older registry with an operator `cell publisher plan` before
    starting the read-only public unit.
-5. Install/review `nginx.conf` for this **dedicated VM only**. Confirm exe.dev's
-   web forwarding points to `127.0.0.1:8000`, and explicitly enable public HTTPS
-   access using the operator's account controls. Never make an existing cell's
-   private door public. This recipe intentionally does not guess account-level
-   exe.dev sharing commands.
+5. Install/review `nginx.conf` for this **dedicated VM only**, for example as
+   `/etc/nginx/sites-available/cell-publisher`, enabled, with the default site
+   removed. Point exe.dev's HTTPS proxy at it and make it public, naming the
+   publisher VM and nothing else:
+
+   ```sh
+   ssh exe.dev share port PUBLISHER_VM 8000
+   ssh exe.dev share set-public PUBLISHER_VM
+   ```
+
+   exe.dev's proxy reaches nginx's loopback listener. Never make an existing
+   cell's private door public.
 6. Run `nginx -t`, reload nginx, and enable/start the two systemd units. Confirm
    `/state.json` returns 404, the unsigned `/v1/requests` API refuses requests,
    and no filesystem/log directory is exposed.
@@ -73,8 +79,9 @@ policy too; a stale local signer cannot override revoked publisher authority.
 
 ## Cell bridge
 
-Install the same Linux binary on the cell using the normal operator update
-process. As root create `/etc/cell/publisher.json` (0644, root-owned):
+`cell setup` installs `cell-publish-bridge.service` on every cell VM. It stays
+inactive until the operator creates the host's root-owned
+`/etc/cell/publisher.json` (0644):
 
 ```json
 {
@@ -85,14 +92,24 @@ process. As root create `/etc/cell/publisher.json` (0644, root-owned):
 }
 ```
 
-The namespace/audience/endpoint are public configuration, not credentials.
-Create root-owned `/etc/cell/publisher.env` containing `AGENT_UID=` followed by
-`id -u agent`. Install/enable `cell-publish-bridge.service` on the **cell VM**, not
-on the publisher. The existing `cell-say` account already holds `/etc/cell/secret`;
-keep that key private and do not copy it. The bridge has no IP networking, reads
-only host-owned config/declarations/key, and accepts only the configured agent
-UID over its Unix socket. It signs typed, locally authorized commands and fixed
-metadata, never arbitrary bytes. Systemd owns/cleans the socket directory.
+Keep the socket at `/run/cell-publish/bridge.sock`: setup binds that directory
+read-only into the cell environment at the same path. The namespace, audience
+and endpoint are public configuration, not credentials. The bridge copies them
+to `/run/cell-publish/publisher.json`, where the agent's `cell publish` reads
+them. Start it with `sudo systemctl restart cell-publish-bridge`, or apply the
+cell's plan again; apply also checks that the agent can reach the bridge from
+inside its environment. A cell set up before this bind existed needs one apply,
+which restarts its environment.
+
+The bridge runs as `cell-say`, which already holds `/etc/cell/secret`; keep that
+key private and do not copy it. It has no IP networking, reads only host-owned
+config/declarations/key, and accepts only the environment's `agent` over its
+Unix socket, identified by its UID as mapped on the host (the environment's UID
+base plus 1000, not the host's own `agent` user). Root inside the environment is
+refused, so run `cell publish` as `agent`. The bridge signs typed, locally
+authorized commands and fixed metadata, never arbitrary bytes. Its directory is
+preserved across restarts, and a restart replaces the previous socket only when
+nothing answers on it.
 
 The agent can now run:
 

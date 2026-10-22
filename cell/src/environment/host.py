@@ -93,6 +93,12 @@ def socket_dir():
     os.chown(p, BASE + 1000, BASE + 1000)
     p.chmod(0o770)
     run('setfacl', '-m', 'g:cell-chat:rwx,d:g:cell-chat:rwx,d:u::rwx,d:g::rwx,d:o::---', p)
+    # The publishing bridge's socket and public configuration. The guest binds
+    # this directory, so it must exist before, and outlive, the bridge.
+    p = Path('/run/cell-publish')
+    p.mkdir(exist_ok=True)
+    shutil.chown(p, 'cell-say', 'cell-say')
+    p.chmod(0o711)
 
 
 def stage_ca_package():
@@ -188,7 +194,7 @@ TimeoutStartSec=180
 TimeoutStopSec=30
 ExecStartPre=/usr/bin/python3 {LIB}/environment.py guard
 ExecStartPre=/usr/bin/python3 {LIB}/environment.py socket
-ExecStart=/usr/bin/systemd-nspawn --quiet --keep-unit --boot --settings=no --machine={MACHINE} --directory={ROOT} --private-users={BASE}:{SPEC['uid_count']} --private-users-ownership=chown --network-veth --link-journal=no --resolv-conf=off --bind-ro={LIB}:/run/cell-runtime --bind-ro=/etc/cell/cell.json:/etc/cell/cell.json --bind-ro=/var/lib/cell/inbox --bind-ro=/var/lib/cell/said --bind=/var/lib/cell/outbox --bind=/run/cell-chat
+ExecStart=/usr/bin/systemd-nspawn --quiet --keep-unit --boot --settings=no --machine={MACHINE} --directory={ROOT} --private-users={BASE}:{SPEC['uid_count']} --private-users-ownership=chown --network-veth --link-journal=no --resolv-conf=off --bind-ro={LIB}:/run/cell-runtime --bind-ro=/etc/cell/cell.json:/etc/cell/cell.json --bind-ro=/var/lib/cell/inbox --bind-ro=/var/lib/cell/said --bind=/var/lib/cell/outbox --bind=/run/cell-chat --bind-ro=/run/cell-publish
 ExecStartPost=/usr/bin/python3 {LIB}/environment.py network
 MemoryMax=4G
 TasksMax=2048
@@ -251,6 +257,20 @@ for host,port in [("1.1.1.1",443),("169.254.169.254",80),("10.203.0.1",8000),("1
             '-H', 'Host: cell.internal', 'http://cell.internal/api/pi/threads?includeArchived=true')
     case('host: persistent chat API available', chat)
     case('guest: agent can sudo', lambda: guest('sudo', '-n', 'true', user='agent'))
+    if Path('/etc/cell/publisher.json').exists():
+        # A framed reply, even a refusal, means the socket is visible in the
+        # guest and the bridge accepts the agent's UID; it drops anyone else.
+        code = '''import json, socket, struct
+config = json.load(open("/run/cell-publish/publisher.json"))
+s = socket.socket(socket.AF_UNIX); s.settimeout(10); s.connect(config["socket"])
+s.sendall(struct.pack(">I", 2) + b"{}")
+reply = b""
+while chunk := s.recv(65536): reply += chunk
+assert len(reply) > 4, "bridge closed the connection without a reply"
+assert "Err" in json.loads(reply[4:])
+'''
+        case('guest: agent reaches the publish bridge',
+             lambda: guest('/usr/bin/python3', '-c', code, user='agent', timeout=30))
     print(json.dumps(probes))
 
 

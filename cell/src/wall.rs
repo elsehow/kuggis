@@ -377,6 +377,48 @@ WantedBy=multi-user.target
     )
 }
 
+/// Inert until the operator writes the publisher configuration. The runtime
+/// directory is preserved across restarts: the environment binds it into the
+/// guest, and a recreated directory would no longer be the one the guest sees.
+fn publish_bridge_unit() -> String {
+    let config = crate::publish::bridge::HOST_CONFIG;
+    let directory = crate::publish::bridge::SHARED_DIR.trim_start_matches("/run/");
+    let agent = crate::environment::BoundarySpec::default().host_agent_uid();
+    format!(
+        "[Unit]
+Description=cell publish: signs the agent's typed publishing commands
+After=local-fs.target
+ConditionPathExists={config}
+
+[Service]
+User={SAY_USER}
+Group={SAY_USER}
+ExecStart={BIN} publisher bridge --config {config} --cell {ETC}/cell.json --secret {ETC}/secret --agent-uid {agent}
+Restart=on-failure
+RestartSec=1
+RuntimeDirectory={directory}
+RuntimeDirectoryMode=0711
+RuntimeDirectoryPreserve=yes
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
+"
+    )
+}
+
 fn wall_unit() -> String {
     format!(
         "[Unit]
@@ -496,6 +538,11 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
         say_unit().as_bytes(),
         0o644,
     )?;
+    write_as_root(
+        Path::new("/etc/systemd/system/cell-publish-bridge.service"),
+        publish_bridge_unit().as_bytes(),
+        0o644,
+    )?;
     install_pi()?;
     if !attempt("getent", &["group", "cell-chat"]).0 {
         run("groupadd", &["--system", "cell-chat"])?;
@@ -516,7 +563,14 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
     run("nft", &["-f", &etc("wall.nft").to_string_lossy()])?;
     let expected = run("nft", &["-j", "list", "table", "inet", "cell"])?;
     write_as_root(&etc("wall.expected.json"), expected.as_bytes(), 0o644)?;
-    let units = ["cell-proxy", "cell-door", "cell-say", "cell-agent"];
+    // Restarting the bridge without a publisher configuration is a no-op.
+    let units = [
+        "cell-proxy",
+        "cell-door",
+        "cell-say",
+        "cell-agent",
+        "cell-publish-bridge",
+    ];
     run("systemctl", &[&["enable"][..], &units].concat())?;
     run("systemctl", &[&["restart"][..], &units].concat())?;
     crate::environment::helper("configure")?;
@@ -943,7 +997,11 @@ pub fn check() -> Fallible<Statement> {
         owner.trim(),
         "",
     ));
-    for unit in ["cell-proxy", "cell-door", "cell-say", "cell-agent"] {
+    let mut units = vec!["cell-proxy", "cell-door", "cell-say", "cell-agent"];
+    if Path::new(crate::publish::bridge::HOST_CONFIG).exists() {
+        units.push("cell-publish-bridge");
+    }
+    for unit in units {
         let (active, _) = attempt("systemctl", &["is-active", "--quiet", unit]);
         probes.push(Probe::new(
             &format!("root: {unit} service"),
@@ -1018,6 +1076,18 @@ fn signed_in() -> BTreeSet<Provider> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publish_bridge_serves_the_guest_agent_from_the_bound_directory() {
+        let unit = publish_bridge_unit();
+        // The guest agent's mapped UID, not the host's legacy agent user.
+        assert!(unit.contains("--agent-uid 525288\n"));
+        assert!(unit.contains("RuntimeDirectory=cell-publish\n"));
+        assert!(unit.contains("RuntimeDirectoryPreserve=yes\n"));
+        assert!(unit.contains("ConditionPathExists=/etc/cell/publisher.json\n"));
+        assert!(unit.contains("PrivateNetwork=yes\n"));
+        assert!(include_str!("environment/host.py").contains("--bind-ro=/run/cell-publish\n"));
+    }
 
     #[test]
     fn pi_signin_upgrade_preserves_custom_config_and_backs_up_legacy_endpoint() {
