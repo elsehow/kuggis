@@ -1,9 +1,0 @@
-# Hosts the room's proxy tunnels to: where the agents in the room sign in and
-# talk to their models, each an account that is the owner's. One per line.
-# Add your own in ~/.config/kuggis/thinker-hosts; every host passes the
-# trusted-cell test: only you can read what's sent there.
-api.anthropic.com
-console.anthropic.com
-api.openai.com
-auth.openai.com
-chatgpt.com

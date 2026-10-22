@@ -1,2 +1,12 @@
+cell/target/
+cell/bindings/
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+.kuggis/
+.claude/worktrees/
+# Legacy deployment directories and identity pins are local state.
+/tree/
+**/.pins/
+
 __pycache__/
-*.py[cod]

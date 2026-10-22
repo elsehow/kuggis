@@ -1,0 +1,8 @@
+[
+ {"attachments":["vm:widget-dev"],"comment":"","config":{"repositories":["example/widget"],"installation_id":1},"config_summary":"repos=example/widget","name":"gh-widget-dev","type":"github"},
+ {"attachments":["tag:cell-widget"],"comment":"","config":{"repositories":["upstream/widget"],"installation_id":1,"readonly":true},"config_summary":"repos=upstream/widget","name":"gh-widget-upstream","type":"github"},
+ {"attachments":["vm:toolbox-dev"],"comment":"","config":{"repositories":["example/toolbox"],"installation_id":1},"config_summary":"repos=example/toolbox","name":"gh-toolbox","type":"github"},
+ {"attachments":["tag:box"],"comment":"","config":{"providers":{"openai":{"enabled":true,"source":"chatgpt","configured":true}}},"config_summary":"providers=openai","name":"codex","type":"llm"},
+ {"attachments":["tag:cell-widget"],"comment":"","config":{"target":"https://widget-scratch.exe.xyz/","peer":true},"config_summary":"target=https://widget-scratch.exe.xyz/","name":"door-widget-scratch","type":"http-proxy"},
+ {"attachments":["auto:all"],"comment":"Installed by default","config":{"providers":{"anthropic":{"enabled":true,"source":"managed","configured":false},"openai":{"enabled":true,"source":"managed","configured":false}}},"config_summary":"providers=managed","name":"llm","type":"llm"}
+]

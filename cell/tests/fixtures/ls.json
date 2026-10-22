@@ -1,0 +1,6 @@
+{"vms":[
+ {"vm_name":"widget-dev","tags":["box","cell-widget"],"status":"running","comment":"box:example/widget"},
+ {"vm_name":"toolbox-dev","tags":["box"],"status":"running"},
+ {"vm_name":"widget-scratch","tags":["cell-widget-scratch"],"status":"running"},
+ {"vm_name":"svc-1","tags":["svc"],"status":"running"}
+]}
