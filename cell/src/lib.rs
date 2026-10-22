@@ -25,6 +25,8 @@ pub mod provider;
 pub mod proxy;
 pub mod publish;
 pub mod request;
+pub mod resource;
+pub mod resource_rpc;
 pub mod said;
 pub mod session;
 pub mod ship;

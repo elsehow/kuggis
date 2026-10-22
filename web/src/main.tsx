@@ -16,6 +16,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MAX_IMAGE_BYTES, MAX_MESSAGE_BODY_BYTES, mib, utf8Length } from "./attachment-limits.mjs";
 import { Settings } from "./settings";
+import { Resources } from "./resources";
 import type { CellInfo, CellsView } from "./api-types";
 import type { AttachmentAdapter } from "@assistant-ui/core";
 import { CreateCell, creationLabel } from "./create-cell";
@@ -46,6 +47,7 @@ const guardedImageAttachments: AttachmentAdapter = {
 const ChatMetadata = createContext<PiThreadMetadata[]>([]);
 
 function App() {
+  const [resources, setResources] = useState(new URLSearchParams(location.search).get("view") === "resources");
   const [cellsHidden, setCellsHidden] = useState(false);
   const [cells, setCells] = useState<CellInfo[]>([]);
   const [mode, setMode] = useState("cells");
@@ -72,7 +74,7 @@ function App() {
       } catch (e) { setError(explain(e)); }
     } finally { setLoaded(true); }
   };
-  useEffect(() => { void load(); const pop = () => setSelected(new URLSearchParams(location.search).get("cell")); window.addEventListener("popstate", pop); return () => window.removeEventListener("popstate", pop); }, []);
+  useEffect(() => { void load(); const pop = () => { setSelected(new URLSearchParams(location.search).get("cell")); setResources(new URLSearchParams(location.search).get("view") === "resources"); }; window.addEventListener("popstate", pop); return () => window.removeEventListener("popstate", pop); }, []);
   const provisioning = cells.some((c) => c.lifecycle.state === "provisioning" || c.lifecycle.state === "deleting");
   useEffect(() => { if (!provisioning) return; const timer = setInterval(() => void load(), 2500); return () => clearInterval(timer); }, [provisioning]);
   const setCreation = (id: string | null) => {
@@ -94,7 +96,7 @@ function App() {
     if (name && target?.lifecycle.state !== "available") return;
     const url = new URL(location.href); url.search = ""; if (name) url.searchParams.set("cell", name);
     if (chat) url.searchParams.set("chat", chat); if (setup) url.searchParams.set("setup", "1");
-    history.pushState(null, "", url); setSelected(name);
+    history.pushState(null, "", url); setSelected(name); setResources(false);
   };
   const cell = cells.find((c) => c.name === selected);
   // Without a homepage, a missing or stale selection falls through to the first
@@ -113,11 +115,12 @@ function App() {
   const standalone = mode === "standalone";
   const cellsPane = !standalone && !cellsHidden && <aside className="cells-pane" aria-label="Cells">
     <div className="pane-title">Cells</div>
+    <button className="new-cell-button" aria-current={resources ? "page" : undefined} onClick={() => { const url = new URL(location.href); url.searchParams.set("view", "resources"); history.pushState(null, "", url); setResources(true); }}>Resources</button>
     {canCreate && <button className="new-cell-button" onClick={() => openCreation(null)}>＋ Cell</button>}
     {error && <div role="alert" className="inline-error">{error}<button onClick={() => void load()}>Retry</button></div>}
     <nav className="cell-tree">{!loaded ? <p className="pane-note">Loading…</p> : cells.length === 0 ? <p className="pane-note">No cells yet.</p> : branch(null)}</nav>
   </aside>;
-  const content = cell
+  const content = resources && !standalone ? <Resources /> : cell
     ? <CellWorkspace key={cell.name} cell={cell} standalone={standalone} local={mode !== "cells"} canApply={canApply} reload={load} onDelete={canDelete ? () => openDeletion(cell.name, cell.deletion?.id) : undefined} />
     : <main className="empty-main">{!loaded ? "" : cells.length === 0 ? (canCreate ? "No cells yet. Create one with ＋ Cell." : "No cells are declared.") : "No cell is available. Choose one from the list to see its status."}</main>;
   return <><div className={standalone || cellsHidden ? "shell standalone" : "shell"}>{cellsPane}{content}{!standalone && <button className="cell-menu" aria-label={cellsHidden ? "Show cells" : "Hide cells"} aria-expanded={!cellsHidden} onClick={() => setCellsHidden(!cellsHidden)}>☰</button>}</div>{creation}{deletion}</>;
