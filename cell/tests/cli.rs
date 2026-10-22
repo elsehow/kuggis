@@ -439,3 +439,131 @@ fn no_command_prints_usage_and_fails() {
     assert!(!o.status.success());
     assert!(err(&o).contains("usage:"));
 }
+
+#[test]
+fn publisher_policy_approval_and_trusted_signer_across_processes() {
+    use cell::publish::{
+        registry::Registry,
+        transport::{Reply, SignedRequest},
+    };
+    let d = tmp("publisher");
+    let registry = d.join("registry");
+    let registry_arg = registry.to_str().unwrap();
+    let initialized = run(&["publisher", "init", registry_arg], "");
+    assert!(initialized.status.success(), "{}", err(&initialized));
+    let audience = out(&initialized);
+    let keyfile = d.join("parent.key");
+    let minted = run(&["key", "new", keyfile.to_str().unwrap()], "");
+    assert!(minted.status.success(), "{}", err(&minted));
+    let public = out(&minted);
+    let allocated = run(&["publisher", "namespace", registry_arg, &public], "");
+    assert!(allocated.status.success(), "{}", err(&allocated));
+    let namespace = out(&allocated);
+    let tree = d.join("tree");
+    fs::create_dir_all(tree.join(".pins")).unwrap();
+    let declaration =
+        serde_json::json!({"name":"parent", "grants":[{"publish":{"namespace":namespace}}]});
+    fs::write(tree.join("parent.json"), declaration.to_string()).unwrap();
+    fs::write(tree.join(".pins/parent.pub"), &public).unwrap();
+    let tree_arg = tree.to_str().unwrap();
+    let plan = run(&["publisher", "plan", registry_arg, tree_arg], "");
+    assert!(plan.status.success(), "{}", err(&plan));
+    let value: serde_json::Value = serde_json::from_str(&out(&plan)).unwrap();
+    assert_eq!(value["audience"], audience);
+    assert_eq!(value["cells"][0]["key"], public);
+    let approval = err(&plan)
+        .strip_prefix("approve with ")
+        .unwrap()
+        .to_string();
+    assert!(!run(&["publisher", "apply", registry_arg, tree_arg], "")
+        .status
+        .success());
+    assert!(!run(
+        &[
+            "publisher",
+            "plan",
+            registry_arg,
+            tree_arg,
+            "--pin",
+            "ignored"
+        ],
+        ""
+    )
+    .status
+    .success());
+    assert!(!run(
+        &[
+            "publisher",
+            "apply",
+            registry_arg,
+            tree_arg,
+            "--approve",
+            &"00".repeat(32)
+        ],
+        ""
+    )
+    .status
+    .success());
+    let applied = run(
+        &[
+            "publisher",
+            "apply",
+            registry_arg,
+            tree_arg,
+            "--approve",
+            &approval,
+        ],
+        "",
+    );
+    assert!(applied.status.success(), "{}", err(&applied));
+    let command =
+        serde_json::json!({"reserve_site":{"site":{"namespace":namespace,"name":"news"}}});
+    let signed = run(
+        &[
+            "publisher",
+            "sign",
+            "--secret",
+            keyfile.to_str().unwrap(),
+            "--audience",
+            &audience,
+        ],
+        &command.to_string(),
+    );
+    assert!(signed.status.success(), "{}", err(&signed));
+    let request: SignedRequest = serde_json::from_str(&out(&signed)).unwrap();
+    let opened = Registry::open(&registry).unwrap();
+    assert_eq!(opened.execute(&request).unwrap(), Reply::Reserved);
+    assert!(opened.execute(&request).is_err());
+    // A pin changed after preview cannot use that earlier approval.
+    let preview = run(&["publisher", "plan", registry_arg, tree_arg], "");
+    let approval = err(&preview)
+        .strip_prefix("approve with ")
+        .unwrap()
+        .to_string();
+    fs::write(
+        tree.join(".pins/parent.pub"),
+        cell::Secret::generate().public().to_string(),
+    )
+    .unwrap();
+    assert!(!run(
+        &[
+            "publisher",
+            "apply",
+            registry_arg,
+            tree_arg,
+            "--approve",
+            &approval
+        ],
+        ""
+    )
+    .status
+    .success());
+    // Listen policy is enforced before any public plaintext socket is opened.
+    let serve = run(
+        &["publisher", "serve", registry_arg, "--listen", "0.0.0.0:0"],
+        "",
+    );
+    assert!(!serve.status.success());
+    assert!(err(&serve).contains("loopback"));
+    fs::remove_dir_all(d).unwrap();
+}

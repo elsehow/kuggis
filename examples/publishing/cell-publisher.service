@@ -1,0 +1,25 @@
+[Unit]
+Description=Kuggis signed publishing API (dedicated publisher VM)
+After=network.target
+
+[Service]
+User=cell-publisher
+Group=cell-publisher
+ExecStart=/usr/local/bin/cell publisher serve /var/lib/cell-publisher --listen 127.0.0.1:8090
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/cell-publisher
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

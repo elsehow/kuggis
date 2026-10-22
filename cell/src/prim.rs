@@ -29,7 +29,7 @@ impl std::error::Error for Invalid {}
 pub const RESERVED: &[&str] = &[
     "cell", "key", "say", "open", "allow", "tree", "plan", "observe", "proxy", "setup", "check",
     "probe", "door", "help", "apply", "adopt", "ship", "knock", "brief", "pull", "run", "login",
-    "chat", "session", "ui", "prepare", "relay",
+    "chat", "session", "ui", "prepare", "relay", "publisher", "publish",
 ];
 
 macro_rules! text {
@@ -104,7 +104,20 @@ text!(
     Url, "url", url
 );
 
+text!(
+    /// A public site's local name: a DNS label, including command words.
+    SiteName, "site name", site_name
+);
+
 fn name(s: &str) -> Result<String, &'static str> {
+    let value = site_name(s)?;
+    if RESERVED.contains(&s) {
+        return Err("a command word");
+    }
+    Ok(value)
+}
+
+fn site_name(s: &str) -> Result<String, &'static str> {
     let b = s.as_bytes();
     if b.is_empty() {
         return Err("empty");
@@ -120,9 +133,6 @@ fn name(s: &str) -> Result<String, &'static str> {
     }
     if b[0] == b'-' || b[b.len() - 1] == b'-' {
         return Err("starts or ends with -");
-    }
-    if RESERVED.contains(&s) {
-        return Err("a command word");
     }
     Ok(s.to_string())
 }

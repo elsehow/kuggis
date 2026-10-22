@@ -1,0 +1,27 @@
+[Unit]
+Description=Kuggis read-only published artifacts (dedicated publisher VM)
+After=network.target
+
+[Service]
+User=cell-publisher
+Group=cell-publisher
+ExecStart=/usr/local/bin/cell publisher host /var/lib/cell-publisher --listen 127.0.0.1:8091
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Readers coordinate with commits but cannot alter state or artifact files.
+ReadOnlyPaths=/var/lib/cell-publisher
+ReadWritePaths=/var/lib/cell-publisher/lock
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

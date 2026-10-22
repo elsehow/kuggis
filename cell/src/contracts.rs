@@ -8,6 +8,7 @@ mod tests {
     #[test]
     fn generate_types() {
         let config = Config::from_env();
+        crate::publish::PublicationReceipt::export_all(&config).unwrap();
         crate::chat::oauth::AuthFlow::export_all(&config).unwrap();
         crate::chat::oauth::LoginRequest::export_all(&config).unwrap();
         crate::chat::oauth::AuthReply::export_all(&config).unwrap();

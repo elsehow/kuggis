@@ -317,3 +317,119 @@ directory left in it, four writers racing for the log's lock, and the
 binary as separate processes. The proxy tests
 include a table of hostile request lines; one of them, a port written with
 a leading zero, found a real hole while this was being written.
+
+## Static publishing
+
+`publish.rs` defines `NamespaceId`, `SiteId`, `PublishScope`, and
+`PublicationReceipt`. `SiteName` is a validated DNS label (unlike cell names,
+command words are allowed). A site identity is its opaque namespace ID plus
+local name, not its URL or the most recent publishing cell.
+
+The new grant wire shapes are:
+
+```json
+{"publish":{"namespace":"<64 lowercase hex digits>"}}
+{"publish":{"site":{"namespace":"<64 lowercase hex digits>","name":"news-viewer"}}}
+```
+
+A namespace grant covers that namespace and every site within it. A site grant
+covers only that existing site. Neither grant adds proxy hosts or exe.dev
+attachments. Normal tree containment applies: ancestors must explicitly hold
+any child namespace grants they delegate; a name or tree position alone grants
+no publishing rights. Delegation does not transfer ownership.
+
+`publish::registry::Registry` now implements the trusted publisher's durable
+ownership and authorization core. Its direct methods are trusted-code interfaces;
+network callers must use the signed transport:
+
+- `create` initializes a new private directory; `open` requires valid existing
+  state. Missing/corrupt state never silently resets ownership or policy.
+- Operator-only `allocate_namespace` binds a fresh ID permanently to a pinned
+  cell key. Allocation/ownership alone does not grant permission to publish.
+- Operator-only `approve_tree` atomically replaces the **complete** approved
+  policy from a validated `Tree` and trusted pins. Every cell must have a
+  distinct pinned key. Site grants must refer to already reserved sites.
+- `create_site` requires namespace authority and reserves a name atomically.
+  Delegated creation does not change namespace ownership. Reservations must
+  survive future unpublish operations, preventing identity/URL takeovers.
+- `authorize` checks current authority for publish, rollback, unpublish, or
+  private status access. It performs no deployment and issues no reusable
+  permit. Revoked keys/grants are rejected on subsequent calls.
+
+State uses private files, a cross-process lock, and fsynced atomic replacement.
+Each call reloads policy under the lock, including calls from older handles.
+The directory must belong to the trusted publisher and be inaccessible to
+agents; operator-only methods must never be exposed through cell RPCs.
+
+### Agent workflow
+
+With the operator-provisioned host bridge and public destination configured:
+
+```sh
+cell publish ./dist --site news-viewer
+cell publish status news-viewer
+cell publish rollback news-viewer VERSION_ID
+cell publish unpublish news-viewer
+```
+
+The agent-side packer snapshots only `./dist`, requiring `index.html` and
+rejecting hidden files, symlinks, special files, unsafe paths, and oversized
+artifacts. Use relative asset URLs (`base: "./"` for Vite). The privileged bridge
+never reads artifact files: it signs a typed command containing their digest,
+using fixed identity/audience and generated request ID/expiry. Its Unix socket
+checks the agent's OS UID, and the bridge runs as a different key-holding user.
+The agent never reads the host signing key.
+
+The client uploads through HTTPS using the existing proxy environment. Both the
+root-owned local declaration and the publisher's current approved grants must
+permit the operation. The upload must match its signed digest. Publication
+stores an immutable snapshot and atomically switches the site's active version;
+rollback selects only that site's existing versions. Unpublish removes the live
+pointer without relinquishing ownership. Multiple named sites share a namespace.
+
+### Operator and serving surfaces
+
+The operator commands are `cell publisher init`, `namespace`, `configure`,
+`plan`, and `apply`. Plan/apply use existing verified pins, bind the registry,
+public origin, current policy, full tree and keys in an approval hash, and
+replace the complete policy atomically. They are not HTTP routes.
+
+`cell publisher serve` exposes signed `/v1/requests` and `/v1/uploads` on a
+loopback listener. Requests are audience-bound, expire within five minutes, and
+successful request IDs are durably replay-protected. A second process,
+`cell publisher host`, serves only the active files at
+`/sites/NAMESPACE/NAME/`. It has no routes for private state, old blobs or the
+control API. Both listeners require an operator-managed HTTPS frontend.
+
+Public pages are sandboxed to opaque browser origins (no cookies, same-origin
+storage, or service-worker registration). Anonymous CORS permits bundled modules
+and local JSON fetch. No directory is mounted from an agent workspace. The cell's
+private door is never made public. See the deployment recipe for supported
+content, quotas, and limitations.
+
+The implementation includes durable version receipts/status, but does not yet
+append publication events to the cell's signed statement log. Deployment uses
+operator CLI/configuration rather than a new UI settings panel. No exe.dev
+account credentials or public routes are created by running the tests.
+
+### Deployment and practical tests
+
+[examples/publishing/README.md](../examples/publishing/README.md) documents the
+operator deployment, nginx/systemd templates, bridge configuration, and proxy
+grants. Actual exe.dev sharing/routing still requires an operator with account
+access and must be verified on the destination VM.
+
+```sh
+cargo test --manifest-path cell/Cargo.toml --locked
+cargo build --manifest-path cell/Cargo.toml --locked
+python3 scripts/test-publishing-live.py
+# Optional: use an already installed browser, with no downloads:
+PUBLISH_SMOKE_PLAYWRIGHT=/path/to/node_modules/playwright python3 scripts/test-publishing-live.py
+```
+
+The opt-in smoke test runs a disposable root-owned signer, an unprivileged CLI,
+local HTTPS control/public frontends, and the full publish/update/status/rollback/
+unpublish/restore lifecycle. It verifies the agent cannot read the key and that
+local revocation takes effect without restarting the signer. Browser coverage
+checks ES modules, JSON fetch, and sandbox isolation. All services/state are
+cleaned up; this is not a live Internet deployment.

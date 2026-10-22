@@ -40,6 +40,25 @@ usage:
   cell adopt VM NAME              tag an existing VM as NAME's root
   cell observe [--from DIR]       read exe.dev (or DIR/ls.json + DIR/int.json) as
                                   cells and doors
+  cell publish DIR --site NAME [--config FILE]
+                                  snapshot and publish static files via the host bridge
+  cell publish status NAME | rollback NAME VERSION | unpublish NAME [--config FILE]
+  cell publisher configure REGISTRY --public-base HTTPS_ORIGIN
+  cell publisher host REGISTRY --listen 127.0.0.1:8091
+                                  read-only public artifact server, behind HTTPS
+  cell publisher bridge --config FILE --cell CELLFILE --secret KEY --agent-uid UID
+                                  restricted host signer (different user from agent)
+  cell publisher init REGISTRY   create private publisher state; print its audience ID
+  cell publisher namespace REGISTRY OWNER_KEY
+                                  allocate a namespace for a pinned owner key
+  cell publisher plan REGISTRY TREE [--pins DIR]
+                                  preview full publishing policy and approval hash
+  cell publisher apply REGISTRY TREE --approve HASH [--pins DIR]
+                                  replace policy only if the reviewed plan still matches
+  cell publisher serve REGISTRY --listen 127.0.0.1:8090
+                                  serve signed requests; no operator HTTP routes
+  cell publisher sign --secret FILE --audience ID
+                                  trusted signer: sign a publisher Command from stdin
   cell proxy --listen ADDR --cell CELLFILE [--private-ok]
                                   run the wall's proxy for that cell
   cell setup CELLFILE             as root on a box: build the wall for that cell,
@@ -85,6 +104,8 @@ fn run(args: &[String]) -> Fallible {
         Some("adopt") => adopt(rest),
         Some("observe") => observe(rest),
         Some("proxy") => proxy(rest),
+        Some("publisher") => publisher(rest),
+        Some("publish") => cell::publish::client::run(rest),
         Some("setup") => setup(rest),
         Some("check") => checked(cell::wall::check()?),
         Some("probe") => probe(),
@@ -118,6 +139,101 @@ fn run(args: &[String]) -> Fallible {
             Err("no such command".into())
         }
     }
+}
+
+fn publisher(args: &[String]) -> Fallible {
+    use cell::publish::{operator, registry::Registry, transport};
+    // Be strict here: misspelled approval/pin flags must not silently fall back.
+    let usage = "publisher: expected init, namespace, plan, apply, configure, serve, host, bridge, or sign (see cell help)";
+    match args.first().map(String::as_str) {
+        Some("init") if args.len() == 2 => {
+            println!("{}", Registry::create(Path::new(&args[1]))?.audience()?);
+        }
+        Some("namespace") if args.len() == 3 => {
+            let id = Registry::open(Path::new(&args[1]))?.allocate_namespace(args[2].parse()?)?;
+            println!("{}", id.0);
+        }
+        Some("plan" | "apply") => {
+            let registry = Registry::open(Path::new(arg(args, 1, "REGISTRY")?))?;
+            let tree_dir = Path::new(arg(args, 2, "TREE")?);
+            let mut pins_dir = tree_dir.join(".pins");
+            let mut approval = None;
+            let mut seen = BTreeSet::new();
+            for pair in args[3..].chunks(2) {
+                if pair.len() != 2 || !seen.insert(pair[0].as_str()) {
+                    return Err(usage.into());
+                }
+                match pair[0].as_str() {
+                    "--pins" => pins_dir = PathBuf::from(&pair[1]),
+                    "--approve" if args[0] == "apply" => approval = Some(pair[1].parse::<Hash>()?),
+                    _ => return Err(usage.into()),
+                }
+            }
+            let (tree, pins) = operator::load(tree_dir, &pins_dir)?;
+            if args[0] == "plan" {
+                let plan = registry.plan_policy(&tree, &pins)?;
+                println!("{}", serde_json::to_string_pretty(&plan)?);
+                eprintln!("approve with {}", plan.hash());
+            } else {
+                registry.apply_policy(
+                    &tree,
+                    &pins,
+                    &approval.ok_or("publisher apply requires --approve HASH")?,
+                )?;
+                println!("publishing policy applied");
+            }
+        }
+        Some("configure") if args.len() == 4 && args[2] == "--public-base" => {
+            Registry::open(Path::new(&args[1]))?.configure_public_base(args[3].parse()?)?;
+            println!("public origin configured");
+        }
+        Some("host") if args.len() == 4 && args[2] == "--listen" => {
+            let registry = Registry::open(Path::new(&args[1]))?;
+            tokio::runtime::Runtime::new()?
+                .block_on(cell::publish::hosting::serve(registry, args[3].parse()?))?;
+        }
+        Some("bridge")
+            if args.len() == 9
+                && args[1] == "--config"
+                && args[3] == "--cell"
+                && args[5] == "--secret"
+                && args[7] == "--agent-uid" =>
+        {
+            let config = cell::publish::bridge::Bridge::load_config(Path::new(&args[2]))?;
+            tokio::runtime::Runtime::new()?.block_on(cell::publish::bridge::serve(
+                config,
+                Path::new(&args[4]),
+                Path::new(&args[6]),
+                args[8].parse()?,
+            ))?;
+        }
+        Some("serve") if args.len() == 4 && args[2] == "--listen" => {
+            let registry = Registry::open(Path::new(&args[1]))?;
+            tokio::runtime::Runtime::new()?
+                .block_on(transport::serve(registry, args[3].parse()?))?;
+        }
+        Some("sign") if args.len() == 5 && args[1] == "--secret" && args[3] == "--audience" => {
+            let secret: Secret = fs::read_to_string(&args[2])?.parse()?;
+            let mut input = String::new();
+            io::stdin()
+                .take(transport::MAX_REQUEST_BYTES as u64 + 1)
+                .read_to_string(&mut input)?;
+            if input.len() > transport::MAX_REQUEST_BYTES {
+                return Err("publisher command too large".into());
+            }
+            let command = serde_json::from_str(&input)?;
+            let signed = transport::SignedRequest::sign(
+                &secret,
+                args[4].parse()?,
+                RequestId::generate(),
+                transport::unix_time()? + transport::MAX_LIFETIME_SECS,
+                command,
+            );
+            println!("{}", serde_json::to_string(&signed)?);
+        }
+        _ => return Err(usage.into()),
+    }
+    Ok(())
 }
 
 fn arg<'a>(args: &'a [String], i: usize, what: &str) -> Fallible<&'a str> {

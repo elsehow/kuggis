@@ -23,6 +23,7 @@ pub mod plan;
 pub mod prim;
 pub mod provider;
 pub mod proxy;
+pub mod publish;
 pub mod request;
 pub mod said;
 pub mod session;
