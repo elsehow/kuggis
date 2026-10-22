@@ -13,7 +13,8 @@ use std::{
     process::{Command as Process, Stdio},
 };
 
-pub const DEFAULT_CONFIG: &str = "/etc/cell/publisher.json";
+/// Written by the host's bridge into its shared directory (`bridge::SHARED_DIR`).
+pub const DEFAULT_CONFIG: &str = "/run/cell-publish/publisher.json";
 pub fn run(args: &[String]) -> crate::apply::Fallible {
     let mut args = args.to_vec();
     let config_path = if let Some(at) = args.iter().position(|a| a == "--config") {
@@ -26,7 +27,10 @@ pub fn run(args: &[String]) -> crate::apply::Fallible {
     } else {
         DEFAULT_CONFIG.into()
     };
-    let config: Config = serde_json::from_slice(&fs::read(config_path)?)?;
+    let bytes = fs::read(&config_path).map_err(|e| {
+        format!("publishing is not configured for this cell ({config_path}: {e}); the operator must configure its publisher bridge")
+    })?;
+    let config: Config = serde_json::from_slice(&bytes)?;
     let rest = &config.endpoint.as_str()["https://".len()..];
     if rest.trim_end_matches('/').contains(['/', '?', '#']) {
         return Err("publisher endpoint must be an HTTPS origin".into());
@@ -50,7 +54,16 @@ pub fn run(args: &[String]) -> crate::apply::Fallible {
         }
         _ => return Err("usage: cell publish DIR --site NAME | status NAME | rollback NAME VERSION | unpublish NAME [--config FILE]".into()),
     };
-    let request = bridge::request(&config.socket, &command)?;
+    let request = bridge::request(&config.socket, &command).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
+            format!("publisher bridge is not running ({}): {e}", config.socket.display())
+        }
+        // The bridge closes connections from any user but the cell's agent.
+        io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof | io::ErrorKind::BrokenPipe => {
+            format!("publisher bridge refused this caller; run cell publish as the agent user, not root ({e})")
+        }
+        _ => format!("publisher bridge: {e}"),
+    })?;
     let verified = request.verify()?;
     let (route, body) = if let Some(artifact) = artifact {
         (

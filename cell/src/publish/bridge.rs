@@ -11,12 +11,18 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
     io::{self, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
+
+/// Operator-written configuration on the cell VM host.
+pub const HOST_CONFIG: &str = "/etc/cell/publisher.json";
+/// Bound read-only into the cell environment at the same path. It holds the
+/// signer's socket and the public configuration the agent's client reads.
+pub const SHARED_DIR: &str = "/run/cell-publish";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -162,11 +168,39 @@ pub async fn serve(
     {
         return Err("bridge socket directory must be trusted and not agent-writable".into());
     }
-    // Do not remove an existing socket automatically: it may be a live signer.
+    remove_stale_socket(&config.socket)?;
     let listener = tokio::net::UnixListener::bind(&config.socket)?;
     // Connections are authenticated by SO_PEERCRED, not filesystem group guesses.
     fs::set_permissions(&config.socket, fs::Permissions::from_mode(0o666))?;
+    advertise(parent, &config)?;
     run(listener, bridge, agent_uid).await
+}
+/// The socket directory outlives restarts because the cell environment binds
+/// it. Remove a previous run's socket only when nothing answers on it: a live
+/// socket may belong to another signer.
+fn remove_stale_socket(socket: &Path) -> io::Result<()> {
+    let metadata = match fs::symlink_metadata(socket) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        other => other?,
+    };
+    if !metadata.file_type().is_socket() || metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(io::Error::other(
+            "bridge socket path is not this signer's socket",
+        ));
+    }
+    match UnixStream::connect(socket) {
+        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => fs::remove_file(socket),
+        Ok(_) => Err(io::Error::other("another publishing bridge is listening")),
+        Err(e) => Err(e),
+    }
+}
+/// Public configuration beside the socket, so a client in the cell environment
+/// can address this signer without reading host files.
+fn advertise(directory: &Path, config: &Config) -> io::Result<()> {
+    let temporary = directory.join(".publisher.json.new");
+    fs::write(&temporary, serde_json::to_vec(config)?)?;
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o644))?;
+    fs::rename(temporary, directory.join("publisher.json"))
 }
 async fn run(
     listener: tokio::net::UnixListener,
@@ -275,6 +309,38 @@ mod tests {
         .unwrap();
         assert!(failed.is_err());
         task.abort();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn restart_replaces_only_a_dead_socket_and_advertises_public_config() {
+        let directory = std::env::temp_dir().join(format!("cell-stale-{}", RequestId::generate()));
+        fs::create_dir(&directory).unwrap();
+        let socket = directory.join("bridge.sock");
+        remove_stale_socket(&socket).unwrap();
+        let live = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        assert!(remove_stale_socket(&socket).is_err());
+        drop(live);
+        assert!(socket.exists());
+        remove_stale_socket(&socket).unwrap();
+        assert!(!socket.exists());
+        fs::write(&socket, "not a socket").unwrap();
+        assert!(remove_stale_socket(&socket).is_err());
+        let config = Config {
+            socket,
+            namespace: NamespaceId(crate::Hash::of(b"namespace")),
+            endpoint: "https://publisher.example".parse().unwrap(),
+            audience: RequestId::generate(),
+        };
+        advertise(&directory, &config).unwrap();
+        let advertised = directory.join("publisher.json");
+        assert_eq!(
+            fs::metadata(&advertised).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        let read: Config = serde_json::from_slice(&fs::read(advertised).unwrap()).unwrap();
+        assert_eq!(read.namespace, config.namespace);
+        assert_eq!(read.audience, config.audience);
         fs::remove_dir_all(directory).unwrap();
     }
 }

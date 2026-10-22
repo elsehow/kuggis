@@ -130,6 +130,8 @@ fn artifacts_reject_traversal_duplicates_hidden_files_and_resource_exhaustion() 
     assert!(many.validate().is_err());
 }
 
+// The packer walks directories through /proc/self/fd, which only Linux has.
+#[cfg(target_os = "linux")]
 #[test]
 fn snapshot_never_follows_links_or_special_files_and_copies_only_selected_content() {
     let f = Fixture::new();
