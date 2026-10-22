@@ -74,8 +74,11 @@ A cell file:
 runtime, not a grant. Provider grants allow their API and sign-in hosts.
 OpenAI uses `api.openai.com`, `auth.openai.com`, and `chatgpt.com`; no exe.dev
 LLM integration is required. Paper Instruments allows `api.paperinstruments.com`.
-VM setup installs a pinned Pi runtime independently
-of provider grants.
+VM setup installs a pinned Pi runtime independently of provider grants. Pi's
+npm installation runs on private Node.js 24.22.1, with dependency lifecycle
+scripts disabled; it does not use the standalone binary's bundled CA roots.
+Setup refreshes the guest's CA package from the host's authenticated apt
+download, so this does not require Ubuntu mirror grants in the cell.
 
 The edge is one GitHub App for every cell, so GitHub cannot tell a parent
 from a child. What tells them apart is which repository each carries. A

@@ -59,8 +59,10 @@ For access without a running laptop, use a dedicated
 [hosted supervisor](deploy/README.md) behind exe.dev's private authenticated HTTPS
 proxy. The supervisor owns deployment state; each cell retains its chats.
 
-Setup seeds Pi 1.3.0 from a SHA-256-verified bundle. The agent controls its
-guest userspace and can install or update tools.
+Setup seeds Pi 1.3.0 from its verified npm release lock, using a private,
+SHA-256-pinned Node.js 24.22.1 runtime. It also updates the guest CA store from
+the host's authenticated Ubuntu package download. The agent controls its guest
+userspace and can install or update tools.
 Each cell keeps its own credentials, MCP configuration, and sessions in the
 agent's home. Anthropic and OpenAI use Pi’s sign-in and API-key flows;
 OpenAI subscription sign-in uses Pi’s headless device-code flow. Connections require an HTTPS MCP endpoint and, when

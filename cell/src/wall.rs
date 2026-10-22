@@ -39,7 +39,7 @@ pub const SAY_USER: &str = "cell-say";
 /// The agent's home, where the adapter keeps its work and its sessions.
 pub const AGENT_HOME: &str = "/home/agent";
 /// Root-owned, pinned Pi runtime.
-pub const PI_BIN: &str = "/usr/local/lib/cell/pi-1.3.0/pi";
+pub const PI_BIN: &str = "/usr/local/lib/cell/pi-1.3.0-node-24.22.1/pi";
 pub const PROXY_ADDR: &str = "127.0.0.1:3128";
 /// Where exe.dev's in-VM auth proxy delivers the VM's web traffic, peer
 /// knocks included, from loopback.
@@ -140,58 +140,9 @@ WantedBy=multi-user.target
     )
 }
 
-/// A pinned, root-owned Pi bundle. The agent can execute it but cannot update it.
+/// A locked npm installation on a checksum-pinned, patched Node runtime.
 fn install_pi() -> Fallible {
-    let root = Path::new("/usr/local/lib/cell/pi-1.3.0");
-    if root.join("pi").exists() {
-        return Ok(());
-    }
-    let (arch, digest) = match run("uname", &["-m"])?.trim() {
-        "x86_64" => (
-            "x64",
-            "24f5be328b66d4da36876296989501974f43ab8434fbb57c35c523a3ea505ded",
-        ),
-        "aarch64" => (
-            "arm64",
-            "7fd2ea14fca390ebf9f47438baaef07c4b3d13db7cc8e459831118391b7ea65b",
-        ),
-        other => return Err(format!("unsupported Pi architecture: {other}").into()),
-    };
-    let temp = PathBuf::from(format!("/tmp/cell-pi-{}", crate::RequestId::generate()));
-    fs::create_dir(&temp)?;
-    fs::set_permissions(&temp, fs::Permissions::from_mode(0o700))?;
-    let archive = temp.join("pi.tar.gz");
-    let url = format!(
-        "https://github.com/earendil-works/pi/releases/download/v1.3.0/pi-linux-{arch}.tar.gz"
-    );
-    run(
-        "curl",
-        &[
-            "-fsSL",
-            "--max-time",
-            "120",
-            &url,
-            "-o",
-            archive.to_str().unwrap(),
-        ],
-    )?;
-    if Hash::of(&fs::read(&archive)?).to_string() != digest {
-        return Err("Pi release checksum mismatch".into());
-    }
-    run(
-        "tar",
-        &[
-            "-xzf",
-            archive.to_str().unwrap(),
-            "-C",
-            temp.to_str().unwrap(),
-        ],
-    )?;
-    fs::create_dir_all(root.parent().unwrap())?;
-    fs::rename(temp.join("pi"), root)?;
-    run("chown", &["-R", "root:root", root.to_str().unwrap()])?;
-    run("chmod", &["-R", "go-w", root.to_str().unwrap()])?;
-    fs::remove_dir_all(temp)?;
+    run("python3", &["-c", include_str!("pi/install.py")])?;
     Ok(())
 }
 

@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess as sp
 import sys
+import tempfile
 import time
 
 ETC = Path('/etc/cell')
@@ -100,11 +101,24 @@ def socket_dir():
     p.chmod(0o711)
 
 
+def stage_ca_package():
+    # A guest need not grant Ubuntu mirror access. Download through the trusted
+    # host's signed apt metadata, then install only inside the guest namespaces.
+    version = run('dpkg-query', '-W', '-f=${Version}', 'ca-certificates').stdout.strip()
+    run('dpkg', '--compare-versions', version, 'ge', '20260816ubuntu0.24.04.1')
+    with tempfile.TemporaryDirectory(prefix='.ca-package-', dir=LIB) as temp:
+        run('apt-get', 'download', 'ca-certificates=' + version, cwd=temp)
+        package, = Path(temp).glob('ca-certificates_*.deb')
+        package.chmod(0o644)
+        package.replace(LIB / 'ca-certificates.deb')
+
+
 def prepare():
     run('apt-get', 'update', '-qq', timeout=300)
     run('apt-get', 'install', '-y', '-qq', 'systemd-container', 'debootstrap',
-        'nftables', 'acl', 'python3', timeout=600,
+        'nftables', 'acl', 'python3', 'ca-certificates', timeout=600,
         env={**os.environ, 'DEBIAN_FRONTEND': 'noninteractive'})
+    stage_ca_package()
     if not READY.exists():
         if run('machinectl', 'show', MACHINE, check=False).returncode == 0:
             raise RuntimeError('uninitialized rootfs is already running; refusing host traversal')
@@ -199,7 +213,7 @@ def configure():
         except (RuntimeError, sp.TimeoutExpired):
             time.sleep(1)
     # Host never interprets a path returned by the guest.
-    guest('/usr/bin/python3', '/run/cell-runtime/environment-guest.py', timeout=300)
+    guest('/usr/bin/python3', '/run/cell-runtime/environment-guest.py', timeout=600)
 
 
 def check():
