@@ -147,7 +147,11 @@ to submit new work. Other adapter actions do not use this retry journal.
 
 The UI renders Markdown, tool calls and results, model selection, steering,
 stop, pending queue, and blocking extension dialogs. Extension notifications,
-custom terminal widgets, attachments, and fork controls are not surfaced.
+custom terminal widgets, and fork controls are not surfaced. Image attachments
+are supported: paste or drop images into the composer; they are sent to Pi as
+base64 image content. Guards are real, not arbitrary: 5 MiB per image (the
+Anthropic image-block hard limit) and ~16 MiB per request body (the HTTP
+ingress and Pi RPC frame caps in `cell/src/chat.rs` and `cell/src/pi.rs`).
 Archived chats remain on disk and can be restored. Opened sessions currently
 keep their Pi process until the server stops. An idle browser does not follow
 runs started by a separate client until refreshed (a react-pi limitation).
