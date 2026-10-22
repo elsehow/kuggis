@@ -4,9 +4,7 @@ React + assistant-ui talks to the Rust `cell chat` server through the
 browser-safe `@assistant-ui/react-pi` HTTP/SSE client. Rust launches Pi in
 RPC mode. There is no Node server or Assistant Cloud dependency at runtime.
 Kuggis supplies a short workspace system prompt, while Pi still loads workspace
-context files and supplies its tool schemas. The stock Pi CLI prompt reproduced
-an Anthropic extra-usage rejection with valid Max credentials; the same model
-and credentials succeeded with the workspace prompt.
+context files and supplies its tool schemas.
 Resumed Pi 1.3 sessions can retain the old prompt in their internal system
 records. Before opening them, the bridge backs up the original JSONL and updates
 only identifiable stock Pi instruction sections. User/assistant records, entry
@@ -28,7 +26,8 @@ The upstream `@assistant-ui/react-pi` package supplies its own Pi client types.
 ```sh
 npm ci --prefix web
 npm run build --prefix web
-cargo run --manifest-path cell/Cargo.toml -- ui tree \
+mkdir -p .kuggis/tree
+cargo run --manifest-path cell/Cargo.toml -- ui .kuggis/tree \
   --bin cell/target/x86_64-unknown-linux-musl/release/cell
 ```
 
@@ -37,6 +36,8 @@ opens its chat sidebar, transcript, composer, and settings. The gateway uses
 SSH and private Unix sockets; Pi runs persistently on the cell VM. `--bin`
 enables configuration review/apply; omit it for chatting without deployment.
 Use `--listen`, `--state`, and `--assets` to override the local UI defaults.
+Keep the live tree, identity pins, and operator state in ignored local storage
+or outside the source checkout. The public tree examples are synthetic.
 
 For local development, `cell chat --local WORKSPACE` runs Pi with your user
 permissions. `--pi PATH` selects a fixture or alternate local Pi executable.
@@ -192,3 +193,16 @@ cargo run --manifest-path cell/Cargo.toml -- chat --local . \
 The fake runtime recognizes `slow`, `[confirm]`, and `[crash]` in prompts
 for exercising streaming, a dialog, or a subprocess failure. Use a separate
 state directory from real Pi sessions.
+
+The browser model-selection regression uses the built frontend and fake Pi.
+With Playwright and Chromium already installed, run:
+
+```sh
+KUGGIS_TEST_PLAYWRIGHT=/path/to/playwright/index.mjs \
+  node --test web/tests/model-selection.test.mjs
+```
+
+Set `KUGGIS_TEST_BROWSER` to a Chromium executable if it is outside Playwright's
+default installation. The test delays the model write to reproduce the
+new-chat race, then checks the header, draft, first response, reload, and
+failed model changes. It makes no provider requests.
