@@ -96,6 +96,11 @@ button:focus-visible, a:focus-visible, textarea:focus-visible, select:focus-visi
 .composer:focus-within { border-color: #93a58b; }
 .composer-input { display: block; width: 100%; background: transparent; border: 0; padding: 0; resize: none; min-height: 52px; max-height: 200px; line-height: 1.6; outline: none !important; }
 .composer-input::placeholder { color: #9c9f93; }
+.attachment-chip { display: inline-flex; align-items: center; gap: 6px; margin: 0 8px 8px 0; padding: 5px 8px; border: 1px solid #d7dbcf; border-radius: 8px; background: #f5f7f2; font-size: 12px; }
+.attachment-thumb { width: 28px; height: 28px; border-radius: 5px; background-size: cover; background-position: center; }
+.attachment-remove { border: 0; background: transparent; color: #6b7a63; font-size: 14px; cursor: pointer; padding: 0 2px; }
+.attachment-remove:hover { color: #b33; }
+.message-image { max-width: min(360px, 80%); max-height: 320px; border-radius: 8px; margin: 6px 0; display: block; }
 .composer-footer, .composer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .send-button, .primary { background: var(--green); color: white; border-radius: 5px; padding: 8px 13px; }
 .send-button:hover, .primary:hover { background: #254b38; }

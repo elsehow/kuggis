@@ -82,3 +82,29 @@ To roll back, stop the hosted service before restarting the old operator. If the
 hosted supervisor has changed declarations or operation receipts, copy its latest
 tree and operator state back first. Repointing `/opt/kuggis/current` and restarting
 the service rolls back code without moving chats or operator state.
+
+## Updating an existing supervisor
+
+A merge does not deploy itself. Build an exact source commit containing both the
+new changes and the features in the running release. Run the Rust tests, frontend
+build/contracts check, and web integration tests before packaging the Linux binary
+and `web/dist`. Include a `release.json` with the source commit and artifact hashes;
+keep deployment addresses, private tree contents, and acceptance receipts outside
+tracked source.
+
+Stage that package in a new root-owned `/opt/kuggis/releases/RELEASE` directory.
+Check that no creation, deletion, or apply operation is running. Record the current
+release and snapshot the authoritative tree and operator state on the supervisor.
+Atomically replace the `current` symlink and restart `kuggis-supervisor.service`.
+Verify the served asset hashes, authenticated cell inventory, chat history and SSE
+relay, plus rejection of unauthenticated requests and foreign origins. If those
+checks fail, restore the previous symlink and restart the service. Retain the old
+release for rollback.
+
+The supervisor serves the frontend and control-plane API. Restarting it reconnects
+browser streams; chat processes keep running in their cells. This does not deploy
+new binaries into existing cells. A runtime update is a separate plan/apply from
+the supervisor's authoritative tree, after checking that the affected cell is idle.
+Do not reconcile cells merely to update frontend assets, and never replace the
+live tree with a checkout's older copy. Hosted sign-in retains Pi's manual redirect
+prompt; automatic loopback callbacks require a supervisor on the browser's machine.

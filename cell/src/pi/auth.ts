@@ -21,7 +21,14 @@ export default function authBridge(pi: ExtensionAPI) {
           const interaction: AuthInteraction = {
             notify(event) {
               switch (event.type) {
-                case "auth_url": send({ state: "notice", notice: { kind: "link", url: event.url, instructions: event.instructions } }); break;
+                case "auth_url": {
+                  const url = new URL(event.url);
+                  const address = url.searchParams.get("redirect_uri");
+                  const state = url.searchParams.get("state");
+                  send({ state: "notice", notice: { kind: "link", url: event.url, instructions: event.instructions,
+                    callback: address && state ? { address, state } : null } });
+                  break;
+                }
                 case "device_code": send({ state: "notice", notice: { kind: "device_code", url: event.verificationUri, code: event.userCode } }); break;
                 case "info": send({ state: "notice", notice: { kind: "info", message: event.message } }); break;
                 // Keep the actionable URL/code visible while Pi polls.

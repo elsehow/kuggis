@@ -17,8 +17,8 @@ async function until(fn, label) {
   while (Date.now() < deadline) { if (await fn()) return; await wait(20); }
   throw new Error(`Timed out: ${label}`);
 }
-async function start(state, pi = fixture) {
-  const process = spawn(join(root, "cell/target/debug/cell"), ["chat", "--local", root, "--state", state, "--listen", "127.0.0.1:0", "--assets", join(root, "web/dist"), "--pi", pi]);
+async function start(state, pi = fixture, env = process.env) {
+  const process = spawn(join(root, "cell/target/debug/cell"), ["chat", "--local", root, "--state", state, "--listen", "127.0.0.1:0", "--assets", join(root, "web/dist"), "--pi", pi], { env });
   let output = "";
   process.stderr.on("data", (data) => { output += data; });
   process.on("error", (error) => { output += error.message; });
@@ -251,8 +251,15 @@ test("provider failures survive restart and internal system records stay hidden"
 
 test("installed Pi RPC smoke (no prompt or model call)", { skip: !process.env.KUGGIS_TEST_PI }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "kuggis-real-pi-"));
-  const server = await start(directory, process.env.KUGGIS_TEST_PI);
-  t.after(async () => { await server.stop(); await rm(directory, { recursive: true, force: true }); });
+  let server;
+  t.after(async () => { try { await server?.stop(); } finally { await rm(directory, { recursive: true, force: true }); } });
+  // Local chat normally inherits the operator's Pi configuration. This smoke
+  // test must not load their credentials, extensions, or MCP configuration.
+  const agentDir = join(directory, "agent");
+  await mkdir(agentDir, { mode: 0o700 });
+  server = await start(directory, process.env.KUGGIS_TEST_PI, {
+    ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_TELEMETRY: "0",
+  });
   const models = await server.client.getAvailableModels();
   assert.ok(Array.isArray(models));
   const snapshot = await server.client.createThread();

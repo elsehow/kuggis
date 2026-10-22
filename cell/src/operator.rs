@@ -26,6 +26,7 @@ use tower_http::services::ServeDir;
 mod access;
 pub(crate) mod creation;
 pub(crate) mod deletion;
+mod oauth;
 pub use access::Access;
 
 #[derive(Serialize, ts_rs::TS)]
@@ -148,6 +149,7 @@ struct Change {
 struct Operator {
     config: Config,
     authority: String,
+    relays: Mutex<BTreeMap<String, oauth::Relay>>,
     vms: tokio::sync::RwLock<BTreeMap<Name, String>>,
     edge: Arc<dyn Edge + Send + Sync>,
     changes: Mutex<BTreeMap<RequestId, Change>>,
@@ -354,7 +356,21 @@ async fn proxy(
         .map(|q| format!("?{q}"))
         .unwrap_or_default();
     *request.uri_mut() = format!("/api/{tail}{query}").parse().map_err(bad)?;
-    op.forward(&name, request).await
+    let auth_view = request.method() == axum::http::Method::GET
+        && tail.starts_with("settings/providers/")
+        && tail.contains("/login/");
+    let path = request.uri().path().to_owned();
+    let response = op.forward(&name, request).await?;
+    if auth_view && response.status().is_success() {
+        let bytes = axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .map_err(|_| fail("Invalid sign-in status"))?;
+        let mut view: crate::chat::oauth::AuthFlow =
+            serde_json::from_slice(&bytes).map_err(|_| fail("Invalid sign-in status"))?;
+        oauth::prepare(&op, &name, &path, &mut view).await;
+        return Ok(Json(view).into_response());
+    }
+    Ok(response)
 }
 
 #[derive(Deserialize)]
@@ -548,6 +564,7 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
     let op = Arc::new(Operator {
         config,
         authority,
+        relays: Mutex::new(BTreeMap::new()),
         vms: tokio::sync::RwLock::new(BTreeMap::new()),
         edge,
         changes: Mutex::new(BTreeMap::new()),
