@@ -198,3 +198,12 @@ button:focus-visible, a:focus-visible, textarea:focus-visible, select:focus-visi
   .cells-pane { padding-bottom: 8px; }
   .chat-glyph { display: inline; }
 }
+
+.resources-view { overflow-y: auto; padding: 24px; min-width: 0; flex: 1; }
+.resources-view header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.resource-card, .resource-review { border: 1px solid var(--border, #8885); border-radius: 8px; padding: 18px; margin: 16px 0; }
+.resource-card h3, .resource-card code { overflow-wrap: anywhere; }
+.resource-card dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; }
+.resource-card dd { margin: 0; }
+.resource-card label, .resource-card button, .resource-review button { margin: 8px 12px 8px 0; }
+.resource-card label { display: inline-block; }

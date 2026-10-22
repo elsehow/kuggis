@@ -389,6 +389,9 @@ impl Registry {
             Ok((receipt,true))
         })
     }
+    pub fn resource_operation(&self, id: RequestId) -> Result<Option<ResourceOperation>> {
+        self.transaction(|s| Ok((s.resource_operations.get(&id).cloned(), false)))
+    }
     pub fn cleanup_receipt(&self, id: RequestId) -> Result<Option<CleanupReceipt>> {
         self.transaction(|s| Ok((s.cleanups.get(&id).cloned(), false)))
     }

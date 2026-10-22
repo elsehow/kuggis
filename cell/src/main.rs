@@ -146,6 +146,14 @@ fn publisher(args: &[String]) -> Fallible {
     // Be strict here: misspelled approval/pin flags must not silently fall back.
     let usage = "publisher: expected init, namespace, plan, apply, configure, serve, host, bridge, or sign (see cell help)";
     match args.first().map(String::as_str) {
+        Some("resource-rpc") if args.len() == 2 => {
+            let mut bytes = vec![];
+            io::stdin().take(cell::resource_rpc::MAX_RPC_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+            if bytes.len() > cell::resource_rpc::MAX_RPC_BYTES { return Err("resource RPC exceeds limit".into()); }
+            let command = serde_json::from_slice(&bytes)?;
+            let reply = cell::resource_rpc::execute(&Registry::open(Path::new(&args[1]))?, command)?;
+            println!("{}", serde_json::to_string(&reply)?);
+        }
         Some("init") if args.len() == 2 => {
             println!("{}", Registry::create(Path::new(&args[1]))?.audience()?);
         }

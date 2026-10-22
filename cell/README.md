@@ -451,3 +451,41 @@ to reviewed custody, and unpublishes by default. A frozen namespace creator's
 namespace cannot provision new sites through delegates. Delegate deletion only
 removes that delegate's access. Operator transport/UI and deletion integration
 are tracked in `docs/plans/resource-lifecycle.md`.
+
+### Operator Resources view
+
+Configure resource backends in the operator tree's private `.resources.json`:
+
+```json
+{"backends":[{"name":"sites","provider":"PUBLISHER_AUDIENCE_ID","location":{"kind":"ssh","vm":"publisher-vm"}}]}
+```
+
+The file must be regular, operator-controlled, and not group/world writable.
+For explicit local development, `location` can instead be
+`{"kind":"local","registry":"/absolute/path/to/private/registry"}`. Backend
+names and provider identities must be unique. Missing configuration is displayed
+as unconfigured; an unreachable or wrong-identity backend is an error, never an
+empty inventory. Keep this configuration out of Git.
+
+The SSH adapter uses operator access to invoke the bounded stdin/stdout command
+`sudo -n /usr/local/bin/cell publisher resource-rpc /var/lib/cell-publisher`.
+There is no public resource-admin HTTP endpoint and no agent-held credential.
+Provision the remote binary/registry and sudo permissions as the operator.
+
+The sidebar's **Resources** view lists ownership, management, visibility and
+access even when the original cell no longer exists. Unpublish and custody
+transfer require reviewing the exact revision-bound plan. Changing a backend
+connection invalidates its review. Incomplete action IDs persist in the URL and
+operator state; reload or retry reconciles the same durable operation rather
+than inventing another one. Transfer clears old access but does not create new
+runtime grants. An explicit publisher policy apply may re-establish declared
+site delegates; namespace grants cannot recapture transferred sites.
+
+For real HTTP/browser coverage, build the frontend and binary, then run:
+
+```sh
+PUBLISH_SMOKE_PLAYWRIGHT=/path/to/node_modules/playwright python3 scripts/test-resource-ui.py
+```
+
+The test covers absent original cells, plan/apply, connection drift, a lost reply
+followed by reload, unpublish, operator custody, and unavailable-backend errors.

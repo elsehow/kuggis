@@ -27,6 +27,7 @@ mod access;
 pub(crate) mod creation;
 pub(crate) mod deletion;
 mod oauth;
+pub(crate) mod resources;
 pub use access::Access;
 
 #[derive(Serialize, ts_rs::TS)]
@@ -574,6 +575,10 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
     op.refresh_vms().await.map_err(|e| e.1)?;
     let app = Router::new()
         .route("/api/cells", get(cells))
+        .route("/api/resources", get(resources::list))
+        .route("/api/resources/plan", post(resources::plan))
+        .route("/api/resources/actions/:id", get(resources::get))
+        .route("/api/resources/actions/:id/apply", post(resources::apply))
         .route("/api/cells/plan", post(creation::preview))
         .route("/api/creations/:id", get(creation::get))
         .route("/api/creations/:id/apply", post(creation::start))
