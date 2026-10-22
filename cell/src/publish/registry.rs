@@ -10,10 +10,13 @@
 //! commit, under this same transaction boundary, not rely on an earlier check.
 
 use super::artifact::{self, Artifact};
+use crate::resource::{CellIdentity, ResourceId, ResourceOperation, ResourceRecord};
+pub mod resources;
 use super::{NamespaceId, PublicationReceipt, PublishScope, SiteId};
 use crate::prim::SiteName;
 use crate::prim::Url;
 use crate::{Grant, Hash, Key, Name, RequestId, Tree};
+use resources::CleanupReceipt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -98,6 +101,10 @@ struct State {
     public_base: Option<Url>,
     #[serde(default)]
     publications: BTreeMap<Hash, History>,
+    resources: BTreeMap<ResourceId, ResourceRecord>,
+    resource_operations: BTreeMap<RequestId, ResourceOperation>,
+    frozen: Vec<CellIdentity>,
+    cleanups: BTreeMap<RequestId, CleanupReceipt>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -140,6 +147,11 @@ impl State {
             if scopes.is_empty() {
                 continue;
             }
+            if self.frozen.contains(&CellIdentity(key)) {
+                return Err(RegistryError::InvalidPolicy(
+                    "cannot restore grants to a deleted/frozen identity".into(),
+                ));
+            }
             for scope in &scopes {
                 self.check_scope(scope)?;
             }
@@ -158,15 +170,20 @@ impl State {
         if namespace.sites.len() >= 64 && !namespace.sites.contains(&site.name) {
             return Err(RegistryError::Busy);
         }
+        if self.frozen.contains(&CellIdentity(namespace.owner)) {
+            return Err(RegistryError::Denied);
+        }
         if !namespace.sites.insert(site.name.clone()) {
             return Err(RegistryError::SiteExists);
         }
+        self.add_site_resource(site);
         Ok(())
     }
     fn validate(&self) -> Result<()> {
-        if self.format != 2 {
+        if self.format != 3 {
             return Err(RegistryError::InvalidState("unsupported format".into()));
         }
+        self.validate_resources()?;
         for (key, history) in &self.publications {
             if *key != Hash::of(&crate::canon::bytes(&history.site)) || history.versions.len() > 32
             {
@@ -221,9 +238,11 @@ impl State {
         Ok(())
     }
     fn allows(&self, caller: Key, scope: &PublishScope) -> bool {
-        self.authorities
-            .iter()
-            .any(|a| a.key == caller && a.scopes.iter().any(|s| s.covers(scope)))
+        !self.frozen.contains(&CellIdentity(caller))
+            && self
+                .authorities
+                .iter()
+                .any(|a| a.key == caller && a.scopes.iter().any(|s| s.covers(scope)))
     }
     fn check_site(&self, caller: Key, site: &SiteId) -> Result<()> {
         let scope = PublishScope::Site(site.clone());
@@ -231,7 +250,11 @@ impl State {
         if !self.allows(caller, &scope) {
             return Err(RegistryError::Denied);
         }
-        self.check_scope(&scope)
+        self.check_scope(&scope)?;
+        if !self.effective_site_access(caller, site) {
+            return Err(RegistryError::Denied);
+        }
+        Ok(())
     }
 }
 
@@ -255,13 +278,17 @@ impl Registry {
             directory: directory.into(),
         };
         let state = State {
-            format: 2,
+            format: 3,
             audience: RequestId::generate(),
             used_requests: BTreeMap::new(),
             namespaces: BTreeMap::new(),
             authorities: vec![],
             public_base: None,
             publications: BTreeMap::new(),
+            resources: BTreeMap::new(),
+            resource_operations: BTreeMap::new(),
+            frozen: vec![],
+            cleanups: BTreeMap::new(),
         };
         registry.store(&state)?;
         // Persist creation of the registry directory as well as its contents.
@@ -289,10 +316,28 @@ impl Registry {
             .open(self.directory.join("lock"))?;
         lock.lock()?;
         let bytes = fs::read(self.directory.join("state.json"))?;
-        let value: serde_json::Value = serde_json::from_slice(&bytes)
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|e| RegistryError::InvalidState(e.to_string()))?;
-        let migrated = value.get("format").and_then(|f| f.as_u64()) == Some(1);
-        let mut state: State = if migrated {
+        let legacy = value.get("format").and_then(|f| f.as_u64());
+        let migrated = matches!(legacy, Some(1 | 2));
+        if legacy == Some(2) {
+            let object = value.as_object_mut().expect("format in object");
+            for field in ["resources", "resource_operations", "cleanups"] {
+                if object.contains_key(field) {
+                    return Err(RegistryError::InvalidState(
+                        "unexpected resource fields in format 2".into(),
+                    ));
+                }
+                object.insert(field.into(), serde_json::json!({}));
+            }
+            if object.contains_key("frozen") {
+                return Err(RegistryError::InvalidState(
+                    "unexpected frozen identities in format 2".into(),
+                ));
+            }
+            object.insert("frozen".into(), serde_json::json!([]));
+        }
+        let mut state: State = if legacy == Some(1) {
             let old: LegacyState = serde_json::from_value(value)
                 .map_err(|e| RegistryError::InvalidState(e.to_string()))?;
             debug_assert_eq!(old.format, 1);
@@ -304,13 +349,22 @@ impl Registry {
                 authorities: old.authorities,
                 public_base: None,
                 publications: BTreeMap::new(),
+                resources: BTreeMap::new(),
+                resource_operations: BTreeMap::new(),
+                frozen: vec![],
+                cleanups: BTreeMap::new(),
             }
         } else {
             serde_json::from_value(value).map_err(|e| RegistryError::InvalidState(e.to_string()))?
         };
+        if state.format == 2 {
+            state.format = 3;
+            state.migrate_resources();
+        }
         state.validate()?;
         let (result, changed) = run(&mut state)?;
         if changed || migrated {
+            state.sync_resource_states();
             state.validate()?;
             self.store(&state)?;
         }
@@ -345,6 +399,9 @@ impl Registry {
     /// Allocation alone does not grant publishing access, even to its owner.
     pub fn allocate_namespace(&self, owner: Key) -> Result<NamespaceId> {
         self.transaction(|state| {
+            if state.frozen.contains(&CellIdentity(owner)) {
+                return Err(RegistryError::Denied);
+            }
             let id = loop {
                 let candidate = NamespaceId(Hash::of(RequestId::generate().to_string().as_bytes()));
                 if !state.namespaces.contains_key(&candidate) {
@@ -371,6 +428,7 @@ impl Registry {
     pub fn approve_tree(&self, tree: &Tree, pins: &BTreeMap<Name, Key>) -> Result<()> {
         self.transaction(|state| {
             state.authorities = state.policy(tree, pins)?;
+            state.refresh_attachments();
             Ok(((), true))
         })
     }
@@ -429,6 +487,7 @@ impl Registry {
                 ));
             }
             state.authorities = next;
+            state.refresh_attachments();
             Ok(((), true))
         })
     }
@@ -633,7 +692,8 @@ impl Registry {
         })
     }
 
-    /// OPERATOR ONLY: inspect immutable ownership, not latest publisher identity.
+    /// OPERATOR ONLY: namespace allocation provenance. Site ownership is in
+    /// the generic resource record and can differ after an explicit transfer.
     pub fn owner(&self, namespace: &NamespaceId) -> Result<Key> {
         self.transaction(|state| {
             let record = state

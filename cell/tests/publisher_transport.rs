@@ -380,6 +380,7 @@ fn pre_transport_registry_upgrade_preserves_ownership_grants_and_reservations() 
     let path = f.path.join("state.json");
     let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     old["format"] = serde_json::json!(1);
+    for field in ["resources", "resource_operations", "frozen", "cleanups"] { old.as_object_mut().unwrap().remove(field); }
     old.as_object_mut().unwrap().remove("public_base");
     old.as_object_mut().unwrap().remove("publications");
     old.as_object_mut().unwrap().remove("audience");
@@ -400,7 +401,7 @@ fn pre_transport_registry_upgrade_preserves_ownership_grants_and_reservations() 
         audience
     );
     let persisted: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-    assert_eq!(persisted["format"], 2);
+    assert_eq!(persisted["format"], 3);
 }
 
 #[test]

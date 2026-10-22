@@ -10,6 +10,9 @@ mod tests {
         let config = Config::from_env();
         crate::resource::ResourcePlan::export_all(&config).unwrap();
         crate::resource::ResourceOperation::export_all(&config).unwrap();
+        crate::publish::registry::resources::ResourceInventory::export_all(&config).unwrap();
+        crate::publish::registry::resources::CleanupPlan::export_all(&config).unwrap();
+        crate::publish::registry::resources::CleanupReceipt::export_all(&config).unwrap();
         crate::publish::PublicationReceipt::export_all(&config).unwrap();
         crate::chat::oauth::AuthFlow::export_all(&config).unwrap();
         crate::chat::oauth::LoginRequest::export_all(&config).unwrap();

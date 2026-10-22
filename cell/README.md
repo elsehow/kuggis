@@ -433,3 +433,21 @@ unpublish/restore lifecycle. It verifies the agent cannot read the key and that
 local revocation takes effect without restarting the signer. Browser coverage
 checks ES modules, JSON fetch, and sandbox isolation. All services/state are
 cleaned up; this is not a live Internet deployment.
+
+### Resource lifecycle storage
+
+Publisher format 3 migrates existing sites to generic resource records. Resource
+identity is derived from provider/account identity, kind, and external site ID;
+public URLs, artifacts, versions, replay records and pins are preserved. Site
+ownership/access is authoritative in the resource record; namespace allocation
+provenance does not retain control of a transferred site. Explicit policy apply
+can re-establish declared delegates, but a namespace grant cannot recapture a
+site transferred away from its allocation owner.
+
+The managed-site adapter exposes inventory, revision-bound lifecycle plans,
+idempotent operator actions and cleanup receipts. Owner cleanup atomically
+freezes the departing key, removes its runtime grants, moves retained resources
+to reviewed custody, and unpublishes by default. A frozen namespace creator's
+namespace cannot provision new sites through delegates. Delegate deletion only
+removes that delegate's access. Operator transport/UI and deletion integration
+are tracked in `docs/plans/resource-lifecycle.md`.
