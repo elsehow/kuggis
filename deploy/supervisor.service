@@ -1,0 +1,31 @@
+[Unit]
+Description=Kuggis trusted supervisor
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=kuggis-supervisor
+Group=kuggis-supervisor
+WorkingDirectory=/var/lib/kuggis-supervisor
+Environment=HOME=/var/lib/kuggis-supervisor
+ExecStart=/opt/kuggis/current/cell ui /var/lib/kuggis-supervisor/tree --state /var/lib/kuggis-supervisor/operator --assets /opt/kuggis/current/web --bin /opt/kuggis/current/cell --listen 127.0.0.1:8000 --exe-proxy /etc/kuggis-supervisor/access.json
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/kuggis-supervisor
+
+[Install]
+WantedBy=multi-user.target

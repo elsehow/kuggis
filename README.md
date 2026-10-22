@@ -46,12 +46,16 @@ Delete subcells first. Deletion disconnects the cell's attachments and removes a
 unused parent door; shared integrations remain. Progress survives a browser or
 gateway restart, and interrupted deletion can be retried from the cell tree.
 
-The laptop serves React and forwards the cell-scoped API over SSH to a private
+The operator serves React and forwards the cell-scoped API over SSH to a private
 Unix socket on each VM. The cell runs Pi as `agent` in a persistent Ubuntu container with passwordless
 sudo. A host firewall restricts the container's network interface, regardless
 of which guest user or process makes a request. Closing the browser or stopping the
 operator UI leaves cell runs alive. A cell-service restart preserves transcripts
 and metadata but does not automatically repeat unfinished work.
+
+For access without a running laptop, use a dedicated
+[hosted supervisor](deploy/README.md) behind exe.dev's private authenticated HTTPS
+proxy. The supervisor owns deployment state; each cell retains its chats.
 
 Setup seeds Pi 1.3.0 from a SHA-256-verified bundle. The agent controls its
 guest userspace and can install or update tools.

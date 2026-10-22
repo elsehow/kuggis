@@ -1,0 +1,84 @@
+# Hosted supervisor
+
+Run the operator on a dedicated trusted exe.dev VM. Cells remain separate VMs;
+the supervisor holds the private tree, identity pins, operation receipts and an
+operator SSH key. Chats, workspaces and provider credentials stay in their cells.
+Do not run agents or untrusted workloads on the supervisor: local processes can
+impersonate its trusted ingress, and its SSH key can manage the exe.dev account.
+Keeping that key off a laptop does not isolate it from a laptop agent that can
+use an owner SSH credential to reach the supervisor and run sudo. Agents on
+personal computers need separate credentials scoped to their own VMs, without
+access to the owner's private keys or an SSH agent holding them. Browser access
+to the supervisor does not require distributing its SSH key.
+
+`cell ui` defaults to local access. Hosted access must be selected explicitly:
+
+```sh
+cell ui /var/lib/kuggis-supervisor/tree \
+  --state /var/lib/kuggis-supervisor/operator \
+  --assets /opt/kuggis/current/web --bin /opt/kuggis/current/cell \
+  --listen 127.0.0.1:8000 --exe-proxy /etc/kuggis-supervisor/access.json
+```
+
+The private access file contains a canonical HTTPS origin (no trailing slash or
+port) and stable exe.dev user IDs, not email addresses:
+
+```json
+{"origin":"https://supervisor.example","users":["usr_fixture"]}
+```
+
+The listener stays on loopback. Every route, including assets and SSE streams,
+checks the exact Host, forwarded host, HTTPS protocol, and authenticated user ID.
+Browser Origin must match when present; cross-site and same-site API requests are
+refused. Top-level GET navigations to `/` can arrive from links and login redirects.
+Missing or ambiguous authentication headers fail closed. Browser and
+ingress credentials are stripped before forwarding to a cell.
+
+This relies on [exe.dev's authenticated ingress](https://exe.dev/docs/login-with-exe)
+overwriting `X-ExeDev-UserID`. Keep the
+[HTTPS proxy private](https://exe.dev/docs/proxy):
+
+```sh
+ssh exe.dev share set-private "$SUPERVISOR_VM"
+ssh exe.dev share port "$SUPERVISOR_VM" 8000
+```
+
+Deployment procedure:
+
+Disable bundled development agents, including their activation sockets, on the
+supervisor. For an image with Shelley, disable both `shelley.socket` and
+`shelley.service` before giving the machine an operator key.
+
+1. Build `web/dist` and a Linux `cell` binary. Put a release under
+   `/opt/kuggis/releases/RELEASE/` with `cell` and `web/`, owned by root, then
+   point `/opt/kuggis/current` at it. Keep the previous release for rollback.
+2. Create a system user `kuggis-supervisor` with home
+   `/var/lib/kuggis-supervisor` (0700). Generate its dedicated SSH key there and
+   register only the public key with exe.dev. Configure `exe.dev` and `*.exe.xyz`
+   to use it with `IdentitiesOnly yes`, `BatchMode yes`, and pinned known hosts.
+   This operator needs account management access; a VM-scoped key is insufficient.
+   Never copy a laptop private key or a cell's provider credentials.
+3. Establish the owner ID through an authenticated private HTTPS request to a
+   temporary probe. Verify that a caller-supplied user ID is overwritten. Save
+   the allowlist at `/etc/kuggis-supervisor/access.json`, root-owned and readable
+   only by the supervisor group (0640). Stop the probe before starting the UI.
+4. Stop the old operator. Back up and copy only its tree (including `.pins`) and
+   operator state to the new home. Keep directory permissions 0700 and files
+   0600, owned by the service user. Do not copy an entire checkout's `.kuggis/`:
+   it can contain unrelated private backups and evidence. Run only one active
+   supervisor for a tree; the local state lock does not coordinate two machines.
+5. Install [supervisor.service](supervisor.service) as
+   `/etc/systemd/system/kuggis-supervisor.service`, reload systemd, and enable it.
+   The service starts on boot, has no root capabilities, and writes only to its
+   state directory and private temporary directory.
+6. Verify the private HTTPS URL with an authenticated browser, unauthenticated
+   requests, forged identity headers, and foreign Origin headers. Compare chat
+   IDs, titles, archive flags and contents before and after a service restart and
+   VM reboot, with the original operator stopped. Verify SSH relay streaming.
+   Remove any temporary test token and probe. Store real receipts and deployment
+   configuration outside tracked source, such as ignored `.kuggis/`.
+
+To roll back, stop the hosted service before restarting the old operator. If the
+hosted supervisor has changed declarations or operation receipts, copy its latest
+tree and operator state back first. Repointing `/opt/kuggis/current` and restarting
+the service rolls back code without moving chats or operator state.

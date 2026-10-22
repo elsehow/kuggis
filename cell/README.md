@@ -240,6 +240,12 @@ name through the validated tree. The gateway does not own Pi processes or
 transcripts, so restarting it leaves remote runs alive. The cell service
 handles door/SSH briefs through the same session and request journal as chat.
 
+`--exe-proxy FILE` selects authenticated hosted access on a dedicated trusted VM.
+The file pins the HTTPS origin and permitted exe.dev user IDs. Local access remains
+the default; both modes bind only to loopback. See the
+[supervisor deployment guide](../deploy/README.md) for the trust boundary, systemd
+service, state migration and acceptance checks.
+
 `cell session new` generates an ID; `cell brief DIR NAME SESSION_ID TEXT
 [--request REQUEST_ID]` files the brief. `cell login DIR NAME` opens Pi as
 the agent for terminal provider sign-in. Settings runs an isolated Pi extension

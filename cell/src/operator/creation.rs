@@ -617,6 +617,7 @@ mod tests {
                     listen: "127.0.0.1:0".parse().unwrap(),
                     binary: Some(dir.join("binary")),
                     sockets: None,
+                    access: Access::Local,
                 },
                 authority: "fixture".into(),
                 vms: tokio::sync::RwLock::new(BTreeMap::new()),
