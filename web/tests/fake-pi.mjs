@@ -33,12 +33,12 @@ const start = (message) => emit({ type: "message_start", message });
 const end = (message) => { messages.push(message); writeFileSync(path, JSON.stringify(messages)); emit({ type: "message_end", message }); };
 const queue = () => emit({ type: "queue_update", steering, followUp });
 
-async function run(content) {
+async function run(content, images) {
   running = true; stopped = false;
   emit({ type: "agent_start" }); emit({ type: "turn_start" });
   const system = { role: "system", content: "Internal runtime instructions", timestamp: ++timestamp };
   start(system); end(system);
-  const user = { role: "user", content, timestamp: ++timestamp };
+  const user = { role: "user", content: images?.length ? [{ type: "text", text: content }, ...images] : content, timestamp: ++timestamp };
   start(user); end(user);
   if (content.includes("[error]") || content.includes("[extra-usage]")) {
     const failure = { ...assistant([], "error"), errorMessage: content.includes("[extra-usage]") ? "400 You\'re out of extra usage" : "Provider usage exhausted" };
@@ -80,7 +80,6 @@ async function run(content) {
   const next = steering.shift() ?? followUp.shift(); queue();
   if (next) { await run(next); } else { emit({ type: "agent_settled", aborted: stopped }); }
 }
-
 async function command(c) {
   switch (c.type) {
     case "get_state": return reply(c, { model, thinkingLevel, isStreaming: running, sessionId: id, sessionFile: path, messageCount: messages.length });
@@ -105,7 +104,7 @@ async function command(c) {
         if (!c.streamingBehavior) break;
         (c.streamingBehavior === "steer" ? steering : followUp).push(c.message); queue(); return reply(c, { disposition: "queued" });
       }
-      reply(c, { disposition: "started" }); void run(c.message); return;
+      reply(c, { disposition: "started" }); void run(c.message, c.images); return;
   }
   emit({ type: "response", id: c.id, command: c.type, success: false, error: "Unsupported fixture command or missing streamingBehavior" });
 }

@@ -1,9 +1,10 @@
 import { StrictMode, useEffect, useMemo, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  AssistantRuntimeProvider, ComposerPrimitive, MessagePrimitive,
+  AssistantRuntimeProvider, AttachmentPrimitive, ComposerPrimitive, MessagePrimitive,
   ThreadPrimitive, ThreadListPrimitive, ThreadListItemPrimitive,
-  useAui, useAuiState, type ToolCallMessagePartProps, type TextMessagePartProps,
+  SimpleImageAttachmentAdapter,
+  useAui, useAuiEvent, useAuiState, type ToolCallMessagePartProps, type TextMessagePartProps,
   type ReasoningMessagePartProps,
 } from "@assistant-ui/react";
 import {
@@ -13,8 +14,10 @@ import {
 } from "@assistant-ui/react-pi";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { MAX_IMAGE_BYTES, MAX_MESSAGE_BODY_BYTES, mib, utf8Length } from "./attachment-limits.mjs";
 import { Settings } from "./settings";
 import type { CellInfo, CellsView } from "./api-types";
+import type { AttachmentAdapter } from "@assistant-ui/core";
 import { CreateCell, creationLabel } from "./create-cell";
 import { DeleteCell, deletionLabel } from "./delete-cell";
 import { ModelPicker } from "./model-picker";
@@ -23,6 +26,22 @@ import "./style.css";
 import { api, explain } from "./api";
 
 function label(cell: CellInfo) { return cell.parent && cell.name.startsWith(cell.parent + "-") ? cell.name.slice(cell.parent.length + 1) : cell.name; }
+
+// Image attachments wrapped in a size guard: providers reject image blocks over
+// 5 MiB (see attachment-limits.mjs for the derivation), and a clear client-side
+// error beats a provider failure on the whole turn.
+const imageAttachments = new SimpleImageAttachmentAdapter();
+const guardedImageAttachments: AttachmentAdapter = {
+  accept: imageAttachments.accept,
+  add({ file }) {
+    if (file.size > MAX_IMAGE_BYTES) {
+      throw new Error(`${file.name} is too large (${mib(file.size)} MiB); the limit is ${mib(MAX_IMAGE_BYTES)} MiB per image. Resize the image or attach a smaller one.`);
+    }
+    return imageAttachments.add({ file });
+  },
+  send: (attachment, options) => imageAttachments.send(attachment, options),
+  remove: () => imageAttachments.remove(),
+};
 
 function App() {
   const [cells, setCells] = useState<CellInfo[]>([]);
@@ -94,10 +113,15 @@ function CellWorkspace({ cell, ancestors, choose, standalone, local, canApply, r
   const client = useMemo(() => createPiHttpClient({ baseUrl: `${base}/pi`, fetchImpl(input, init) {
     const headers = new Headers(init?.headers);
     if (init?.method === "POST" && !headers.has("X-Request-ID")) headers.set("X-Request-ID", crypto.randomUUID().replaceAll("-", ""));
+    // Reject oversized bodies before the server does (413) so the error is explainable.
+    if (typeof init?.body === "string" && utf8Length(init.body) > MAX_MESSAGE_BODY_BYTES) {
+      return Promise.reject(new Error(`Message too large (${mib(utf8Length(init.body))} MiB, limit ${mib(MAX_MESSAGE_BODY_BYTES)} MiB). Remove some images and retry.`));
+    }
     return fetch(input, { ...init, headers });
   } }), [base]);
   const runtime = usePiRuntime({
     client, initialThreadId: new URLSearchParams(location.search).get("chat") ?? undefined, includeArchived: true,
+    adapters: { attachments: guardedImageAttachments },
     onError: (e) => setError(explain(e)),
     onThreadIdChange(id) { const url = new URL(location.href); if (id) url.searchParams.set("chat", id); else url.searchParams.delete("chat"); history.replaceState(null, "", url); setError(""); },
   });
@@ -173,6 +197,7 @@ function ChatHeader({ client, models, onError }: { client: ReturnType<typeof cre
 }
 
 function Chat({ onError }: { onError: (e: string) => void }) {
+  useAuiEvent("composer.attachmentAddError", (payload) => onError(payload.message));
   const extras = usePiRuntimeExtras();
   const isRunning = useAuiState((s) => s.thread.isRunning);
   return <ThreadPrimitive.Root className="thread">
@@ -190,6 +215,7 @@ function Chat({ onError }: { onError: (e: string) => void }) {
         <button onClick={() => void extras.clearQueue().catch((e) => onError(explain(e)))}>Clear queue</button>
       </div>}
       <ComposerPrimitive.Root className="composer">
+        <ComposerPrimitive.Attachments components={{ Attachment: AttachmentChip }} />
         <ComposerPrimitive.Input aria-label="Message" placeholder={isRunning ? "Message…" : "Message…"} className="composer-input" autoFocus />
         <div className="composer-footer"><div className="composer-actions">
           {isRunning && <ComposerPrimitive.Cancel className="stop-button">Stop</ComposerPrimitive.Cancel>}
@@ -201,7 +227,17 @@ function Chat({ onError }: { onError: (e: string) => void }) {
 }
 
 function UserMessage() {
-  return <MessagePrimitive.Root className="message user-message"><div className="message-label">You</div><MessagePrimitive.Parts /></MessagePrimitive.Root>;
+  return <MessagePrimitive.Root className="message user-message"><div className="message-label">You</div><MessagePrimitive.Parts components={{ Text: MarkdownText, Image: MessageImage }} /></MessagePrimitive.Root>;
+}
+function MessageImage({ image, filename }: { image: string; filename?: string }) {
+  return <img src={image} alt={filename ?? "pasted image"} className="message-image" />;
+}
+function AttachmentChip() {
+  return <AttachmentPrimitive.Root className="attachment-chip">
+    <AttachmentPrimitive.unstable_Thumb className="attachment-thumb" />
+    <AttachmentPrimitive.Name />
+    <AttachmentPrimitive.Remove className="attachment-remove" aria-label="Remove attachment">×</AttachmentPrimitive.Remove>
+  </AttachmentPrimitive.Root>;
 }
 function AssistantMessage() {
   return <MessagePrimitive.Root className="message assistant-message"><div className="message-label">Assistant</div>
