@@ -94,17 +94,33 @@ function App() {
     history.pushState(null, "", url); setSelected(name);
   };
   const cell = cells.find((c) => c.name === selected);
-  const branch = (parent: string | null): React.ReactNode => <ul>{cells.filter((c) => c.parent === parent).map((c) => <li key={c.name}><div className="cell-row"><button onClick={() => choose(c.name)}>{label(c)}{c.lifecycle.state !== "available" && <small>{c.lifecycle.state === "blocked" ? "Needs attention" : c.lifecycle.state === "provisioning" && c.creation ? creationLabel(c.creation) : c.lifecycle.state === "deleting" && c.deletion ? deletionLabel(c.deletion) : "Not running"}</small>}</button>{canCreate && c.lifecycle.state === "available" && <button className="add-subcell" aria-label={`Add subcell to ${c.name}`} title="Add subcell" onClick={() => openCreation(c.name)}>＋</button>}</div>{branch(c.name)}</li>)}</ul>;
+  // Without a homepage, a missing or stale selection falls through to the first
+  // available cell in tree order. Other query parameters (creation/deletion) survive.
+  const order = (parent: string | null): CellInfo[] => cells.filter((c) => c.parent === parent).flatMap((c) => [c, ...order(c.name)]);
+  const fallback = order(null).find((c) => c.lifecycle.state === "available");
+  useEffect(() => {
+    if (!loaded || cell || !fallback) return;
+    const url = new URL(location.href); url.searchParams.set("cell", fallback.name); url.searchParams.delete("chat"); url.searchParams.delete("setup");
+    history.replaceState(null, "", url); setSelected(fallback.name);
+  }, [loaded, cell, fallback?.name]);
+  const status = (c: CellInfo) => c.lifecycle.state === "blocked" ? "Needs attention" : c.lifecycle.state === "provisioning" && c.creation ? creationLabel(c.creation) : c.lifecycle.state === "deleting" && c.deletion ? deletionLabel(c.deletion) : "Not running";
+  const branch = (parent: string | null): React.ReactNode => <ul>{cells.filter((c) => c.parent === parent).map((c) => <li key={c.name}><div className="cell-row" data-active={c.name === cell?.name}><button className="cell-link" aria-current={c.name === cell?.name ? "page" : undefined} onClick={() => choose(c.name)}><span>{label(c)}</span>{c.lifecycle.state !== "available" && <small>{status(c)}</small>}</button>{canCreate && c.lifecycle.state === "available" && <button className="add-subcell" aria-label={`Add subcell to ${c.name}`} title="Add subcell" onClick={() => openCreation(c.name)}>＋</button>}</div>{branch(c.name)}</li>)}</ul>;
   const creation = creating && <CreateCell cells={cells} parent={newParent} id={creationId} onId={setCreation} onClose={() => { setCreating(false); setCreation(null); void load(); }} onStarted={load} onDelete={canDelete ? openDeletion : undefined} onReady={async (job) => { await load(); setCreating(false); setCreation(null); choose(job.cell.name, job.phase.session.id, true); }} />;
   const deletion = deleting && <DeleteCell name={deleteName} id={deletionId} onId={setDeletion} onClose={() => { setDeleting(false); setDeletion(null); void load(); }} onChanged={load} onDeleted={async () => { await load(); setDeleting(false); setDeletion(null); choose(null); }} />;
-  if (!cell) return <><main className="cell-index"><header><h1>Cells</h1>{canCreate && <button className="new-cell-button" onClick={() => openCreation(null)}>＋ Cell</button>}</header>{error && <div role="alert" className="inline-error">{error}<button onClick={() => void load()}>Retry</button></div>}{!loaded ? <p>Loading…</p> : branch(null)}</main>{creation}{deletion}</>;
-  const ancestors: CellInfo[] = [];
-  let current: CellInfo | undefined = cell;
-  while (current) { ancestors.unshift(current); current = cells.find((c) => c.name === current?.parent); }
-  return <><CellWorkspace key={cell.name} cell={cell} ancestors={ancestors} choose={choose} standalone={mode === "standalone"} local={mode !== "cells"} canApply={canApply} reload={load} onDelete={canDelete ? () => openDeletion(cell.name, cell.deletion?.id) : undefined} />{creation}{deletion}</>;
+  const standalone = mode === "standalone";
+  const cellsPane = !standalone && <aside className="cells-pane" aria-label="Cells">
+    <div className="pane-title">Cells</div>
+    {canCreate && <button className="new-cell-button" onClick={() => openCreation(null)}>＋ Cell</button>}
+    {error && <div role="alert" className="inline-error">{error}<button onClick={() => void load()}>Retry</button></div>}
+    <nav className="cell-tree">{!loaded ? <p className="pane-note">Loading…</p> : cells.length === 0 ? <p className="pane-note">No cells yet.</p> : branch(null)}</nav>
+  </aside>;
+  const content = cell
+    ? <CellWorkspace key={cell.name} cell={cell} standalone={standalone} local={mode !== "cells"} canApply={canApply} reload={load} onDelete={canDelete ? () => openDeletion(cell.name, cell.deletion?.id) : undefined} />
+    : <main className="empty-main">{!loaded ? "" : cells.length === 0 ? (canCreate ? "No cells yet. Create one with ＋ Cell." : "No cells are declared.") : "No cell is available. Choose one from the list to see its status."}</main>;
+  return <><div className={standalone ? "shell standalone" : "shell"}>{cellsPane}{content}</div>{creation}{deletion}</>;
 }
 
-function CellWorkspace({ cell, ancestors, choose, standalone, local, canApply, reload, onDelete }: { cell: CellInfo; ancestors: CellInfo[]; choose: (n: string | null) => void; standalone: boolean; local: boolean; canApply: boolean; reload: () => Promise<void>; onDelete?: () => void }) {
+function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: { cell: CellInfo; standalone: boolean; local: boolean; canApply: boolean; reload: () => Promise<void>; onDelete?: () => void }) {
   const [error, setError] = useState("");
   const [models, setModels] = useState<PiModelInfo[]>([]);
   const [archived, setArchived] = useState(false);
@@ -128,21 +144,21 @@ function CellWorkspace({ cell, ancestors, choose, standalone, local, canApply, r
   const loadModels = () => client.getAvailableModels().then(setModels).catch((e) => setError(explain(e)));
   useEffect(() => { void loadModels(); }, [client]);
   return <AssistantRuntimeProvider runtime={runtime}>
-    <div className="workspace-shell">
-      <header className="cell-header"><nav aria-label="Cell"><button onClick={() => choose(null)}>Cells</button>{ancestors.map((c) => <span key={c.name}><span className="slash">/</span><button onClick={() => choose(c.name)} aria-current={c.name === cell.name ? "page" : undefined} disabled={c.lifecycle.state !== "available"}>{label(c)}</button></span>)}</nav>
-        <div className="cell-actions">{local && <span className="local-badge">Local</span>}<button className="gear" aria-label="Cell settings" title="Cell settings" disabled={cell.lifecycle.state !== "available"} onClick={() => setSettings(true)}>⚙</button></div>
-      </header>
-      <div className="app">
-        <aside className="sidebar"><ThreadListPrimitive.Root className="thread-list">
+    <div className="workspace">
+      <aside className="sidebar" aria-label="Chats">
+        <header className="sidebar-header"><span className="sidebar-cell" title={cell.name}>{label(cell)}</span>
+          {local && <span className="local-badge">Local</span>}
+          <button className="gear" aria-label="Cell settings" title="Cell settings" disabled={cell.lifecycle.state !== "available"} onClick={() => setSettings(true)}>⚙</button>
+        </header>
+        <ThreadListPrimitive.Root className="thread-list">
           <ThreadListPrimitive.New className="new-chat">＋ New chat</ThreadListPrimitive.New>
           <ThreadListPrimitive.Items components={{ ThreadListItem: ChatItem }} />
           {archived && <><div className="section-label">Archived</div><ThreadListPrimitive.Items archived components={{ ThreadListItem: ChatItem }} /></>}
         </ThreadListPrimitive.Root><label className="archive-toggle"><input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} />Archived</label></aside>
-        <main className="chat-main"><ChatHeader client={client} models={models} onError={setError} />
-          {error && <div className="error-banner" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError("")}>×</button></div>}
-          <Chat onError={setError} />
-        </main>
-      </div>
+      <main className="chat-main"><ChatHeader client={client} models={models} onError={setError} />
+        {error && <div className="error-banner" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError("")}>×</button></div>}
+        <Chat onError={setError} />
+      </main>
     </div>
     {settings && <Settings cell={cell} base={base} canApply={canApply} onClose={() => { setSettings(false); const url = new URL(location.href); url.searchParams.delete("setup"); history.replaceState(null, "", url); void loadModels(); }} onApplied={reload} onDelete={onDelete ? () => { setSettings(false); onDelete(); } : undefined} />}
   </AssistantRuntimeProvider>;
@@ -181,7 +197,6 @@ function ChatHeader({ client, models, onError }: { client: ReturnType<typeof cre
     {editing ? <input autoFocus aria-label="Chat title" value={title} onChange={(e) => setTitle(e.target.value)} onBlur={() => void rename()} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setEditing(false); } }} />
       : <button className="chat-title" disabled={!attached} title="Rename chat" onClick={() => { setTitle(session?.title ?? ""); setEditing(true); }}>{attached ? session.title : "New chat"}</button>}
     <div className="header-controls">
-      {extras.status === "running" && <span className="run-status" role="status">Working…</span>}
       <ModelPicker models={models} selection={selection} disabled={changingModel || extras.status === "running"} onSelect={(model) => {
         void (async () => {
           setChangingModel(true);
@@ -203,7 +218,9 @@ function Chat({ onError }: { onError: (e: string) => void }) {
   return <ThreadPrimitive.Root className="thread">
     <ThreadPrimitive.Viewport className="viewport">
 
-      <div className="messages"><ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} /></div>
+      <div className="messages"><ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
+        {extras.status === "running" && <div className="run-indicator" role="status"><span className="spinner" aria-hidden="true" /><span className="visually-hidden">Working…</span></div>}
+      </div>
       <div className="scroll-anchor" />
     </ThreadPrimitive.Viewport>
     <div className="composer-area">
