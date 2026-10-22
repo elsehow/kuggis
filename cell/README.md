@@ -90,7 +90,7 @@ parent may carry the fork too, to sync it and fetch the child's branches.
 Clones land in `work/<owner>/<repo>`.
 
 A cell does not know where it sits. The directory is the tree:
-`tree/coordinator.json` is held by the human, `tree/coordinator/widget.json`
+`.kuggis/tree/coordinator.json` is held by the human, `.kuggis/tree/coordinator/widget.json`
 sits under coordinator, and re-parenting is `mv`. The box has no use for
 the edge, a name is not a capability, and the hash must mean "this box's
 configuration" and nothing else, so the edge lives in `Tree` alone.
