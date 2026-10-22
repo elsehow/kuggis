@@ -46,7 +46,9 @@ cd web
 KUGGIS_TEST_PI=/opt/kuggis-pi-1.3.0/pi node --test tests/pi-auth.test.mjs tests/oauth-callback.test.mjs
 ```
 
-All four authentication tests passed. The full web suite with that Pi binary
-had 19 passes, no skips, and one repeatable failure: the general RPC smoke test
-times out during `createThread`. That failure remains unresolved; the installed
-Pi tests do not exercise a successful real provider token exchange.
+All four authentication tests passed. The general RPC smoke test initially
+timed out during `createThread` while inheriting the host's Pi configuration.
+It now supplies a temporary `PI_CODING_AGENT_DIR` to its child process, isolating
+credentials and configuration without changing production startup or timeouts.
+The full web suite with installed Pi passes all 20 tests with no skips. These
+tests do not exercise a successful real provider token exchange.
