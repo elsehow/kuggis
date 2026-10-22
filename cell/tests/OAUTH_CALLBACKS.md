@@ -19,7 +19,9 @@ remains manual even if the port subsequently becomes free. Concurrent attempts
 on different ports work independently; attempts sharing a port retain manual
 fallback. Non-loopback redirects (including Anthropic copy-code login) remain
 manual. The gateway must run on the browser's machine; this is not a public
-callback service. `localhost` callbacks bind IPv4, matching Pi's default.
+callback service. Hosted supervisors retain the manual redirect prompt and do
+not open callback listeners on the VM. `localhost` callbacks bind IPv4,
+matching Pi's default.
 
 ## Offline verification
 

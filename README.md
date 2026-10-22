@@ -48,13 +48,19 @@ Delete subcells first. Deletion disconnects the cell's attachments and removes a
 unused parent door; shared integrations remain. Progress survives a browser or
 gateway restart, and interrupted deletion can be retried from the cell tree.
 
-The laptop serves React and forwards the cell-scoped API over SSH to a private
-Unix socket on each VM. The cell's systemd service supervises Pi as the `agent`
-user behind its existing network wall. Closing the browser or stopping the
+The operator serves React and forwards the cell-scoped API over SSH to a private
+Unix socket on each VM. The cell runs Pi as `agent` in a persistent Ubuntu container with passwordless
+sudo. A host firewall restricts the container's network interface, regardless
+of which guest user or process makes a request. Closing the browser or stopping the
 operator UI leaves cell runs alive. A cell-service restart preserves transcripts
 and metadata but does not automatically repeat unfinished work.
 
-Pi is pinned to 1.3.0 in VM setup, verified by SHA-256 and installed root-owned.
+For access without a running laptop, use a dedicated
+[hosted supervisor](deploy/README.md) behind exe.dev's private authenticated HTTPS
+proxy. The supervisor owns deployment state; each cell retains its chats.
+
+Setup seeds Pi 1.3.0 from a SHA-256-verified bundle. The agent controls its
+guest userspace and can install or update tools.
 Each cell keeps its own credentials, MCP configuration, and sessions in the
 agent's home. Anthropic and OpenAI use Pi’s sign-in and API-key flows;
 OpenAI subscription sign-in uses Pi’s headless device-code flow. Connections require an HTTPS MCP endpoint and, when
@@ -161,3 +167,25 @@ The UI uses the local tree you select. It does not invent projects or automatica
 connect external accounts. Add cells in the UI or through declarations; enter each
 connection's MCP URL/token in its settings. Provider credentials belong to the
 selected cell.
+
+## Environment autonomy
+
+`cell setup` now migrates an existing cell into a persistent, user-namespaced
+systemd-nspawn environment. The agent can use `sudo`, install packages, edit
+`/etc`, and run localhost services. The VM host retains the authoritative
+declaration, CONNECT proxy, firewall, signing key, inbox, and signed log. Guest
+root maps to host UID 524288. Package downloads require explicit host grants
+for the registries and release hosts a cell needs. Child declarations are not
+automatically expanded.
+
+Before migrating, setup refuses active runs and saves the previous runtime,
+units, declaration, firewall and home archive under the root-only directory
+`/var/lib/cell/migrations/environment-v1/`. The original `/home/agent` is
+retained; the live home is inside `/var/lib/machines/cell-env`. Reapplying setup
+preserves installed software and guest data. The guest chat service is
+`cell-chat`; the host `cell-agent` service supervises the whole environment.
+The operator's SSH relay still uses `/run/cell-chat/api.sock`.
+
+See [the environment bench](bench/environment/README.md) for architecture and
+production acceptance tests. The shared kernel and nspawn runtime remain part
+of the trusted host boundary.

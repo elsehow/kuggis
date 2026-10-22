@@ -23,9 +23,11 @@ use std::{
 };
 use tokio::{net::UnixStream, process::Command, sync::Mutex};
 use tower_http::services::ServeDir;
+mod access;
 pub(crate) mod creation;
 pub(crate) mod deletion;
 mod oauth;
+pub use access::Access;
 
 #[derive(Serialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
@@ -130,6 +132,7 @@ pub struct Config {
     pub state: PathBuf,
     pub assets: PathBuf,
     pub listen: SocketAddr,
+    pub access: Access,
     pub binary: Option<PathBuf>,
     /// Local Unix endpoints for integration tests and explicit local development.
     pub sockets: Option<PathBuf>,
@@ -231,16 +234,7 @@ impl Operator {
                 let _ = child.wait().await;
             }
         });
-        for key in [
-            "origin",
-            "sec-fetch-site",
-            "connection",
-            "proxy-authorization",
-            "cookie",
-            "authorization",
-        ] {
-            request.headers_mut().remove(key);
-        }
+        access::strip_browser_headers(request.headers_mut());
         request
             .headers_mut()
             .insert(header::HOST, "cell.internal".parse().unwrap());
@@ -529,21 +523,7 @@ fn check_idle_sessions(bytes: &[u8], cell: &Name) -> Result<()> {
 }
 
 async fn guard(State(op): State<Arc<Operator>>, request: Request, next: Next) -> Response {
-    let host = request
-        .headers()
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok());
-    let origin = request
-        .headers()
-        .get(header::ORIGIN)
-        .and_then(|v| v.to_str().ok());
-    if host != Some(op.authority.as_str())
-        || origin.is_some_and(|v| v != format!("http://{}", op.authority))
-        || request
-            .headers()
-            .get("sec-fetch-site")
-            .is_some_and(|v| v == "cross-site")
-    {
+    if !op.config.access.allows(&request, &op.authority) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let mut response = next.run(request).await;
@@ -607,7 +587,7 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(op.clone(), guard))
         .with_state(op.clone());
-    eprintln!("Kuggis UI: http://{}", op.authority);
+    eprintln!("Kuggis UI: {}", op.config.access.origin(&op.authority));
     let shutdown = op.clone();
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {

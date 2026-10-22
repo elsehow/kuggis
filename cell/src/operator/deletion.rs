@@ -758,6 +758,7 @@ mod tests {
                     listen: "127.0.0.1:0".parse().unwrap(),
                     binary: None,
                     sockets: None,
+                    access: Access::Local,
                 },
                 authority: "fixture".into(),
                 relays: Mutex::new(BTreeMap::new()),

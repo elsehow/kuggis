@@ -50,7 +50,7 @@ button:focus-visible, a:focus-visible, textarea:focus-visible, select:focus-visi
 .chat-link { flex: 1; display: flex; gap: 8px; min-width: 0; text-align: left; padding: 10px 8px; font-size: 12px; }
 .chat-link span:last-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .chat-glyph { color: #87917f; }
-.item-action { opacity: 0; padding: 8px; }
+.item-action { display: inline-flex; align-items: center; justify-content: center; opacity: 0; padding: 8px; }
 .chat-item:hover .item-action, .chat-item:focus-within .item-action { opacity: 1; }
 .archive-toggle { display: flex; gap: 7px; align-items: center; padding: 12px 5px; color: var(--muted); font-size: 12px; }
 .section-label { margin: 23px 8px 10px; color: var(--muted); font-size: 11px; }

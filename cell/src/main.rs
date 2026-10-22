@@ -58,7 +58,7 @@ usage:
                                   brief NAME's SESSION, over ssh, as you
   cell pull DIR NAME [--since N]  pull NAME's log, verify it under its pinned key, print it
   cell login DIR NAME             open Pi on NAME's box as the agent, to sign in
-  cell ui TREE [--bin LINUX_CELL] [--listen 127.0.0.1:8080]
+  cell ui TREE [--bin LINUX_CELL] [--listen 127.0.0.1:8080] [--exe-proxy FILE]
                                   browse cells and their chats over SSH
   cell chat --local DIR [--listen 127.0.0.1:8080] [--state DIR] [--assets DIR] [--pi PATH]
                                   serve the React chat UI with persistent local Pi sessions
@@ -191,6 +191,13 @@ fn chat(args: &[String]) -> Fallible {
 }
 
 fn ui(args: &[String]) -> Fallible {
+    let access = if args.iter().any(|arg| arg == "--exe-proxy") {
+        cell::operator::Access::exe_proxy(Path::new(
+            flag(args, "--exe-proxy").ok_or("--exe-proxy requires a config file")?,
+        ))?
+    } else {
+        cell::operator::Access::Local
+    };
     let config = cell::operator::Config {
         tree: PathBuf::from(arg(args, 0, "TREE")?),
         state: flag(args, "--state").unwrap_or(".kuggis/operator").into(),
@@ -198,6 +205,7 @@ fn ui(args: &[String]) -> Fallible {
         listen: flag(args, "--listen").unwrap_or("127.0.0.1:8080").parse()?,
         binary: flag(args, "--bin").map(PathBuf::from),
         sockets: flag(args, "--socket-dir").map(PathBuf::from),
+        access,
     };
     tokio::runtime::Runtime::new()?.block_on(cell::operator::serve(config))
 }
@@ -543,10 +551,7 @@ fn login(args: &[String]) -> Fallible {
         .args([
             "-t",
             &format!("{vm}.exe.xyz"),
-            "sudo",
-            "-iu",
-            cell::wall::AGENT,
-            cell::wall::PI_BIN,
+            "if test -f /etc/cell/environment-initialized; then sudo machinectl shell agent@cell-env /bin/bash -lc 'exec /usr/local/lib/cell/pi-1.3.0/pi'; else sudo -iu agent /usr/local/lib/cell/pi-1.3.0/pi; fi",
         ])
         .status()?;
     if !status.success() {

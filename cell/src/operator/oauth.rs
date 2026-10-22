@@ -203,6 +203,11 @@ async fn prepare_with_lifetime(
     view: &mut AuthFlow,
     lifetime: Duration,
 ) {
+    // A browser on another machine cannot reach this VM's loopback listener.
+    // Keep Pi's manual redirect prompt for authenticated hosted supervisors.
+    if !matches!(op.config.access, Access::Local) {
+        return;
+    }
     let AuthState::Waiting {
         notice:
             Some(AuthNotice::Link {
@@ -417,6 +422,7 @@ mod integration_tests {
                     listen: "127.0.0.1:0".parse().unwrap(),
                     binary: None,
                     sockets: Some(directory.clone()),
+                    access: Access::Local,
                 },
                 authority: "127.0.0.1:9999".into(),
                 relays: Mutex::new(BTreeMap::new()),
@@ -492,6 +498,19 @@ mod integration_tests {
         }
         panic!("callback listener leaked");
     }
+    #[tokio::test]
+    async fn hosted_supervisor_keeps_manual_login_without_binding_a_callback() {
+        let port = free_port().await;
+        let mut f = Fixture::new("openai", port).await;
+        let config = f.directory.join("access.json");
+        fs::write(&config, br#"{"origin":"https://supervisor.example","users":["usr_fixture"]}"#).unwrap();
+        Arc::get_mut(&mut f.op).unwrap().config.access = Access::exe_proxy(&config).unwrap();
+        assert!(matches!(f.prepare().await.relay, RelayState::Manual));
+        assert!(f.op.relays.lock().await.is_empty());
+        let _listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await.unwrap();
+        assert_eq!(f.replies.load(Ordering::SeqCst), 0);
+    }
+
     #[tokio::test]
     async fn both_providers_validate_forward_once_and_wait_for_pi() {
         for provider in ["openai", "anthropic"] {

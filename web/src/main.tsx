@@ -123,6 +123,7 @@ function App() {
 function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: { cell: CellInfo; standalone: boolean; local: boolean; canApply: boolean; reload: () => Promise<void>; onDelete?: () => void }) {
   const [error, setError] = useState("");
   const [models, setModels] = useState<PiModelInfo[]>([]);
+  const [changingModel, setChangingModel] = useState(false);
   const [archived, setArchived] = useState(false);
   const [settings, setSettings] = useState(new URLSearchParams(location.search).get("setup") === "1");
   const base = standalone ? "/api" : `/api/cells/${cell.name}`;
@@ -137,6 +138,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
   } }), [base]);
   const runtime = usePiRuntime({
     client, initialThreadId: new URLSearchParams(location.search).get("chat") ?? undefined, includeArchived: true,
+    isSendDisabled: changingModel,
     adapters: { attachments: guardedImageAttachments },
     onError: (e) => setError(explain(e)),
     onThreadIdChange(id) { const url = new URL(location.href); if (id) url.searchParams.set("chat", id); else url.searchParams.delete("chat"); history.replaceState(null, "", url); setError(""); },
@@ -155,7 +157,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
           <ThreadListPrimitive.Items components={{ ThreadListItem: ChatItem }} />
           {archived && <><div className="section-label">Archived</div><ThreadListPrimitive.Items archived components={{ ThreadListItem: ChatItem }} /></>}
         </ThreadListPrimitive.Root><label className="archive-toggle"><input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} />Archived</label></aside>
-      <main className="chat-main"><ChatHeader client={client} models={models} onError={setError} />
+      <main className="chat-main"><ChatHeader client={client} models={models} changingModel={changingModel} setChangingModel={setChangingModel} onError={setError} />
         {error && <div className="error-banner" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError("")}>×</button></div>}
         <Chat onError={setError} />
       </main>
@@ -170,19 +172,33 @@ function ChatItem() {
   const session = usePiSession();
   return <ThreadListItemPrimitive.Root className="chat-item">
     <ThreadListItemPrimitive.Trigger className="chat-link"><span className="chat-glyph">◌</span><span>{session && session.id === remoteId ? session.title ?? "New chat" : <ThreadListItemPrimitive.Title fallback="New chat" />}</span></ThreadListItemPrimitive.Trigger>
-    {archived ? <ThreadListItemPrimitive.Unarchive className="item-action" title="Restore chat" aria-label="Restore chat">↥</ThreadListItemPrimitive.Unarchive>
-      : <ThreadListItemPrimitive.Archive className="item-action" title="Archive chat" aria-label="Archive chat">↧</ThreadListItemPrimitive.Archive>}
+    {archived ? <ThreadListItemPrimitive.Unarchive className="item-action" title="Restore chat" aria-label="Restore chat"><ArchiveIcon restore /></ThreadListItemPrimitive.Unarchive>
+      : <ThreadListItemPrimitive.Archive className="item-action" title="Archive chat" aria-label="Archive chat"><ArchiveIcon /></ThreadListItemPrimitive.Archive>}
   </ThreadListItemPrimitive.Root>;
 }
 
-function ChatHeader({ client, models, onError }: { client: ReturnType<typeof createPiHttpClient>; models: PiModelInfo[]; onError: (e: string) => void }) {
+function ArchiveIcon({ restore = false }: { restore?: boolean }) {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    <path d="M4 8v12h16V8M3 4h18v4H3z" />
+    <path d={restore ? "M12 17v-6m-3 3 3-3 3 3" : "M12 11v6m-3-3 3 3 3-3"} />
+  </svg>;
+}
+
+function ChatHeader({ client, models, changingModel, setChangingModel, onError }: { client: ReturnType<typeof createPiHttpClient>; models: PiModelInfo[]; changingModel: boolean; setChangingModel: (busy: boolean) => void; onError: (e: string) => void }) {
   const aui = useAui();
   const session = usePiSession();
   const extras = usePiRuntimeExtras();
   const attached = session && !session.id.startsWith("__");
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState("");
-  const [changingModel, setChangingModel] = useState(false);
+  const [refreshModelFor, setRefreshModelFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (!refreshModelFor || session?.id !== refreshModelFor) return;
+    // Initializing a draft attaches its controller asynchronously. Refresh that
+    // controller after the write: idle threads do not subscribe to model events.
+    setRefreshModelFor(null);
+    void extras.refresh().catch((e) => onError(explain(e)));
+  }, [refreshModelFor, session?.id, extras.refresh]);
   useEffect(() => {
     if (attached && session.title !== aui.threadListItem().getState().title) void aui.threads().reload().catch((e) => onError(explain(e)));
   }, [aui, attached, session?.title]);
@@ -202,7 +218,11 @@ function ChatHeader({ client, models, onError }: { client: ReturnType<typeof cre
           setChangingModel(true);
           try {
             if (attached) await extras.setModel(model);
-            else { const { remoteId } = await aui.threadListItem().initialize(); await client.setModel(remoteId, model); }
+            else {
+              const { remoteId } = await aui.threadListItem().initialize();
+              await client.setModel(remoteId, model);
+              setRefreshModelFor(remoteId);
+            }
           } catch (e) { onError(explain(e)); }
           finally { setChangingModel(false); }
         })();

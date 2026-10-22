@@ -58,6 +58,31 @@ impl From<VmName> for String {
     }
 }
 
+/// New VMs use a stricter namespace than logical cell names (and some older
+/// VMs). Preserve already-valid names; otherwise produce a stable provider name.
+pub fn provision_name(name: &Name) -> String {
+    let raw = name.as_str();
+    if (5..=52).contains(&raw.len())
+        && raw.as_bytes()[0].is_ascii_lowercase()
+        && !raw.contains("--")
+    {
+        return raw.into();
+    }
+    let slug = raw
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let candidate = format!("cell-{slug}");
+    if candidate.len() <= 52 && !raw.contains("--") {
+        return candidate;
+    }
+    // Truncation and normalization can lose information. Retain a digest to
+    // distinguish names that would otherwise collapse to the same slug.
+    let prefix = candidate[..candidate.len().min(39)].trim_end_matches('-');
+    format!("{prefix}-{}", &Hash::of(raw.as_bytes()).to_string()[..12])
+}
+
 /// Parsed exe.dev attachment syntax. Unrecognized external forms remain
 /// observable but never gain ownership authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -393,15 +418,7 @@ impl Edge for Ssh {
             .args(["-o", "BatchMode=yes", "exe.dev"])
             .args(args)
             .output()?;
-        if !out.status.success() {
-            return Err(format!(
-                "ssh exe.dev {}: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            )
-            .into());
-        }
-        Ok(String::from_utf8(out.stdout)?)
+        control_output(args, out)
     }
 
     fn log(&self, vm: &str) -> Fallible<Option<(Key, Vec<Statement>)>> {
@@ -448,6 +465,31 @@ impl Edge for Ssh {
     }
 }
 
+fn control_output(args: &[&str], out: Output) -> Fallible<String> {
+    if out.status.success() {
+        return Ok(String::from_utf8(out.stdout)?);
+    }
+    // exe.dev reports some validation errors on stdout, including JSON errors.
+    // SSH diagnostics still take priority when both streams contain output.
+    let detail = [&out.stderr, &out.stdout]
+        .into_iter()
+        .map(|bytes| String::from_utf8_lossy(bytes).trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let detail = if detail.is_empty() {
+        out.status.to_string()
+    } else {
+        detail
+    };
+    Err(format!(
+        "ssh exe.dev {}: {}",
+        args.join(" "),
+        detail.chars().take(4096).collect::<String>()
+    )
+    .into())
+}
+
 pub fn observe(vms: &[Vm], ints: &[Integration]) -> Observed {
     let mut out = Observed::default();
     for vm in vms {
@@ -482,6 +524,48 @@ fn parse_log(raw: &str) -> Fallible<Option<(Key, Vec<Statement>)>> {
 mod tests {
     use super::*;
     use crate::said::Secret;
+
+    #[test]
+    fn provisioning_accepts_every_cell_name_shape_without_changing_identity() {
+        assert_eq!(provision_name(&"project".parse().unwrap()), "project");
+        assert_eq!(provision_name(&"app".parse().unwrap()), "cell-app");
+        for raw in [
+            "a".to_string(),
+            "12345".into(),
+            "a--b".into(),
+            "a".repeat(63),
+            format!("{}b", "a".repeat(62)),
+        ] {
+            let name = provision_name(&raw.parse().unwrap());
+            assert!((5..=52).contains(&name.len()), "{name}");
+            assert!(name.as_bytes()[0].is_ascii_lowercase());
+            assert!(!name.contains("--") && !name.ends_with('-'));
+            assert!(VmName::parse(name).is_ok());
+        }
+        assert_ne!(
+            provision_name(&"a--b".parse().unwrap()),
+            provision_name(&"a-b".parse().unwrap())
+        );
+        assert_ne!(
+            provision_name(&"a".repeat(63).parse().unwrap()),
+            provision_name(&format!("{}b", "a".repeat(62)).parse().unwrap())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_validation_errors_on_stdout_are_visible() {
+        use std::os::unix::process::ExitStatusExt;
+        let out = Output {
+            status: std::process::ExitStatus::from_raw(256),
+            stdout: br#"{"error":"invalid VM name"}"#.to_vec(),
+            stderr: Vec::new(),
+        };
+        let error = control_output(&["new", "--name=bad"], out)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("invalid VM name"), "{error}");
+    }
 
     #[test]
     fn ownership_lookup_refuses_ambiguous_vm_tags() {

@@ -12,6 +12,7 @@ pub mod connection;
 pub mod contracts;
 pub mod door;
 pub mod exe;
+pub mod environment;
 pub mod grant;
 mod legacy;
 pub mod log;

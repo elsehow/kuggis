@@ -148,19 +148,29 @@ binary needs setup, and the approval binds the hash of the one shipped.
 
 ## The wall
 
-`cell setup CELLFILE`, run once as root on a box, builds the wall: an
-`agent` user with no sudo and one open socket, the proxy on loopback; a
-`cell-proxy` user that may resolve at exe.dev's gateway and open TLS
-ports and nothing else; a `cell-door` user that serves the statement log
-and files what a parent says; a `cell-say` user that holds the key and
-ships what the agent says; nftables rules by uid, loaded before the
-network; the signing key minted 0600 for `cell-say` alone; everything as hardened systemd
-services. `cell check` then runs `cell probe` as the agent, which tries
-everything the threat model says the agent cannot do, adds what root can
-see, signs the result as `Checked`, with the binary's hash and which
-providers are signed in, and appends it to the log the laptop pulls.
-Both ran on a fresh exe.dev VM: every probe matched, setup is
-idempotent, and the wall survives a reboot.
+The mutable environment is a persistent Ubuntu systemd-nspawn container with
+private user, mount, PID and network namespaces. `BoundarySpec` describes the
+host-controlled mapping and network interface, separately from `Cell` grants
+and mutable guest state. Guest root maps to host UID 524288, never host root.
+The agent has passwordless sudo and can modify its userspace, install packages
+and run local services.
+
+Host nftables input/forward rules restrict all traffic arriving on the veth,
+independent of guest UID, routes, firewall changes or proxy variables. The only
+exit is the host CONNECT proxy. Its allowlist comes from the host declaration;
+changing a guest copy cannot enlarge it. The signing key is never mounted.
+The inbox, signed log and declaration are read-only mounts. Only the outbox
+and a dedicated chat socket directory are writable host mounts.
+
+`cell check` observes namespace mappings and the complete live firewall from
+the host, runs trusted network probes in the guest network namespace, checks
+chat availability and guest sudo, and signs its report. An external startup
+guard refuses to boot the environment unless the firewall matches the stored
+host-approved rules. Reapplying setup updates managed runtime files inside
+the guest's namespaces, never by executing or traversing guest paths as host
+root. General kernel-escape resistance is not established by these probes.
+`cell probe` retains the legacy host-user diagnostics; use host-side
+`cell check` for container cells.
 
 ## The door
 
@@ -217,18 +227,24 @@ restarts. Model failures occur after acceptance and never cause redispatch.
 Cell execution requires its declaration, private socket, Pi directory, inbox,
 and outbox together; the cell's identity comes from its declaration.
 
-`cell-agent.service` runs `cell chat --cell /etc/cell/cell.json` as the
-agent, with a private Unix socket at `/run/cell-chat/api.sock`. Only the
-agent and the operator's `cell-chat` group can reach it. The agent's network
-allowlist is unchanged: its only TCP route is the existing CONNECT proxy.
-The service has no sudo, cannot change its runtime binary, and does not hold
-the signing key. Run events go through the outbox to the existing shipper.
+`cell-agent.service` supervises the environment on the VM host. Inside it,
+`cell-chat.service` runs `cell chat` as `agent`, with passwordless sudo and a
+private Unix socket shared at `/run/cell-chat/api.sock`. A default ACL grants
+only the host operator's `cell-chat` group access to that socket. Guest
+localhost is unrestricted. The host proxy, door and signer retain their own
+unprivileged users and service hardening.
 
 `cell ui TREE` serves the browser on loopback. SSH runs `cell relay`, carrying
 HTTP on stdin/stdout to the private cell socket. Every cell route resolves its
 name through the validated tree. The gateway does not own Pi processes or
 transcripts, so restarting it leaves remote runs alive. The cell service
 handles door/SSH briefs through the same session and request journal as chat.
+
+`--exe-proxy FILE` selects authenticated hosted access on a dedicated trusted VM.
+The file pins the HTTPS origin and permitted exe.dev user IDs. Local access remains
+the default; both modes bind only to loopback. See the
+[supervisor deployment guide](../deploy/README.md) for the trust boundary, systemd
+service, state migration and acceptance checks.
 
 `cell session new` generates an ID; `cell brief DIR NAME SESSION_ID TEXT
 [--request REQUEST_ID]` files the brief. `cell login DIR NAME` opens Pi as

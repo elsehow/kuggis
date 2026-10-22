@@ -257,7 +257,7 @@ fn perform(
         Action::Create => {
             edge.run(&[
                 "new",
-                &format!("--name={name}"),
+                &format!("--name={}", exe::provision_name(name)),
                 &format!("--tag={TAG_PREFIX}{name}"),
                 "--no-email",
             ])
@@ -596,12 +596,12 @@ mod tests {
         assert_eq!(
             f.calls(),
             [
-                "new --name=b --tag=cell-b --no-email".to_string(),
-                format!("setup b {}", b.hash()),
-                "new --name=a --tag=cell-a --no-email".into(),
+                "new --name=cell-b --tag=cell-b --no-email".to_string(),
+                format!("setup cell-b {}", b.hash()),
+                "new --name=cell-a --tag=cell-a --no-email".into(),
                 "integrations add github --name=gh-example-x --repository=example/x --attach=tag:cell-a".into(),
-                "integrations add http-proxy --name=door-b --target=https://b.exe.xyz/ --peer --attach=tag:cell-a".into(),
-                format!("setup a {}", a.hash()),
+                "integrations add http-proxy --name=door-b --target=https://cell-b.exe.xyz/ --peer --attach=tag:cell-a".into(),
+                format!("setup cell-a {}", a.hash()),
             ]
         );
         let out = String::from_utf8(out).unwrap();
@@ -647,7 +647,10 @@ mod tests {
         assert_eq!(approved.plans()[&a.name].actions, vec![Action::Setup]);
         assert_eq!(approved.plans()[&a.name].bin, Hash::of(b"v2"));
         assert_eq!(apply(&f, &pins, &t, &approved, &mut Vec::new()).unwrap(), 1);
-        assert_eq!(f.calls().last().unwrap(), &format!("setup a {}", a.hash()));
+        assert_eq!(
+            f.calls().last().unwrap(),
+            &format!("setup cell-a {}", a.hash())
+        );
         assert!(approve(&f, &pins, &t).plans()[&a.name].is_empty());
     }
 
@@ -663,7 +666,7 @@ mod tests {
         f.int(
             "gh-extra",
             "github",
-            &["vm:a"],
+            &["vm:cell-a"],
             serde_json::json!({"repositories": ["o/extra"]}),
         );
         let e = apply(&f, &pins, &t, &settled, &mut Vec::new())
