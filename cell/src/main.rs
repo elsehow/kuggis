@@ -671,11 +671,12 @@ fn login(args: &[String]) -> Fallible {
     let name: Name = arg(args, 1, "NAME")?.parse()?;
     let vm = root_of(&Ssh { bin: None }, &tree, &name)?;
     eprintln!("opening Pi as the agent on {vm}; use /login there");
+    let pi = cell::wall::PI_BIN;
     let status = std::process::Command::new("ssh")
         .args([
             "-t",
             &format!("{vm}.exe.xyz"),
-            "if test -f /etc/cell/environment-initialized; then sudo machinectl shell agent@cell-env /bin/bash -lc 'exec /usr/local/lib/cell/pi-1.3.0/pi'; else sudo -iu agent /usr/local/lib/cell/pi-1.3.0/pi; fi",
+            &format!("if test -f /etc/cell/environment-initialized; then sudo machinectl shell agent@cell-env /bin/bash -lc 'exec {pi}'; else sudo -iu agent {pi}; fi"),
         ])
         .status()?;
     if !status.success() {
