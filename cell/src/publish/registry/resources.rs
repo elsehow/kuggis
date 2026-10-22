@@ -268,6 +268,9 @@ impl State {
                 let target = remaining
                     .remove(&resource.id)
                     .unwrap_or(ResourceOwner::Operator);
+                if matches!(target, ResourceOwner::Cell(key) if self.frozen.contains(&key)) {
+                    return Err(invalid("cannot transfer to a frozen identity"));
+                }
                 let visibility = if choices.contains_key(&resource.id) {
                     TransferVisibility::KeepCurrent
                 } else if resource.management == ResourceManagement::Managed {
@@ -308,6 +311,7 @@ impl Registry {
     }
     pub fn plan_resource(&self, id: ResourceId, intent: ResourceIntent) -> Result<ResourcePlan> {
         self.transaction(|s| {
+            if matches!(intent, ResourceIntent::Transfer { to: ResourceOwner::Cell(key), .. } if s.frozen.contains(&key)) { return Err(invalid("cannot transfer to a frozen identity")); }
             let r = s.resources.get(&id).ok_or(RegistryError::UnknownSite)?;
             Ok((
                 ResourcePlan::new(r.clone(), intent).map_err(invalid)?,

@@ -42,6 +42,7 @@ pub enum Command {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Reply {
+    Refused { conflict: bool, message: String },
     Inventory(ResourceInventory),
     OperationReceipt(Option<ResourceOperation>),
     Plan(ResourcePlan),
@@ -83,6 +84,24 @@ pub fn execute(
         )?),
         Command::CleanupReceipt { operation } => {
             Reply::CleanupReceipt(registry.cleanup_receipt(operation)?)
+        }
+    })
+}
+
+/// Preserve conflict-vs-unavailable recovery across SSH without trusting stderr.
+pub fn execute_wire(registry: &Registry, command: Command) -> Reply {
+    execute(registry, command).unwrap_or_else(|error| {
+        use crate::publish::registry::RegistryError;
+        let conflict = matches!(
+            error,
+            RegistryError::InvalidPolicy(_)
+                | RegistryError::Denied
+                | RegistryError::UnknownSite
+                | RegistryError::UnknownNamespace
+        );
+        Reply::Refused {
+            conflict,
+            message: error.to_string(),
         }
     })
 }

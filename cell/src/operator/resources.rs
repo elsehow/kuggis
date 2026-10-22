@@ -56,12 +56,66 @@ pub(super) fn backends(tree: &FsPath) -> Result<Vec<Backend>> {
     }
     Ok(config.backends)
 }
+pub(super) fn registered(op: &Operator) -> Result<Vec<Backend>> {
+    let configured = backends(&op.config.tree)?;
+    let known: Vec<ProviderRef> = match fs::read(op.config.state.join("resource-providers.json")) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(fail)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+        Err(e) => return Err(fail(e)),
+    };
+    if known
+        .iter()
+        .any(|id| !configured.iter().any(|b| &b.provider == id))
+    {
+        return Err(bad("A previously registered resource backend is missing from configuration. Restore its connection before resource cleanup."));
+    }
+    Ok(configured)
+}
+pub(super) fn remember(op: &Operator, backend: &Backend) -> Result<()> {
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(op.config.state.join("resource-providers.lock"))
+        .map_err(fail)?;
+    lock.lock().map_err(fail)?;
+    let path = op.config.state.join("resource-providers.json");
+    let mut known: Vec<ProviderRef> = match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(fail)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+        Err(e) => return Err(fail(e)),
+    };
+    if !known.contains(&backend.provider) {
+        known.push(backend.provider);
+        known.sort();
+        let temp = op
+            .config
+            .state
+            .join(format!(".providers-{}", RequestId::generate()));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)
+            .map_err(fail)?;
+        file.write_all(&serde_json::to_vec(&known).map_err(fail)?)
+            .map_err(fail)?;
+        file.sync_all().map_err(fail)?;
+        fs::rename(temp, path).map_err(fail)?;
+        fs::File::open(&op.config.state)
+            .map_err(fail)?
+            .sync_all()
+            .map_err(fail)?;
+    }
+    Ok(())
+}
 impl Backend {
     pub(super) fn rpc(&self, command: Rpc) -> Result<Reply> {
         let reply = match &self.location {
             Location::Local { registry } => {
-                resource_rpc::execute(&Registry::open(registry).map_err(fail)?, command)
-                    .map_err(fail)?
+                resource_rpc::execute_wire(&Registry::open(registry).map_err(fail)?, command)
             }
             Location::Ssh { vm } => {
                 let bytes = serde_json::to_vec(&command).map_err(fail)?;
@@ -122,7 +176,17 @@ impl Backend {
                 serde_json::from_slice(&bytes).map_err(fail)?
             }
         };
-        Ok(reply)
+        match reply {
+            Reply::Refused { conflict, message } => Err(Error(
+                if conflict {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::BAD_GATEWAY
+                },
+                message,
+            )),
+            other => Ok(other),
+        }
     }
     pub(super) fn inventory(&self) -> Result<ResourceInventory> {
         match self.rpc(Rpc::Inventory)? {
@@ -173,7 +237,7 @@ fn cell_targets(op: &Operator) -> Result<Vec<ResourceCell>> {
     }
     Ok(cells)
 }
-fn validate_target(op: &Operator, intent: &ResourceIntent) -> Result<()> {
+pub(super) fn validate_target(op: &Operator, intent: &ResourceIntent) -> Result<()> {
     if let ResourceIntent::Transfer {
         to: ResourceOwner::Cell(identity),
         ..
@@ -188,9 +252,9 @@ fn validate_target(op: &Operator, intent: &ResourceIntent) -> Result<()> {
     Ok(())
 }
 pub(super) async fn list(State(op): State<Arc<Operator>>) -> Result<Json<ResourcesView>> {
-    let backends = backends(&op.config.tree)?;
+    let backends = registered(&op)?;
     let cells = cell_targets(&op)?;
-    let backends = tokio::task::spawn_blocking(move || {
+    let backends: Vec<BackendView> = tokio::task::spawn_blocking(move || {
         backends
             .into_iter()
             .map(|b| match b.inventory() {
@@ -211,6 +275,16 @@ pub(super) async fn list(State(op): State<Arc<Operator>>) -> Result<Json<Resourc
     })
     .await
     .map_err(fail)?;
+    for view in &backends {
+        if view.inventory.is_some() {
+            if let Some(backend) = registered(&op)?
+                .into_iter()
+                .find(|b| b.name == view.name && b.provider == view.provider)
+            {
+                remember(&op, &backend)?;
+            }
+        }
+    }
     Ok(Json(ResourcesView { backends, cells }))
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,7 +367,7 @@ pub(super) async fn plan(
         .try_lock()
         .map_err(|_| bad("Another operator change is in progress"))?;
     validate_target(&op, &body.intent)?;
-    let backend = backends(&op.config.tree)?
+    let backend = registered(&op)?
         .into_iter()
         .find(|b| b.name == body.backend)
         .ok_or_else(|| bad("Unknown resource backend"))?;
@@ -310,6 +384,7 @@ pub(super) async fn plan(
     })
     .await
     .map_err(fail)??;
+    remember(&op, &backend)?;
     plan.validate().map_err(bad)?;
     let action = Action {
         id: RequestId::generate(),
@@ -348,7 +423,7 @@ pub(super) async fn apply(
     if action.receipt.is_some() {
         return Ok(Json(action.view()));
     }
-    if !backends(&op.config.tree)?.contains(&action.backend) {
+    if !registered(&op)?.contains(&action.backend) {
         return Err(bad("Resource connection changed; review again"));
     }
     let worker = op.clone();

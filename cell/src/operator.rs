@@ -28,6 +28,7 @@ pub(crate) mod creation;
 pub(crate) mod deletion;
 mod oauth;
 pub(crate) mod resources;
+pub(crate) mod resource_cleanup;
 pub use access::Access;
 
 #[derive(Serialize, ts_rs::TS)]
@@ -85,6 +86,7 @@ fn lifecycle(
             deletion::DeletionPhase::Failed { message, .. } => Lifecycle::Blocked {
                 message: message.clone(),
             },
+            deletion::DeletionPhase::Review => Lifecycle::Blocked { message: "Resource cleanup has started; review deletion to finish".into() },
             _ => Lifecycle::Declared,
         };
     }
@@ -561,7 +563,6 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
     });
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     let authority = listener.local_addr()?.to_string();
-    let assets = config.assets.clone();
     let op = Arc::new(Operator {
         config,
         authority,
@@ -573,25 +574,7 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
         stopping: tokio::sync::watch::channel(false).0,
     });
     op.refresh_vms().await.map_err(|e| e.1)?;
-    let app = Router::new()
-        .route("/api/cells", get(cells))
-        .route("/api/resources", get(resources::list))
-        .route("/api/resources/plan", post(resources::plan))
-        .route("/api/resources/actions/:id", get(resources::get))
-        .route("/api/resources/actions/:id/apply", post(resources::apply))
-        .route("/api/cells/plan", post(creation::preview))
-        .route("/api/creations/:id", get(creation::get))
-        .route("/api/creations/:id/apply", post(creation::start))
-        .route("/api/cells/:name/plan", post(preview))
-        .route("/api/cells/:name/delete-plan", post(deletion::preview))
-        .route("/api/deletions/:id", get(deletion::get))
-        .route("/api/deletions/:id/apply", post(deletion::start))
-        .route("/api/changes/:id/apply", post(apply_change))
-        .route("/api/cells/:name/*tail", any(proxy))
-        .fallback_service(ServeDir::new(assets))
-        .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
-        .layer(middleware::from_fn_with_state(op.clone(), guard))
-        .with_state(op.clone());
+    let app = router(op.clone());
     eprintln!("Kuggis UI: {}", op.config.access.origin(&op.authority));
     let shutdown = op.clone();
     axum::serve(listener, app)
@@ -604,6 +587,29 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
         .await?;
     drop(lock);
     Ok(())
+}
+
+fn router(op: Arc<Operator>) -> Router {
+    let assets = op.config.assets.clone();
+    Router::new()
+        .route("/api/cells", get(cells))
+        .route("/api/resources", get(resources::list))
+        .route("/api/resources/plan", post(resources::plan))
+        .route("/api/resources/actions/:id", get(resources::get))
+        .route("/api/resources/actions/:id/apply", post(resources::apply))
+        .route("/api/cells/plan", post(creation::preview))
+        .route("/api/creations/:id", get(creation::get))
+        .route("/api/creations/:id/apply", post(creation::start))
+        .route("/api/cells/:name/plan", post(preview))
+        .route("/api/cells/:name/delete-plan", post(deletion::preview_request))
+        .route("/api/deletions/:id", get(deletion::get))
+        .route("/api/deletions/:id/apply", post(deletion::start))
+        .route("/api/changes/:id/apply", post(apply_change))
+        .route("/api/cells/:name/*tail", any(proxy))
+        .fallback_service(ServeDir::new(assets))
+        .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
+        .layer(middleware::from_fn_with_state(op.clone(), guard))
+        .with_state(op.clone())
 }
 
 /// Bridge stdin/stdout to one local Unix socket. OS permissions authorize the

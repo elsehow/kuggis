@@ -151,7 +151,7 @@ fn publisher(args: &[String]) -> Fallible {
             io::stdin().take(cell::resource_rpc::MAX_RPC_BYTES as u64 + 1).read_to_end(&mut bytes)?;
             if bytes.len() > cell::resource_rpc::MAX_RPC_BYTES { return Err("resource RPC exceeds limit".into()); }
             let command = serde_json::from_slice(&bytes)?;
-            let reply = cell::resource_rpc::execute(&Registry::open(Path::new(&args[1]))?, command)?;
+            let reply = cell::resource_rpc::execute_wire(&Registry::open(Path::new(&args[1]))?, command);
             println!("{}", serde_json::to_string(&reply)?);
         }
         Some("init") if args.len() == 2 => {
