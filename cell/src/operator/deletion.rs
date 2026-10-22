@@ -760,6 +760,7 @@ mod tests {
                     sockets: None,
                 },
                 authority: "fixture".into(),
+                relays: Mutex::new(BTreeMap::new()),
                 vms: tokio::sync::RwLock::new(BTreeMap::new()),
                 edge: edge.clone(),
                 changes: Mutex::new(BTreeMap::new()),

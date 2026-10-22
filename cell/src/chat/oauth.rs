@@ -17,12 +17,29 @@ pub(crate) struct LoginRequest {
     method: LoginMethod,
 }
 
+/// Callback coordinates extracted from Pi's authorization URL, never invented
+/// by the gateway. Pi still validates the response and exchanges the code.
+#[derive(Clone, Deserialize, Serialize, ts_rs::TS)]
+pub(crate) struct Callback {
+    pub address: String,
+    pub state: String,
+}
+#[derive(Clone, Default, Deserialize, Serialize, ts_rs::TS)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RelayState {
+    #[default]
+    Manual,
+    Ready,
+    Forwarded,
+    Closed,
+}
 #[derive(Clone, Deserialize, Serialize, ts_rs::TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum AuthNotice {
     Link {
         url: String,
         instructions: Option<String>,
+        callback: Option<Callback>,
     },
     DeviceCode {
         url: String,
@@ -50,13 +67,13 @@ pub(crate) enum AuthPromptKind {
         options: Vec<AuthOption>,
     },
 }
-#[derive(Clone, Serialize, ts_rs::TS)]
+#[derive(Clone, Deserialize, Serialize, ts_rs::TS)]
 pub(crate) struct AuthPrompt {
-    id: String,
+    pub id: String,
     #[serde(flatten)]
-    kind: AuthPromptKind,
+    pub kind: AuthPromptKind,
 }
-#[derive(Clone, Serialize, ts_rs::TS)]
+#[derive(Clone, Deserialize, Serialize, ts_rs::TS)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub(crate) enum AuthState {
     Starting,
@@ -71,7 +88,7 @@ pub(crate) enum AuthState {
     Cancelled,
 }
 impl AuthState {
-    fn terminal(&self) -> bool {
+    pub(crate) fn terminal(&self) -> bool {
         matches!(self, Self::Complete | Self::Failed { .. } | Self::Cancelled)
     }
     fn fail(&mut self, message: &str) {
@@ -92,12 +109,14 @@ impl AuthState {
         (notice, prompt)
     }
 }
-#[derive(Serialize, ts_rs::TS)]
+#[derive(Deserialize, Serialize, ts_rs::TS)]
 pub(crate) struct AuthFlow {
-    id: RequestId,
-    provider: Provider,
+    pub id: RequestId,
+    pub provider: Provider,
+    #[serde(default)]
+    pub relay: RelayState,
     #[serde(flatten)]
-    status: AuthState,
+    pub status: AuthState,
 }
 #[derive(Deserialize, Serialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
@@ -118,6 +137,7 @@ impl Login {
         AuthFlow {
             id,
             provider: self.provider,
+            relay: RelayState::Manual,
             status: self.state.lock().await.clone(),
         }
     }

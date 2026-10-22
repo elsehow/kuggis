@@ -12,6 +12,21 @@ export function ProviderAuth({ provider, base, refresh }: { provider: ProviderCo
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
   const path = `${base}/settings/providers/${provider.id}`;
+  useEffect(() => {
+    const url = new URL(location.href);
+    const id = url.searchParams.get("signin");
+    if (!id || url.searchParams.get("provider") !== provider.id) return;
+    let disposed = false;
+    void api<AuthFlow>(`${path}/login/${encodeURIComponent(id)}`).then(async flow => {
+      if (disposed) return;
+      url.searchParams.delete("signin");
+      url.searchParams.delete("provider");
+      history.replaceState(null, "", url);
+      setLogin(flow);
+      if (flow.state === "complete") await refreshRef.current();
+    }).catch(e => { if (!disposed) setError(explain(e)); });
+    return () => { disposed = true; };
+  }, [path, provider.id]);
   const active = login && ["starting", "waiting"].includes(login.state) ? login.id : undefined;
   const act = async (fn: () => Promise<void>) => { setBusy(true); setError(""); try { await fn(); } catch (e) { setError(explain(e)); } finally { setBusy(false); } };
   const start = (method: LoginMethod) => void act(async () => {
@@ -72,6 +87,7 @@ export function ProviderAuth({ provider, base, refresh }: { provider: ProviderCo
     </div>}
     {active && <div className="signin-flow">
       {notice && notice.kind !== "info" && notice.url.startsWith("https://") && <a href={notice.url} target="_blank" rel="noreferrer">Continue in browser ↗</a>}
+      {notice?.kind === "link" && <p role="status">{login?.relay === "ready" ? "Browser callback ready. Return here after approving." : login?.relay === "forwarded" ? "Response received; waiting for Pi to confirm sign-in…" : "Automatic return unavailable. Paste the code or final redirect URL below."}</p>}
       {notice?.kind === "link" && notice.instructions && <p>{notice.instructions}</p>}
       {notice?.kind === "device_code" && <p>Code: <code>{notice.code}</code></p>}
       {notice?.kind === "info" && <p>{notice.message}</p>}
@@ -83,6 +99,7 @@ export function ProviderAuth({ provider, base, refresh }: { provider: ProviderCo
       {!prompt && <span role="status">{login?.state === "starting" ? "Starting sign-in…" : "Waiting for sign-in…"}</span>}
       <button className="text-button" disabled={busy} onClick={() => void act(async () => { await api(`${path}/login/${active}`, { method: "DELETE" }); setLogin(undefined); })}>Cancel</button>
     </div>}
+    {login?.state === "complete" && <p role="status">Sign-in complete.</p>}
     {login?.state === "failed" && <div role="alert" className="inline-error">{login.message}</div>}
     {!active && supportsOAuth && supportsApiKey && <details><summary>API key</summary><button disabled={busy} onClick={() => start("api_key")}>Enter API key</button></details>}
     {error && <div role="alert" className="inline-error">{error}</div>}

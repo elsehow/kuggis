@@ -2,6 +2,7 @@
 import type { AuthNotice } from "./AuthNotice";
 import type { AuthPrompt } from "./AuthPrompt";
 import type { Provider } from "./Provider";
+import type { RelayState } from "./RelayState";
 import type { RequestId } from "./RequestId";
 
-export type AuthFlow = { id: RequestId, provider: Provider, } & ({ "state": "starting" } | { "state": "waiting", notice: AuthNotice | null, prompt: AuthPrompt | null, } | { "state": "complete" } | { "state": "failed", message: string, } | { "state": "cancelled" });
+export type AuthFlow = { id: RequestId, provider: Provider, relay: RelayState, } & ({ "state": "starting" } | { "state": "waiting", notice: AuthNotice | null, prompt: AuthPrompt | null, } | { "state": "complete" } | { "state": "failed", message: string, } | { "state": "cancelled" });
