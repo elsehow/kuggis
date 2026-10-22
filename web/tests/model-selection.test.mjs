@@ -54,7 +54,7 @@ test("new-chat model selection refreshes the header before the first prompt", { 
     await route.continue();
   });
   await page.goto(url);
-  await page.getByRole("button", { name: "local", exact: true }).click();
+  // The first available cell now opens automatically in the sidebar layout.
   await page.getByRole("textbox", { name: "Message", exact: true }).fill("Keep this draft");
   await requestModel("Second model");
   await modelRequest;
