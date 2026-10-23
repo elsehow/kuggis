@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { createPiHttpClient } from "@assistant-ui/react-pi";
@@ -60,7 +60,11 @@ test("legacy cells migrate atomically, retain aliases and chats, and reject chan
   assert.ok(snapshot.messages.some(m => m.role === "assistant"));
   assert.deepEqual((await json(await fetch(f.url() + `/api/cells/${parent.id}/pi/threads/${chat.metadata.id}`))).metadata, snapshot.metadata);
   await json(await post(f.url() + `/api/cells/${parent.id}/rename`, { name: "renamed" }));
-  assert.equal((await post(f.url() + `/api/cells/${child.id}/rename`, { name: "parent" })).status, 400);
+  assert.equal((await post(f.url() + `/api/cells/${child.id}/rename`, { name: "renamed" })).status, 400, "current labels stay unique");
+  await json(await post(f.url() + `/api/cells/${child.id}/rename`, { name: "parent" }));
+  const ambiguous = spawnSync(binary, ["plan", join(f.dir, "tree"), "parent"], { encoding: "utf8", timeout: 5000 });
+  assert.equal(ambiguous.status, 2);
+  assert.match(ambiguous.stderr, /ambiguous; use a cell UUID/);
   assert.equal((await fetch(f.url() + "/api/cells/renamed/health")).status, 404, "display labels never become runtime routes");
   assert.equal(await readFile(join(f.dir, "tree/parent.json"), "utf8"), f.parent);
   assert.equal(await readFile(join(f.dir, "tree/parent/child.json"), "utf8"), f.child);
@@ -68,6 +72,7 @@ test("legacy cells migrate atomically, retain aliases and chats, and reject chan
   const restored = await json(await fetch(f.url() + "/api/cells"));
   assert.equal(restored.cells.find(c => c.id === parent.id).name, "renamed");
   assert.equal(restored.cells.find(c => c.id === child.id).parent, parent.id);
+  assert.equal(restored.cells.find(c => c.id === child.id).name, "parent");
   assert.deepEqual((await json(await fetch(base() + `/pi/threads/${chat.metadata.id}`))).metadata, snapshot.metadata);
   const after = await json(await fetch(base() + `/pi/threads/${chat.metadata.id}`));
   assert.deepEqual(after.messages, snapshot.messages, "migration and restart never replay the prompt");
@@ -96,6 +101,19 @@ test("browser migration and rename retain the selected chat and draft", { skip: 
   await page.getByRole("textbox", { name: "Cell name", exact: true }).fill("new-parent");
   await page.getByRole("button", { name: "Rename", exact: true }).click();
   await page.getByRole("heading", { name: "new-parent", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Close settings", exact: true }).click();
+  assert.equal(await composer.inputValue(), "Keep my unsent draft");
+  assert.equal(new URL(page.url()).searchParams.get("cell"), selected);
+  assert.equal(new URL(page.url()).searchParams.get("chat"), chat.metadata.id);
+  const inventory = await json(await fetch(f.url() + "/api/cells"));
+  const child = inventory.cells.find(c => c.binding === "child");
+  await json(await post(f.url() + `/api/cells/${child.id}/rename`, { name: "parent" }));
+  // Reload the inventory through settings; UUID selection and the draft remain
+  // attached to the original cell even after another cell reuses its old name.
+  await page.getByRole("button", { name: "Cell settings", exact: true }).click();
+  await page.getByRole("textbox", { name: "Cell name", exact: true }).fill("dev");
+  await page.getByRole("button", { name: "Rename", exact: true }).click();
+  await page.getByRole("heading", { name: "dev", exact: true }).waitFor();
   await page.getByRole("button", { name: "Close settings", exact: true }).click();
   assert.equal(await composer.inputValue(), "Keep my unsent draft");
   assert.equal(new URL(page.url()).searchParams.get("cell"), selected);

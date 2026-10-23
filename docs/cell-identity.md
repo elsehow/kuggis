@@ -58,8 +58,9 @@ plans already bind pinned keys and revisions; public-key custody is unchanged.
 Use **Cell settings → Cell name → Rename**, or
 `POST /api/cells/UUID/rename` with `{"name":"new-name"}`. Rename is serialized
 with cell changes and refuses unfinished setup/deletion, duplicate labels and
-reserved runtime/UUID aliases. It changes no runtime configuration, grant, key,
-workspace, conversation, resource custody or parent/child relationship.
+reserved UUIDs. Previous display names may be reused by other cells; legacy
+runtime aliases do not reserve display names. It changes no runtime configuration,
+grant, key, workspace, conversation, resource custody or parent/child relationship.
 
 The Cells API supplies `id`, `name`, immutable `binding` and the parent's route ID.
 Unmigrated cells temporarily use their legacy route as `id` and cannot be renamed.
@@ -77,7 +78,10 @@ changed bindings fail closed and require a separately reviewed repair.
 Tree-scoped CLI commands (`plan`, `apply`, `brief`, `pull`, `login`) resolve current
 labels or UUIDs through the registry and check pins. Low-level signing and door
 protocols continue to use runtime bindings. Legacy CLI-created cells can be
-registered in a subsequent migration; the operator never generates identities
+registered in a subsequent migration. If a CLI name matches one cell’s current
+label and another cell’s legacy binding, the command refuses it and asks for a
+UUID. HTTP legacy routes remain fixed to their original cell, and the UI uses
+UUIDs for current links. The operator never generates identities
 implicitly while reading files.
 
 ## Rollout and rollback
