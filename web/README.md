@@ -83,6 +83,10 @@ separately. Check asks Pi to resolve credentials and verifies the Claude account
 it makes no model request. Account observations are dated and are invalidated
 when the saved credential changes.
 
+If a cell has no available models, **Choose model** explains the missing setup
+and opens provider settings. Enable and sign in to a provider, close settings,
+then select a model. Catalog failures offer a retry without losing the draft.
+
 Paper Instruments uses the same API-key form and Pi credential store. Granting
 it seeds `ultramarine-1-flash` in Pi's `models.json`, preserving existing custom
 configuration. Its grant allows only `api.paperinstruments.com`. The adapter
@@ -212,3 +216,5 @@ Set `KUGGIS_TEST_BROWSER` to a Chromium executable if it is outside Playwright's
 default installation. The test delays the model write to reproduce the
 new-chat race, then checks the header, draft, first response, reload, and
 failed model changes. It makes no provider requests.
+It also covers an empty catalog, opening provider settings, retrying a failed
+catalog request, and sending the first message without a default model.
