@@ -129,7 +129,10 @@ mod tests {
     fn receipts_survive_restart_and_refuse_reuse_for_different_commands() {
         let path = std::env::temp_dir().join(format!("cell-requests-{}", RequestId::generate()));
         let journal = RequestJournal::new(&path).unwrap();
-        let session = Session::new("dev".parse().unwrap(), "".into());
+        let session = Session::new(
+            "b48244b7-ed96-57fa-a3a2-e7629b8c921e".parse().unwrap(),
+            "".into(),
+        );
         let mut command = SessionCommand {
             request: RequestId::generate(),
             session: session.reference(),
@@ -147,7 +150,7 @@ mod tests {
             RequestJournal::new(&path).unwrap().claim(&command).unwrap(),
             Claim::Recorded(Receipt::Accepted)
         ));
-        command.session.cell = "other".parse().unwrap();
+        command.session.cell = "70ee78ad-5e3a-510a-af20-6f485ecb6f16".parse().unwrap();
         assert_eq!(
             journal.claim(&command).unwrap_err().kind(),
             io::ErrorKind::AlreadyExists

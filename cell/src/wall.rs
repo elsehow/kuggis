@@ -808,7 +808,7 @@ fn voice(cell: Option<&Cell>) -> Probe {
     };
     let said = Said::Session {
         session: crate::SessionRef {
-            cell: cell.name.clone(),
+            cell: cell.id.clone(),
             id: crate::SessionId::generate(),
         },
         state: State::Idle,
@@ -1036,7 +1036,7 @@ pub fn check() -> Fallible<Statement> {
     let statement = log::append(
         Path::new(SAID),
         &secret,
-        cell.name.clone(),
+        cell.id.clone(),
         Said::Checked {
             cell: hash,
             ok,

@@ -1,3 +1,5 @@
+#[path = "fixtures/common.rs"]
+mod fixtures;
 use cell::publish::{
     artifact::{Artifact, Entry},
     hosting,
@@ -5,7 +7,7 @@ use cell::publish::{
     transport::{self, Command, Reply, SignedRequest, Upload},
     PublishScope, SiteId,
 };
-use cell::{Cell, Grant, RequestId, Secret, Tree};
+use cell::{Grant, RequestId, Secret, Tree};
 use std::{fs, path::PathBuf};
 
 struct Fixture {
@@ -21,14 +23,14 @@ impl Fixture {
         let registry = Registry::create(&root.join("registry")).unwrap();
         let secret = Secret::generate();
         let ns = registry.allocate_namespace(secret.public()).unwrap();
-        let cell = Cell::new(
-            "author".parse().unwrap(),
+        let cell = fixtures::cell(
+            "489d239e-1b05-546d-a0ca-abd828de38b9".parse().unwrap(),
             [Grant::Publish(PublishScope::Namespace(ns.clone()))],
         );
         registry
             .approve_tree(
                 &Tree::new([(cell.clone(), None)]).unwrap(),
-                &[(cell.name, secret.public())].into(),
+                &[(cell.id, secret.public())].into(),
             )
             .unwrap();
         registry
@@ -89,12 +91,12 @@ fn artifacts_reject_traversal_duplicates_hidden_files_and_resource_exhaustion() 
     for bad in [
         "../secret",
         "/secret",
-        "a/../b",
-        "a\\b",
-        "a//b",
+        "904254dc-1b8f-5e80-9755-e5afc5b195c5/../b",
+        "904254dc-1b8f-5e80-9755-e5afc5b195c5\\b",
+        "904254dc-1b8f-5e80-9755-e5afc5b195c5//b",
         ".env",
         ".git/config",
-        "x/%2e%2e/a",
+        "x/%2e%2e/904254dc-1b8f-5e80-9755-e5afc5b195c5",
         "x?y",
         "ü",
         "",
@@ -112,7 +114,7 @@ fn artifacts_reject_traversal_duplicates_hidden_files_and_resource_exhaustion() 
     assert!(duplicate.validate().is_err());
     let mut conflict = artifact("ok");
     conflict.files.push(Entry {
-        path: "index.html/child".into(),
+        path: "index.html/e3e321ad-3f5e-5221-9ec8-ccc87947084b".into(),
         bytes: vec![],
     });
     assert!(conflict.validate().is_err());
@@ -244,7 +246,7 @@ fn mismatched_artifact_replay_revocation_and_foreign_versions_cannot_change_live
     ));
     let other_site = SiteId {
         namespace: f.site.namespace.clone(),
-        name: "other".parse().unwrap(),
+        name: "70ee78ad-5e3a-510a-af20-6f485ecb6f16".parse().unwrap(),
     };
     let other_command = f.sign(Command::Publish {
         site: other_site.clone(),

@@ -6,7 +6,7 @@ use cell::door::{Door, Knock};
 use cell::exe::{Integration, Listing, Observed, Ssh};
 use cell::grant::Provider;
 use cell::proxy::{system_resolver, Policy, Proxy};
-use cell::{Approved, Cell, Hash, Key, Name, Plan, Said, Secret, Statement, Tree};
+use cell::{Approved, Cell, CellId, Hash, Key, Plan, Said, Secret, Statement, Tree};
 use cell::{RequestId, SessionId, SessionRef};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -37,7 +37,7 @@ usage:
                                   re-planning before each; LINUX_CELL is shipped to
                                   a box for setup (give plan the same one); keys are
                                   pinned in DIR/.pins
-  cell adopt VM NAME              tag an existing VM as NAME's root
+  cell adopt VM CELL_ID              tag an existing VM as NAME's root
   cell observe [--from DIR]       read exe.dev (or DIR/ls.json + DIR/int.json) as
                                   cells and doors
   cell publish DIR --site NAME [--config FILE]
@@ -148,10 +148,15 @@ fn publisher(args: &[String]) -> Fallible {
     match args.first().map(String::as_str) {
         Some("resource-rpc") if args.len() == 2 => {
             let mut bytes = vec![];
-            io::stdin().take(cell::resource_rpc::MAX_RPC_BYTES as u64 + 1).read_to_end(&mut bytes)?;
-            if bytes.len() > cell::resource_rpc::MAX_RPC_BYTES { return Err("resource RPC exceeds limit".into()); }
+            io::stdin()
+                .take(cell::resource_rpc::MAX_RPC_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > cell::resource_rpc::MAX_RPC_BYTES {
+                return Err("resource RPC exceeds limit".into());
+            }
             let command = serde_json::from_slice(&bytes)?;
-            let reply = cell::resource_rpc::execute_wire(&Registry::open(Path::new(&args[1]))?, command);
+            let reply =
+                cell::resource_rpc::execute_wire(&Registry::open(Path::new(&args[1]))?, command);
             println!("{}", serde_json::to_string(&reply)?);
         }
         Some("init") if args.len() == 2 => {
@@ -369,7 +374,7 @@ fn key(args: &[String]) -> Fallible {
 }
 
 fn say(args: &[String]) -> Fallible {
-    let cell: Name = arg(args, 0, "CELL")?.parse()?;
+    let cell: CellId = arg(args, 0, "CELL")?.parse()?;
     let seq: u64 = arg(args, 1, "SEQ")?.parse()?;
     let secret: Secret = fs::read_to_string(arg(args, 2, "SECRET")?)?.parse()?;
     let said: Said = stdin_json()?;
@@ -403,32 +408,43 @@ fn tree(args: &[String]) -> Fallible {
     let tree = load_tree(arg(args, 0, "DIR")?)?;
     for c in tree.iter() {
         let parent = tree
-            .parent(&c.name)
-            .map_or("-".to_string(), |p| p.name.to_string());
+            .parent(&c.id)
+            .map_or("-".to_string(), |p| p.id.to_string());
         println!(
-            "{}\t{}\t{} grants\t{}",
-            c.name,
+            "{}\t{}\t{} grants\t{}\t{}",
+            c.id,
             parent,
             c.grants.len(),
-            c.hash()
+            c.hash(),
+            c.name
         );
     }
     Ok(())
 }
 
-/// The directory is the tree: `DIR/x.json` is a cell under `DIR`'s own
-/// cell, and `DIR/x/` holds x's children. Re-parenting is `mv`. Dot
+/// The directory is the tree: `<id>.json` declares a cell and `<id>/` holds
+/// its children. Re-parenting is `mv`. Dot
 /// entries and files that are not `.json` are skipped.
 /// The cells named on the command line: NAME alone, or every cell in the tree.
-fn named(tree: &Tree, args: &[String]) -> Fallible<Vec<Name>> {
+fn resolve(tree: &Tree, input: &str) -> Fallible<CellId> {
+    if let Ok(id) = input.parse::<CellId>() {
+        if tree.get(&id).is_some() {
+            return Ok(id);
+        }
+    }
+    tree.iter()
+        .find(|c| c.name.as_str() == input)
+        .map(|c| c.id.clone())
+        .ok_or_else(|| format!("{input}: not in the tree").into())
+}
+
+fn named(tree: &Tree, args: &[String]) -> Fallible<Vec<CellId>> {
     match args.get(1).filter(|a| !a.starts_with("--")) {
         Some(n) => {
-            let name: Name = n.parse()?;
-            tree.get(&name)
-                .ok_or_else(|| format!("{name}: not in the tree"))?;
+            let name = resolve(&tree, n)?;
             Ok(vec![name])
         }
-        None => Ok(tree.iter().map(|c| c.name.clone()).collect()),
+        None => Ok(tree.iter().map(|c| c.id.clone()).collect()),
     }
 }
 
@@ -440,7 +456,7 @@ fn plan(args: &[String]) -> Fallible {
     let dir = arg(args, 0, "DIR")?;
     let tree = load_tree(dir)?;
     let names = named(&tree, args)?;
-    let plans: BTreeMap<Name, Plan> = match flag(args, "--have") {
+    let plans: BTreeMap<CellId, Plan> = match flag(args, "--have") {
         Some(path) => {
             let seen: Observed = serde_json::from_str(&fs::read_to_string(path)?)?;
             let on_box = flag(args, "--box").map(str::parse::<Hash>).transpose()?;
@@ -448,7 +464,7 @@ fn plan(args: &[String]) -> Fallible {
                 .iter()
                 .map(|n| {
                     let want = tree.get(n).expect("named from the tree");
-                    let children = tree.children(n).map(|c| c.name.clone()).collect();
+                    let children = tree.children(n).map(|c| c.id.clone()).collect();
                     let on_box = on_box.map(|h| (h, Hash::ZERO));
                     let plan = Plan::new(want, &children, seen.of(n), on_box, None);
                     (n.clone(), plan)
@@ -487,7 +503,7 @@ fn apply(args: &[String]) -> Fallible {
 
 fn adopt(args: &[String]) -> Fallible {
     let vm = arg(args, 0, "VM")?;
-    let name: Name = arg(args, 1, "NAME")?.parse()?;
+    let name: CellId = arg(args, 1, "CELL_ID")?.parse()?;
     Ssh { bin: None }.run(&["tag", vm, &format!("{}{name}", cell::cell::TAG_PREFIX)])?;
     println!("{vm} is now the root of {name}; plan it");
     Ok(())
@@ -565,7 +581,7 @@ fn door(args: &[String]) -> Fallible {
     let said = flag(args, "--said").ok_or("door: --said DIR")?;
     let inbox = flag(args, "--inbox").ok_or("door: --inbox DIR")?;
     let listener = TcpListener::bind(listen)?;
-    eprintln!("cell {}: door on {}", cell.name, listener.local_addr()?);
+    eprintln!("cell {}: door on {}", cell.id, listener.local_addr()?);
     Arc::new(Door::new(&cell, said, inbox)).serve(listener)?;
     Ok(())
 }
@@ -587,7 +603,7 @@ fn ship(args: &[String]) -> Fallible {
     }
     eprintln!(
         "cell {}: shipping {} into {}",
-        cell.name,
+        cell.id,
         outbox.display(),
         said.display()
     );
@@ -604,7 +620,7 @@ fn knock(args: &[String]) -> Fallible {
 }
 
 /// The VM that is NAME's root, from a live listing.
-fn root_of(ssh: &Ssh, tree: &Tree, name: &Name) -> Fallible<String> {
+fn root_of(ssh: &Ssh, tree: &Tree, name: &CellId) -> Fallible<String> {
     tree.get(name)
         .ok_or_else(|| format!("{name}: not in the tree"))?;
     let (vms, _) = ssh.listing()?;
@@ -616,7 +632,7 @@ fn root_of(ssh: &Ssh, tree: &Tree, name: &Name) -> Fallible<String> {
 
 fn brief(args: &[String]) -> Fallible {
     let tree = load_tree(arg(args, 0, "DIR")?)?;
-    let name: Name = arg(args, 1, "NAME")?.parse()?;
+    let name = resolve(&tree, arg(args, 1, "NAME")?)?;
     let session: SessionId = arg(args, 2, "SESSION_ID")?.parse()?;
     let request = flag(args, "--request")
         .map(str::parse)
@@ -642,7 +658,7 @@ fn brief(args: &[String]) -> Fallible {
 fn pull(args: &[String]) -> Fallible {
     let dir = arg(args, 0, "DIR")?;
     let tree = load_tree(dir)?;
-    let name: Name = arg(args, 1, "NAME")?.parse()?;
+    let name = resolve(&tree, arg(args, 1, "NAME")?)?;
     let since: u64 = flag(args, "--since").map_or(Ok(0), str::parse)?;
     let ssh = Ssh { bin: None };
     let vm = root_of(&ssh, &tree, &name)?;
@@ -668,7 +684,7 @@ fn pull(args: &[String]) -> Fallible {
 
 fn login(args: &[String]) -> Fallible {
     let tree = load_tree(arg(args, 0, "DIR")?)?;
-    let name: Name = arg(args, 1, "NAME")?.parse()?;
+    let name = resolve(&tree, arg(args, 1, "NAME")?)?;
     let vm = root_of(&Ssh { bin: None }, &tree, &name)?;
     eprintln!("opening Pi as the agent on {vm}; use /login there");
     let pi = cell::wall::PI_BIN;
@@ -693,7 +709,7 @@ fn proxy(args: &[String]) -> Fallible {
     let listener = TcpListener::bind(listen)?;
     eprintln!(
         "cell {}: proxy on {} for {} hosts",
-        cell.name,
+        cell.id,
         listener.local_addr()?,
         policy.hosts.len()
     );

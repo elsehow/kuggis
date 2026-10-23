@@ -85,7 +85,7 @@ pub(super) fn prepare(
         op.config
             .tree
             .join(".pins")
-            .join(format!("{}.pub", cell.name)),
+            .join(format!("{}.pub", cell.id)),
     ) {
         Ok(key) => Some(CellIdentity(key.parse().map_err(bad)?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,

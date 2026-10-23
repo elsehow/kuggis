@@ -3,7 +3,7 @@
 use crate::{
     apply::{self, Edge},
     exe::Ssh,
-    Approved, Cell, Hash, Name, Plan, RequestId, Tree,
+    Approved, Cell, CellId, Hash, Name, Plan, RequestId, Tree,
 };
 use axum::{
     body::Body,
@@ -27,8 +27,8 @@ mod access;
 pub(crate) mod creation;
 pub(crate) mod deletion;
 mod oauth;
-pub(crate) mod resources;
 pub(crate) mod resource_cleanup;
+pub(crate) mod resources;
 pub use access::Access;
 
 #[derive(Serialize, ts_rs::TS)]
@@ -40,8 +40,9 @@ enum Mode {
 
 #[derive(Serialize, ts_rs::TS)]
 pub(crate) struct CellView {
+    id: CellId,
     name: Name,
-    parent: Option<Name>,
+    parent: Option<CellId>,
     grants: std::collections::BTreeSet<crate::Grant>,
     vm: Option<String>,
     lifecycle: Lifecycle,
@@ -86,7 +87,9 @@ fn lifecycle(
             deletion::DeletionPhase::Failed { message, .. } => Lifecycle::Blocked {
                 message: message.clone(),
             },
-            deletion::DeletionPhase::Review => Lifecycle::Blocked { message: "Resource cleanup has started; review deletion to finish".into() },
+            deletion::DeletionPhase::Review => Lifecycle::Blocked {
+                message: "Resource cleanup has started; review deletion to finish".into(),
+            },
             _ => Lifecycle::Declared,
         };
     }
@@ -147,13 +150,13 @@ struct Change {
     after: Tree,
     cell: Cell,
     path: PathBuf,
-    plans: BTreeMap<Name, Plan>,
+    plans: BTreeMap<CellId, Plan>,
 }
 struct Operator {
     config: Config,
     authority: String,
     relays: Mutex<BTreeMap<String, oauth::Relay>>,
-    vms: tokio::sync::RwLock<BTreeMap<Name, String>>,
+    vms: tokio::sync::RwLock<BTreeMap<CellId, String>>,
     edge: Arc<dyn Edge + Send + Sync>,
     changes: Mutex<BTreeMap<RequestId, Change>>,
     applying: Arc<Mutex<()>>,
@@ -175,10 +178,10 @@ fn fail(e: impl ToString) -> Error {
 }
 
 impl Operator {
-    fn tree(&self) -> Result<(Tree, BTreeMap<Name, PathBuf>)> {
+    fn tree(&self) -> Result<(Tree, BTreeMap<CellId, PathBuf>)> {
         crate::tree::load(&self.config.tree).map_err(bad)
     }
-    async fn forward(&self, name: &Name, mut request: Request) -> Result<Response> {
+    async fn forward(&self, name: &CellId, mut request: Request) -> Result<Response> {
         deletion::ensure_available(&self.config.state, name)?;
         if self.tree()?.0.get(name).is_none() {
             return Err(Error(StatusCode::NOT_FOUND, "Cell not found".into()));
@@ -278,22 +281,23 @@ async fn cells(State(op): State<Arc<Operator>>) -> Result<Json<CellsView>> {
     let jobs = creation::list(&op.config.state).map_err(fail)?;
     let deletions = deletion::list(&op.config.state).map_err(fail)?;
     let vms = op.vms.read().await;
-    let row = |cell: &Cell, parent: Option<Name>, creation: Option<&creation::Creation>| {
+    let row = |cell: &Cell, parent: Option<CellId>, creation: Option<&creation::Creation>| {
         let deletion = deletions
             .iter()
-            .find(|j| j.cell().name == cell.name && j.active());
-        let vm = vms.get(&cell.name).cloned();
+            .find(|j| j.cell().id == cell.id && j.active());
+        let vm = vms.get(&cell.id).cloned();
         let socket_available = op
             .config
             .sockets
             .as_ref()
-            .is_some_and(|dir| dir.join(format!("{}.sock", cell.name)).exists());
+            .is_some_and(|dir| dir.join(format!("{}.sock", cell.id)).exists());
         let lifecycle = lifecycle(
             creation.map(|j| &j.phase),
             deletion.map(|j| &j.phase),
             vm.is_some() || socket_available,
         );
         CellView {
+            id: cell.id.clone(),
             name: cell.name.clone(),
             parent,
             grants: cell.grants.clone(),
@@ -308,9 +312,8 @@ async fn cells(State(op): State<Arc<Operator>>) -> Result<Json<CellsView>> {
         .map(|cell| {
             row(
                 cell,
-                tree.parent(&cell.name).map(|c| c.name.clone()),
-                jobs.iter()
-                    .find(|j| j.cell.name == cell.name && j.is_current()),
+                tree.parent(&cell.id).map(|c| c.id.clone()),
+                jobs.iter().find(|j| j.cell.id == cell.id && j.is_current()),
             )
         })
         .collect();
@@ -318,12 +321,12 @@ async fn cells(State(op): State<Arc<Operator>>) -> Result<Json<CellsView>> {
         matches!(
             j.phase,
             creation::CreationPhase::Provisioning { .. } | creation::CreationPhase::Failed { .. }
-        ) && tree.get(&j.cell.name).is_none()
+        ) && tree.get(&j.cell.id).is_none()
     }) {
         cells.push(row(&job.cell, job.parent.clone(), Some(job)));
     }
     for job in deletions.iter().filter(|j| j.active()) {
-        if !cells.iter().any(|c| c.name == job.cell().name) {
+        if !cells.iter().any(|c| c.id == job.cell().id) {
             cells.push(row(job.cell(), job.parent().clone(), None));
         }
     }
@@ -342,7 +345,7 @@ async fn cells(State(op): State<Arc<Operator>>) -> Result<Json<CellsView>> {
 
 async fn proxy(
     State(op): State<Arc<Operator>>,
-    Path((name, tail)): Path<(Name, String)>,
+    Path((name, tail)): Path<(CellId, String)>,
     mut request: Request,
 ) -> Result<Response> {
     // Only the cell API is reachable. The caller cannot supply a remote path,
@@ -378,6 +381,82 @@ async fn proxy(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Rename {
+    name: Name,
+}
+
+/// Labels are operator metadata, not runtime configuration. Never contact or
+/// restart the VM, change a pin, or rewrite a signed statement for a rename.
+async fn rename(
+    State(op): State<Arc<Operator>>,
+    Path(id): Path<CellId>,
+    Json(input): Json<Rename>,
+) -> Result<StatusCode> {
+    let _lock = op.applying.try_lock().map_err(|_| {
+        Error(
+            StatusCode::CONFLICT,
+            "Another cell change is in progress".into(),
+        )
+    })?;
+    deletion::ensure_available(&op.config.state, &id)?;
+    let jobs = creation::list(&op.config.state).map_err(fail)?;
+    if jobs.iter().any(|j| {
+        j.cell.id == id
+            && matches!(
+                j.phase,
+                creation::CreationPhase::Provisioning { .. }
+                    | creation::CreationPhase::Failed { .. }
+            )
+    }) {
+        return Err(Error(
+            StatusCode::CONFLICT,
+            "Finish cell setup before renaming".into(),
+        ));
+    }
+    let (tree, paths) = op.tree()?;
+    let mut cell = tree
+        .get(&id)
+        .ok_or_else(|| Error(StatusCode::NOT_FOUND, "Cell not found".into()))?
+        .clone();
+    if tree.iter().any(|c| c.id != id && c.name == input.name)
+        || jobs.iter().any(|j| {
+            j.cell.id != id
+                && j.is_current()
+                && tree.get(&j.cell.id).is_none()
+                && j.cell.name == input.name
+        })
+    {
+        return Err(Error(
+            StatusCode::CONFLICT,
+            "A cell with this name already exists".into(),
+        ));
+    }
+    cell.name = input.name;
+    let path = &paths[&id];
+    let temp = path.with_file_name(format!(".{}.{}.tmp", id, RequestId::generate()));
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    let permissions = fs::metadata(path).map_err(fail)?.permissions();
+    let result = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        file.set_permissions(permissions)?;
+        file.write_all(&cell.canonical())?;
+        file.sync_all()?;
+        fs::rename(&temp, path)?;
+        fs::File::open(path.parent().unwrap())?.sync_all()
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result.map_err(fail)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Edit {
     grants: std::collections::BTreeSet<crate::Grant>,
 }
@@ -385,12 +464,12 @@ struct Edit {
 pub(crate) struct Preview {
     id: RequestId,
     approval: Hash,
-    plans: BTreeMap<Name, Plan>,
+    plans: BTreeMap<CellId, Plan>,
 }
 
 async fn preview(
     State(op): State<Arc<Operator>>,
-    Path(name): Path<Name>,
+    Path(name): Path<CellId>,
     Json(edit): Json<Edit>,
 ) -> Result<Json<Preview>> {
     deletion::ensure_available(&op.config.state, &name)?;
@@ -399,15 +478,19 @@ async fn preview(
         .get(&name)
         .ok_or_else(|| bad("Cell not found"))?
         .clone();
-    let cell = Cell::new(name.clone(), edit.grants);
+    let mut cell = before
+        .get(&name)
+        .ok_or_else(|| bad("Cell not found"))?
+        .clone();
+    cell.grants = edit.grants;
     let after = Tree::new(before.iter().map(|c| {
         (
-            if c.name == name {
+            if c.id == name {
                 cell.clone()
             } else {
                 c.clone()
             },
-            before.parent(&c.name).map(|p| p.name.clone()),
+            before.parent(&c.id).map(|p| p.id.clone()),
         )
     }))
     .map_err(bad)?;
@@ -461,7 +544,7 @@ async fn apply_change(
         .await
         .remove(&id)
         .ok_or_else(|| bad("Preview expired; review the change again"))?;
-    deletion::ensure_available(&op.config.state, &change.cell.name)?;
+    deletion::ensure_available(&op.config.state, &change.cell.id)?;
     if op.tree()?.0 != change.before {
         return Err(Error(
             StatusCode::CONFLICT,
@@ -474,14 +557,14 @@ async fn apply_change(
         .uri("/api/pi/threads?includeArchived=true")
         .body(Body::empty())
         .unwrap();
-    let response = op.forward(&change.cell.name, request).await?;
+    let response = op.forward(&change.cell.id, request).await?;
     if !response.status().is_success() {
         return Err(fail("Cannot inspect active cell sessions"));
     }
     let bytes = axum::body::to_bytes(response.into_body(), 16 * 1024 * 1024)
         .await
         .map_err(fail)?;
-    check_idle_sessions(&bytes, &change.cell.name)?;
+    check_idle_sessions(&bytes, &change.cell.id)?;
     if op.tree()?.0 != change.before {
         return Err(Error(
             StatusCode::CONFLICT,
@@ -510,7 +593,7 @@ async fn apply_change(
     Ok(Json(AppliedChange { actions }))
 }
 
-fn check_idle_sessions(bytes: &[u8], cell: &Name) -> Result<()> {
+fn check_idle_sessions(bytes: &[u8], cell: &CellId) -> Result<()> {
     use crate::chat::types::{RunStatus, SessionSummary};
     let sessions: Vec<SessionSummary> = serde_json::from_slice(bytes).map_err(fail)?;
     if sessions.iter().any(|s| &s.cell != cell) {
@@ -601,7 +684,11 @@ fn router(op: Arc<Operator>) -> Router {
         .route("/api/creations/:id", get(creation::get))
         .route("/api/creations/:id/apply", post(creation::start))
         .route("/api/cells/:name/plan", post(preview))
-        .route("/api/cells/:name/delete-plan", post(deletion::preview_request))
+        .route("/api/cells/:name/rename", post(rename))
+        .route(
+            "/api/cells/:name/delete-plan",
+            post(deletion::preview_request),
+        )
         .route("/api/deletions/:id", get(deletion::get))
         .route("/api/deletions/:id/apply", post(deletion::start))
         .route("/api/changes/:id/apply", post(apply_change))
@@ -666,7 +753,7 @@ mod tests {
             lifecycle(
                 Some(&C::Ready {
                     session: crate::SessionRef {
-                        cell: "dev".parse().unwrap(),
+                        cell: "b48244b7-ed96-57fa-a3a2-e7629b8c921e".parse().unwrap(),
                         id: crate::SessionId::generate()
                     }
                 }),
@@ -679,7 +766,7 @@ mod tests {
             lifecycle(
                 Some(&C::Ready {
                     session: crate::SessionRef {
-                        cell: "dev".parse().unwrap(),
+                        cell: "b48244b7-ed96-57fa-a3a2-e7629b8c921e".parse().unwrap(),
                         id: crate::SessionId::generate()
                     }
                 }),
@@ -710,8 +797,8 @@ mod tests {
 
     #[test]
     fn restart_requires_complete_session_status_and_correct_owner() {
-        let cell: Name = "dev".parse().unwrap();
-        let session = json!({"id":crate::SessionId::generate(),"cell":"dev","status":"idle","title":"Ignored extra metadata"});
+        let cell: CellId = "b48244b7-ed96-57fa-a3a2-e7629b8c921e".parse().unwrap();
+        let session = json!({"id":crate::SessionId::generate(),"cell":"b48244b7-ed96-57fa-a3a2-e7629b8c921e","status":"idle","title":"Ignored extra metadata"});
         let check = |value| check_idle_sessions(&serde_json::to_vec(&value).unwrap(), &cell);
         assert!(check(json!([])).is_ok());
         assert!(check(json!([session])).is_ok());
@@ -730,10 +817,14 @@ mod tests {
         running["status"] = json!("running");
         assert_eq!(check(json!([running])).unwrap_err().0, StatusCode::CONFLICT);
         let mut other = session;
-        other["cell"] = json!("other");
+        other["cell"] = json!("70ee78ad-5e3a-510a-af20-6f485ecb6f16");
         assert_eq!(
             check(json!([other])).unwrap_err().0,
             StatusCode::BAD_GATEWAY
         );
     }
 }
+
+#[cfg(test)]
+#[path = "operator/identity_tests.rs"]
+mod identity_tests;

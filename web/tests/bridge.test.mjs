@@ -100,7 +100,7 @@ test("real React Pi client against the Rust bridge", { timeout: 45000 }, async (
   await client.renameThread(id, "Durable chat");
   await client.archiveThread(id);
   assert.deepEqual(await readJson(join(directory, "threads", `${id}.json`)), {
-    id, cell: "local", title: "Durable chat", archived: true,
+    id, cell: "00000000-0000-4000-8000-000000000000", title: "Durable chat", archived: true,
   });
   assert.equal((await client.listThreads()).length, 0);
   assert.equal((await client.listThreads({ includeArchived: true })).length, 1);
@@ -112,7 +112,7 @@ test("real React Pi client against the Rust bridge", { timeout: 45000 }, async (
   server = await start(directory); client = server.client;
   const after = await client.getThread(id);
   assert.equal(after.metadata.title, "Durable chat");
-  assert.equal(after.metadata.cell, "local");
+  assert.equal(after.metadata.cell, "00000000-0000-4000-8000-000000000000");
   assert.deepEqual(after.messages, before.messages);
   await client.sendMessage(id, { content: "[crash]" });
   await until(async () => (await client.listThreads())[0].status === "failed", "child exit reported");
@@ -124,10 +124,10 @@ test("cell-scoped commands and retry receipts survive restart", { timeout: 30000
   let server = await start(directory);
   t.after(async () => { await server.stop(); await rm(directory, { recursive: true, force: true }); });
   const { metadata: { id } } = await server.client.createThread();
-  const command = { request: opaqueId(), session: { cell: "local", id }, action: { prompt: { content: "once" } } };
+  const command = { request: opaqueId(), session: { cell: "00000000-0000-4000-8000-000000000000", id }, action: { prompt: { content: "once" } } };
   const send = (body) => post(`${server.url}/api/sessions/${id}/commands`, body);
-  assert.equal((await send({ ...command, session: { cell: "other", id } })).status, 403);
-  assert.equal((await send({ ...command, session: { cell: "local", id: opaqueId() } })).status, 400);
+  assert.equal((await send({ ...command, session: { cell: "70ee78ad-5e3a-510a-af20-6f485ecb6f16", id } })).status, 403);
+  assert.equal((await send({ ...command, session: { cell: "00000000-0000-4000-8000-000000000000", id: opaqueId() } })).status, 400);
   assert.equal((await send({ ...command, action: { prompt: { content: "   " } } })).status, 400);
   assert.equal((await fetch(`${server.url}/api/pi/threads/not-an-id`)).status, 400);
   assert.equal((await server.client.getThread(id)).messages.length, 0);
@@ -164,7 +164,7 @@ test("a lost runtime acknowledgement is never automatically resubmitted", async 
   let server = await start(directory);
   t.after(async () => { await server.stop(); await rm(directory, { recursive: true, force: true }); });
   const { metadata: { id } } = await server.client.createThread();
-  const command = { request: opaqueId(), session: { cell: "local", id }, action: { prompt: { content: "[no-ack]" } } };
+  const command = { request: opaqueId(), session: { cell: "00000000-0000-4000-8000-000000000000", id }, action: { prompt: { content: "[no-ack]" } } };
   assert.equal((await post(`${server.url}/api/sessions/${id}/commands`, command)).status, 502);
   await server.stop();
   server = await start(directory);
@@ -181,7 +181,7 @@ test("a rejected command stays rejected on replay, independently of a model resu
   let server = await start(directory);
   t.after(async () => { await server.stop(); await rm(directory, { recursive: true, force: true }); });
   const { metadata: { id } } = await server.client.createThread();
-  const command = { request: opaqueId(), session: { cell: "local", id }, action: { prompt: { content: "[reject]" } } };
+  const command = { request: opaqueId(), session: { cell: "00000000-0000-4000-8000-000000000000", id }, action: { prompt: { content: "[reject]" } } };
   const send = () => post(`${server.url}/api/sessions/${id}/commands`, command);
   let response = await send();
   assert.equal(response.status, 502);
@@ -211,15 +211,15 @@ test("legacy metadata is backed up and adopted without changing the transcript",
   const server = await start(directory);
   t.after(async () => { await server.stop(); await rm(directory, { recursive: true, force: true }); });
   assert.deepEqual(await readJson(`${path}.bak`), legacy);
-  assert.deepEqual(await readJson(path), { id, cell: "local", title: legacy.title, archived: true });
+  assert.deepEqual(await readJson(path), { id, cell: "00000000-0000-4000-8000-000000000000", title: legacy.title, archived: true });
   const restored = await server.client.getThread(id);
   assert.deepEqual(restored.messages, transcript);
   assert.equal(restored.metadata.status, "idle");
   assert.deepEqual(restored.metadata.queuedMessages, []);
   await server.stop();
-  const foreign = { id, cell: "another", title: "Foreign", archived: false };
+  const foreign = { id, cell: "68db3576-c08c-57b9-8853-165445ea6508", title: "Foreign", archived: false };
   await writeFile(path, JSON.stringify(foreign));
-  await assert.rejects(start(directory), /belongs to another, not local/);
+  await assert.rejects(start(directory), /belongs to 68db3576-c08c-57b9-8853-165445ea6508, not 00000000-0000-4000-8000-000000000000/);
   assert.deepEqual(await readJson(path), foreign, "a foreign session is never reassigned");
 });
 

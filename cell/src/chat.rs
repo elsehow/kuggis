@@ -1127,7 +1127,7 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
         .route(
             "/api/info",
             get(|State(store): State<Arc<Store>>| async move {
-                Json(json!({"workspace":store.config.workspace,"cell":store.config.cell(),"mode":if store.config.declaration().is_some() { "cell" } else { "local" },"runtime":"Pi"}))
+                Json(json!({"workspace":store.config.workspace,"cell":store.config.cell(),"name":store.config.declaration().map(|c| c.name.as_str()).unwrap_or("local"),"mode":if store.config.declaration().is_some() { "cell" } else { "local" },"runtime":"Pi"}))
             }),
         )
         .route("/api/pi/threads", get(list).post(create))
@@ -1338,9 +1338,12 @@ mod event_tests {
     use super::*;
 
     fn new_view() -> View {
-        let name: crate::Name = "dev".parse().unwrap();
-        let session = Session::new(name, "fixture".into());
-        View::new(ThreadMetadata::new(session, PathBuf::from("/fixture")))
+        let name: crate::CellId = "b48244b7-ed96-57fa-a3a2-e7629b8c921e".parse().unwrap();
+        let session = Session::new(name, "ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef".into());
+        View::new(ThreadMetadata::new(
+            session,
+            PathBuf::from("/ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef"),
+        ))
     }
 
     #[test]

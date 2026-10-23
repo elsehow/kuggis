@@ -29,13 +29,12 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(!!id);
   const delivered = useRef(false);
-  const parentCell = cells.find((c) => c.name === parent);
+  const parentCell = cells.find((c) => c.id === parent);
   const available = cells.filter((c) => c.lifecycle.state === "available");
-  const fullName = parent && !name.startsWith(parent + "-") ? `${parent}-${name}` : name;
   useEffect(() => { dialog.current?.showModal(); nameInput.current?.focus(); }, []);
   const selectParent = (value: string) => {
     setParent(value);
-    const grants = cells.find((c) => c.name === value)?.grants;
+    const grants = cells.find((c) => c.id === value)?.grants;
     setProviders(grants ? grants.flatMap((g) => "provider" in g ? [g.provider] : []) : ["anthropic"]);
     const code = grants?.find((g) => "code" in g);
     setRepo(code && "code" in code ? code.code.repo : "");
@@ -78,7 +77,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
       ...providers.map((provider) => ({ provider })),
       ...(repo.trim() ? [{ code: { repo: repo.trim(), write, ...(fork.trim() ? { via: fork.trim() } : {}) } }] : []),
     ];
-    const next = await api<Creation>("/api/cells/plan", { method: "POST", body: JSON.stringify({ name: fullName, parent: parent || null, grants }) });
+    const next = await api<Creation>("/api/cells/plan", { method: "POST", body: JSON.stringify({ name, parent: parent || null, grants }) });
     setJob(next); onId(next.id);
   });
   const start = () => work(async () => {
@@ -89,19 +88,19 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
     <header><h2 id="create-title">{job ? job.cell.name : "New cell"}</h2><button aria-label="Close new cell" disabled={busy} onClick={onClose}>×</button></header>
     {error && <div role="alert" className="inline-error">{error}</div>}
     {loading ? <p role="status">Loading…</p> : job ? <section>
-      <div className="creation-location">Cells{job.parent ? ` / ${job.parent}` : ""} / {job.parent && job.cell.name.startsWith(job.parent + "-") ? job.cell.name.slice(job.parent.length + 1) : job.cell.name}</div>
+      <div className="creation-location">Cells{job.parent ? ` / ${cells.find(c => c.id === job.parent)?.name ?? job.parent}` : ""} / {job.cell.name}</div>
       {job.phase.state === "review" ? <>
         <ul className="creation-grants">{job.cell.grants.map((g, i) => <li key={i}>{describe(g)}</li>)}</ul>
         <footer className="settings-actions"><button disabled={busy} onClick={edit}>Back</button><button className="primary" disabled={busy} onClick={() => void start()}>{busy ? "Starting…" : "Create cell"}</button></footer>
       </> : job.phase.state === "failed" ? <>
         <div role="alert" className="inline-error">{job.phase.message}</div>
         {job.phase.step && <p>Setup stopped while {steps[job.phase.step].toLocaleLowerCase()}</p>}
-        <footer className="settings-actions">{onDelete && <button className="delete-link" disabled={busy} onClick={() => onDelete(job.cell.name)}>Delete cell…</button>}{job.phase.recovery === "review" ? <button className="primary" disabled={busy} onClick={edit}>Review setup</button> : job.phase.recovery === "retry" && <button className="primary" disabled={busy} onClick={() => void start()}>{busy ? "Starting…" : "Retry setup"}</button>}</footer>
+        <footer className="settings-actions">{onDelete && <button className="delete-link" disabled={busy} onClick={() => onDelete(job.cell.id)}>Delete cell…</button>}{job.phase.recovery === "review" ? <button className="primary" disabled={busy} onClick={edit}>Review setup</button> : job.phase.recovery === "retry" && <button className="primary" disabled={busy} onClick={() => void start()}>{busy ? "Starting…" : "Retry setup"}</button>}</footer>
       </> : <p role="status">{job.phase.state === "ready" ? "Opening chat…" : job.phase.state === "deleted" ? "Cell deleted." : steps[job.phase.step]}</p>}
     </section> : <form onSubmit={(e) => { e.preventDefault(); void preview(); }}>
       <section className="cell-identity">
         <label>Name<input ref={nameInput} aria-label="Cell name" required pattern="[a-z0-9]+(-[a-z0-9]+)*" maxLength={63} placeholder="dev" value={name} onChange={(e) => setName(e.target.value)} /></label>
-        <label>Parent<select aria-label="Parent cell" value={parent} onChange={(e) => selectParent(e.target.value)}><option value="">None</option>{available.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}</select></label>
+        <label>Parent<select aria-label="Parent cell" value={parent} onChange={(e) => selectParent(e.target.value)}><option value="">None</option>{available.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
       </section>
       <section><h3>Repository</h3><div className="new-cell-repo">
         <input aria-label="Repository" list="parent-repositories" placeholder="owner/repository (optional)" value={repo} onChange={(e) => setRepo(e.target.value)} />
@@ -109,7 +108,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
         <select aria-label="Repository access" value={write ? "write" : "read"} onChange={(e) => setWrite(e.target.value === "write")}><option value="read">Read</option><option value="write">Write</option></select>
       </div><details open={!!fork}><summary>Fork</summary><input aria-label="Repository fork" placeholder="owner/repository" value={fork} onChange={(e) => setFork(e.target.value)} /></details></section>
       <ProviderChoices selected={providers} onChange={setProviders} disabled={id => !!parentCell && !parentCell.grants.some(g => "provider" in g && g.provider === id)} />
-      <footer className="settings-actions"><button className="primary" disabled={busy || !name || fullName.length > 63}>{busy ? "Checking…" : "Continue"}</button></footer>
+      <footer className="settings-actions"><button className="primary" disabled={busy || !name || name.length > 63}>{busy ? "Checking…" : "Continue"}</button></footer>
     </form>}
   </dialog>;
 }

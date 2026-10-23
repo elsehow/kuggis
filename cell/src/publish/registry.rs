@@ -15,7 +15,7 @@ pub mod resources;
 use super::{NamespaceId, PublicationReceipt, PublishScope, SiteId};
 use crate::prim::SiteName;
 use crate::prim::Url;
-use crate::{Grant, Hash, Key, Name, RequestId, Tree};
+use crate::{CellId, Grant, Hash, Key, RequestId, Tree};
 use resources::CleanupReceipt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -124,7 +124,7 @@ struct LegacyState {
 }
 
 impl State {
-    fn policy(&self, tree: &Tree, pins: &BTreeMap<Name, Key>) -> Result<Vec<Authority>> {
+    fn policy(&self, tree: &Tree, pins: &BTreeMap<CellId, Key>) -> Result<Vec<Authority>> {
         let mut authorities = vec![];
         let mut keys = BTreeSet::new();
         for cell in tree.iter() {
@@ -136,8 +136,8 @@ impl State {
                     _ => None,
                 })
                 .collect();
-            let key = *pins.get(&cell.name).ok_or_else(|| {
-                RegistryError::InvalidPolicy(format!("missing pin for {}", cell.name))
+            let key = *pins.get(&cell.id).ok_or_else(|| {
+                RegistryError::InvalidPolicy(format!("missing pin for {}", cell.id))
             })?;
             if !keys.insert(key.to_string()) {
                 return Err(RegistryError::InvalidPolicy(
@@ -425,7 +425,7 @@ impl Registry {
     /// Removing a grant/key revokes it on the next operation, across restarts.
     /// Operator approval may explicitly delegate an owner's namespace or site;
     /// it never changes ownership. No automatic key rotation/name inheritance.
-    pub fn approve_tree(&self, tree: &Tree, pins: &BTreeMap<Name, Key>) -> Result<()> {
+    pub fn approve_tree(&self, tree: &Tree, pins: &BTreeMap<CellId, Key>) -> Result<()> {
         self.transaction(|state| {
             state.authorities = state.policy(tree, pins)?;
             state.refresh_attachments();
@@ -444,7 +444,7 @@ impl Registry {
     pub fn plan_policy(
         &self,
         tree: &Tree,
-        pins: &BTreeMap<Name, Key>,
+        pins: &BTreeMap<CellId, Key>,
     ) -> Result<super::operator::PolicyPlan> {
         self.transaction(|state| {
             state.policy(tree, pins)?;
@@ -467,7 +467,7 @@ impl Registry {
     pub fn apply_policy(
         &self,
         tree: &Tree,
-        pins: &BTreeMap<Name, Key>,
+        pins: &BTreeMap<CellId, Key>,
         approval: &Hash,
     ) -> Result<()> {
         self.transaction(|state| {

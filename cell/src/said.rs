@@ -5,7 +5,7 @@
 
 use crate::canon;
 use crate::grant::Provider;
-use crate::prim::{hex_bytes, hex_string, Commit, Hash, Invalid, Name, Repo, Url};
+use crate::prim::{hex_bytes, hex_string, CellId, Commit, Hash, Invalid, Repo, Url};
 use crate::{RequestId, SessionRef};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -229,14 +229,14 @@ impl<'de> Deserialize<'de> for Sig {
 /// The bytes that are signed: cell, sequence and content, canonical.
 #[derive(Serialize)]
 struct Body<'a, T: Serialize> {
-    cell: &'a Name,
+    cell: &'a CellId,
     seq: u64,
     said: &'a T,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Statement {
-    pub cell: Name,
+    pub cell: CellId,
     pub seq: u64,
     said: Said,
     legacy: Option<crate::legacy::LegacySaid>,
@@ -270,7 +270,7 @@ impl<'de> Deserialize<'de> for Statement {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Wire {
-            cell: Name,
+            cell: CellId,
             seq: u64,
             said: Content,
             sig: Sig,
@@ -302,7 +302,7 @@ impl fmt::Display for Unverified {
 impl std::error::Error for Unverified {}
 
 impl Statement {
-    pub fn sign(secret: &Secret, cell: Name, seq: u64, said: Said) -> Statement {
+    pub fn sign(secret: &Secret, cell: CellId, seq: u64, said: Said) -> Statement {
         let bytes = canon::bytes(&Body {
             cell: &cell,
             seq,
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn legacy_logs_verify_without_changing_signed_bytes_or_reply_hashes() {
         let secret = Secret::generate();
-        let cell: Name = "dev".parse().unwrap();
+        let cell: CellId = "b48244b7-ed96-57fa-a3a2-e7629b8c921e".parse().unwrap();
         let legacy = crate::legacy::LegacySaid::Session {
             name: "s1".parse().unwrap(),
             harness: crate::legacy::Harness::Claude,
@@ -382,7 +382,7 @@ mod tests {
         };
         let sig = Sig(secret.0.sign(&canon::bytes(&signed)));
         let old = format!(
-            r#"{{"cell":"dev","seq":7,"said":{},"sig":{}}}"#,
+            r#"{{"cell":"b48244b7-ed96-57fa-a3a2-e7629b8c921e","seq":7,"said":{},"sig":{}}}"#,
             serde_json::to_string(&legacy).unwrap(),
             serde_json::to_string(&sig).unwrap()
         );
@@ -400,7 +400,12 @@ mod tests {
     #[test]
     fn round_trip() {
         let k = Secret::generate();
-        let s = Statement::sign(&k, "widget".parse().unwrap(), 1, said());
+        let s = Statement::sign(
+            &k,
+            "839960b4-330d-5e73-80ff-6de714463468".parse().unwrap(),
+            1,
+            said(),
+        );
         assert_eq!(s.open(&k.public()).unwrap(), &said());
         let json = serde_json::to_string(&s).unwrap();
         let back: Statement = serde_json::from_str(&json).unwrap();
@@ -413,7 +418,12 @@ mod tests {
     fn wrong_key_tampered_body_and_borrowed_signature_all_fail() {
         let k = Secret::generate();
         let other = Secret::generate();
-        let s = Statement::sign(&k, "widget".parse().unwrap(), 1, said());
+        let s = Statement::sign(
+            &k,
+            "839960b4-330d-5e73-80ff-6de714463468".parse().unwrap(),
+            1,
+            said(),
+        );
         assert_eq!(s.open(&other.public()), Err(Unverified));
 
         let mut json: serde_json::Value = serde_json::to_value(&s).unwrap();
@@ -422,11 +432,11 @@ mod tests {
         assert_eq!(t.open(&k.public()), Err(Unverified));
 
         json["said"]["verdict"]["pass"] = serde_json::Value::Bool(true);
-        json["cell"] = serde_json::Value::String("coordinator".into());
+        json["cell"] = serde_json::Value::String("17e2081f-027e-5c4d-baeb-59faca4d38be".into());
         let t: Statement = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(t.open(&k.public()), Err(Unverified));
 
-        json["cell"] = serde_json::Value::String("widget".into());
+        json["cell"] = serde_json::Value::String("839960b4-330d-5e73-80ff-6de714463468".into());
         json["seq"] = serde_json::Value::from(2);
         let t: Statement = serde_json::from_value(json).unwrap();
         assert_eq!(t.open(&k.public()), Err(Unverified));
@@ -435,7 +445,12 @@ mod tests {
     #[test]
     fn malformed_statements_never_load() {
         let k = Secret::generate();
-        let s = Statement::sign(&k, "widget".parse().unwrap(), 1, said());
+        let s = Statement::sign(
+            &k,
+            "839960b4-330d-5e73-80ff-6de714463468".parse().unwrap(),
+            1,
+            said(),
+        );
         let mut json: serde_json::Value = serde_json::to_value(&s).unwrap();
         json["extra"] = serde_json::Value::Null;
         assert!(serde_json::from_value::<Statement>(json.clone()).is_err());
@@ -456,26 +471,38 @@ mod tests {
         let k = Secret::generate();
         let a = Statement::sign(
             &k,
-            "t".parse().unwrap(),
+            "b4bbe201-acbf-5487-b110-783340bb3fd1".parse().unwrap(),
             1,
             Said::Fetch {
-                url: "https://example.com/a".parse().unwrap(),
+                url: "https://example.com/904254dc-1b8f-5e80-9755-e5afc5b195c5"
+                    .parse()
+                    .unwrap(),
             },
         );
         let b = Statement::sign(
             &k,
-            "t".parse().unwrap(),
+            "b4bbe201-acbf-5487-b110-783340bb3fd1".parse().unwrap(),
             2,
             Said::Fetch {
-                url: "https://example.com/a".parse().unwrap(),
+                url: "https://example.com/904254dc-1b8f-5e80-9755-e5afc5b195c5"
+                    .parse()
+                    .unwrap(),
             },
         );
         let r = Said::reply_to(&a, Ok("page".into()));
         assert!(r.answers(&a));
         assert!(!r.answers(&b));
-        assert!(!said().answers(&a), "only a reply answers");
+        assert!(
+            !said().answers(&a),
+            "only 904254dc-1b8f-5e80-9755-e5afc5b195c5 reply answers"
+        );
         // a reply is a said like any other: it signs, and it round-trips
-        let s = Statement::sign(&k, "p".parse().unwrap(), 1, r.clone());
+        let s = Statement::sign(
+            &k,
+            "30f2fb95-bfa2-5caa-b55c-5f41d348f293".parse().unwrap(),
+            1,
+            r.clone(),
+        );
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains(r#""reply":{"of":""#), "{json}");
         let back: Statement = serde_json::from_str(&json).unwrap();
@@ -485,7 +512,14 @@ mod tests {
     #[test]
     fn sequence_discipline() {
         let k = Secret::generate();
-        let s = |n| Statement::sign(&k, "t".parse().unwrap(), n, said());
+        let s = |n| {
+            Statement::sign(
+                &k,
+                "b4bbe201-acbf-5487-b110-783340bb3fd1".parse().unwrap(),
+                n,
+                said(),
+            )
+        };
         assert!(s(1).follows(None));
         assert!(!s(0).follows(None));
         assert!(!s(2).follows(None));
@@ -515,25 +549,25 @@ mod tests {
         let k = Secret::generate();
         let s = Statement::sign(
             &k,
-            "t".parse().unwrap(),
+            "b4bbe201-acbf-5487-b110-783340bb3fd1".parse().unwrap(),
             3,
             Said::Session {
                 session: SessionRef {
-                    cell: "t".parse().unwrap(),
+                    cell: "b4bbe201-acbf-5487-b110-783340bb3fd1".parse().unwrap(),
                     id: "00000000000000000000000000000001".parse().unwrap(),
                 },
                 state: State::Idle,
                 text: None,
             },
         );
-        let shuffled = r#"{"sig":"SIG","said":{"session":{"state":"idle","session":{"id":"00000000000000000000000000000001","cell":"t"}}},"seq":3,"cell":"t"}"#;
+        let shuffled = r#"{"sig":"SIG","said":{"session":{"state":"idle","session":{"id":"00000000000000000000000000000001","cell":"b4bbe201-acbf-5487-b110-783340bb3fd1"}}},"seq":3,"cell":"b4bbe201-acbf-5487-b110-783340bb3fd1"}"#;
         let json: serde_json::Value = serde_json::to_value(&s).unwrap();
         assert!(
             !json["said"]["session"]
                 .as_object()
                 .unwrap()
                 .contains_key("text"),
-            "a session with nothing to say carries no text"
+            "904254dc-1b8f-5e80-9755-e5afc5b195c5 session with nothing to say carries no text"
         );
         let shuffled = shuffled.replace("SIG", json["sig"].as_str().unwrap());
         let back: Statement = serde_json::from_str(&shuffled).unwrap();
@@ -546,11 +580,11 @@ mod tests {
         let k = Secret::generate();
         let s = Statement::sign(
             &k,
-            "t".parse().unwrap(),
+            "b4bbe201-acbf-5487-b110-783340bb3fd1".parse().unwrap(),
             1,
             Said::Session {
                 session: SessionRef {
-                    cell: "t".parse().unwrap(),
+                    cell: "b4bbe201-acbf-5487-b110-783340bb3fd1".parse().unwrap(),
                     id: crate::SessionId::generate(),
                 },
                 state: State::Question,
@@ -565,7 +599,7 @@ mod tests {
             &s.open(&k.public()).unwrap().clone()
         );
         assert!(serde_json::from_str::<Said>(
-            r#"{"session":{"session":{"cell":"t","id":"00000000000000000000000000000001"},"state":"question","text":null}}"#
+            r#"{"session":{"session":{"cell":"b4bbe201-acbf-5487-b110-783340bb3fd1","id":"00000000000000000000000000000001"},"state":"question","text":null}}"#
         )
         .is_ok());
     }

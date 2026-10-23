@@ -218,14 +218,14 @@ fn cell_targets(op: &Operator) -> Result<Vec<ResourceCell>> {
     let tree = op.tree()?.0;
     let mut cells = vec![];
     for cell in tree.iter() {
-        if deletion::ensure_available(&op.config.state, &cell.name).is_err() {
+        if deletion::ensure_available(&op.config.state, &cell.id).is_err() {
             continue;
         }
         let path = op
             .config
             .tree
             .join(".pins")
-            .join(format!("{}.pub", cell.name));
+            .join(format!("{}.pub", cell.id));
         match fs::read_to_string(path) {
             Ok(pin) => cells.push(ResourceCell {
                 name: cell.name.clone(),

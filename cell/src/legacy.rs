@@ -1,6 +1,8 @@
-//! Read-only compatibility for signed logs. Preserve the original field order
+//! Read-only compatibility for older payloads within UUID-addressed envelopes.
+//! Name-addressed envelope migration is deliberately not implemented here.
+//! Preserve the original field order
 //! and values for signature/hash verification; only the opened view is upgraded.
-use crate::{Hash, Name, Provider, RequestId, Said, SessionId, SessionRef, State};
+use crate::{CellId, Hash, Name, Provider, RequestId, Said, SessionId, SessionRef, State};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -23,7 +25,7 @@ pub(crate) enum LegacySaid {
         text: Option<String>,
     },
     Brief {
-        to: Name,
+        to: CellId,
         session: Name,
         text: String,
     },
@@ -38,13 +40,13 @@ pub(crate) enum LegacySaid {
     },
 }
 
-pub(crate) fn session_id(cell: &Name, name: &Name) -> SessionId {
+pub(crate) fn session_id(cell: &CellId, name: &Name) -> SessionId {
     let hash = Hash::of(format!("kuggis/legacy-session/{cell}/{name}").as_bytes());
     SessionId::from(<[u8; 16]>::try_from(&hash.as_bytes()[..16]).unwrap())
 }
 
 impl LegacySaid {
-    pub(crate) fn upgrade(&self, owner: &Name, seq: u64) -> Said {
+    pub(crate) fn upgrade(&self, owner: &CellId, seq: u64) -> Said {
         match self {
             Self::Session {
                 name, state, text, ..

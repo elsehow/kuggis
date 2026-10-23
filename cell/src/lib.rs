@@ -11,8 +11,8 @@ pub mod chat;
 pub mod connection;
 pub mod contracts;
 pub mod door;
-pub mod exe;
 pub mod environment;
+pub mod exe;
 pub mod grant;
 mod legacy;
 pub mod log;
@@ -37,7 +37,10 @@ pub use cell::Cell;
 pub use exe::Observed;
 pub use grant::{Grant, Provider};
 pub use plan::{Action, Approved, Plan, PlanError};
-pub use prim::{Commit, Hash, Host, Invalid, Name, Repo, RequestId, SessionId, Url};
+pub use prim::{CellId, Commit, Hash, Host, Invalid, Name, Repo, RequestId, SessionId, Url};
 pub use said::{Key, Said, Secret, State, Statement, Unverified};
 pub use session::{Prompt, Session, SessionAction, SessionCommand, SessionRef};
 pub use tree::{Tree, TreeError};
+
+#[cfg(test)]
+mod fixtures;

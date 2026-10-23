@@ -1,8 +1,10 @@
-//! Publisher authorization boundary, exercised through the trusted-code API.
-//! Transport authentication and public serving are deliberately not simulated.
+#[path = "fixtures/common.rs"]
+mod fixtures;
+// Publisher authorization boundary, exercised through the trusted-code API.
+// Transport authentication and public serving are deliberately not simulated.
 use cell::publish::registry::{Registry, RegistryError, SiteAction};
 use cell::publish::{NamespaceId, PublishScope, SiteId};
-use cell::{Cell, Grant, Key, Name, RequestId, Secret, Tree};
+use cell::{CellId, Grant, Key, RequestId, Secret, Tree};
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -38,23 +40,36 @@ impl Fixture {
         }
     }
     fn approve(&self, child_scopes: Vec<PublishScope>) {
-        let parent = Cell::new(
-            "parent".parse().unwrap(),
+        let parent = fixtures::cell(
+            "7721fe29-1976-53fa-8250-32afa9e9bb35".parse().unwrap(),
             [Grant::Publish(PublishScope::Namespace(
                 self.namespace.clone(),
             ))],
         );
-        let child = Cell::new(
-            "child".parse().unwrap(),
+        let child = fixtures::cell(
+            "e3e321ad-3f5e-5221-9ec8-ccc87947084b".parse().unwrap(),
             child_scopes.into_iter().map(Grant::Publish),
         );
-        let tree = Tree::new([(parent, None), (child, Some("parent".parse().unwrap()))]).unwrap();
+        let tree = Tree::new([
+            (parent, None),
+            (
+                child,
+                Some("7721fe29-1976-53fa-8250-32afa9e9bb35".parse().unwrap()),
+            ),
+        ])
+        .unwrap();
         self.registry.approve_tree(&tree, &self.pins()).unwrap();
     }
-    fn pins(&self) -> BTreeMap<Name, Key> {
+    fn pins(&self) -> BTreeMap<CellId, Key> {
         [
-            ("parent".parse().unwrap(), self.owner),
-            ("child".parse().unwrap(), self.child),
+            (
+                "7721fe29-1976-53fa-8250-32afa9e9bb35".parse().unwrap(),
+                self.owner,
+            ),
+            (
+                "e3e321ad-3f5e-5221-9ec8-ccc87947084b".parse().unwrap(),
+                self.child,
+            ),
         ]
         .into()
     }
@@ -193,11 +208,19 @@ fn a_recreated_cell_name_does_not_inherit_a_namespace() {
             .authorize(replacement_key, &site, SiteAction::Publish),
     );
     // Approving the new cell with no publishing grants still gives no access.
-    let tree = Tree::new([(Cell::new("parent".parse().unwrap(), []), None)]).unwrap();
+    let tree = Tree::new([(
+        fixtures::cell("7721fe29-1976-53fa-8250-32afa9e9bb35".parse().unwrap(), []),
+        None,
+    )])
+    .unwrap();
     f.registry
         .approve_tree(
             &tree,
-            &[("parent".parse().unwrap(), replacement_key)].into(),
+            &[(
+                "7721fe29-1976-53fa-8250-32afa9e9bb35".parse().unwrap(),
+                replacement_key,
+            )]
+            .into(),
         )
         .unwrap();
     denied(
@@ -216,15 +239,15 @@ fn invalid_policy_updates_are_atomic_and_cannot_create_sites_by_delegation() {
     f.approve(vec![]);
     let site = f.site("news");
     f.registry.create_site(f.owner, &site).unwrap();
-    let parent = Cell::new(
-        "parent".parse().unwrap(),
+    let parent = fixtures::cell(
+        "7721fe29-1976-53fa-8250-32afa9e9bb35".parse().unwrap(),
         [Grant::Publish(PublishScope::Namespace(f.namespace.clone()))],
     );
-    let child = Cell::new(
-        "child".parse().unwrap(),
+    let child = fixtures::cell(
+        "e3e321ad-3f5e-5221-9ec8-ccc87947084b".parse().unwrap(),
         [Grant::Publish(PublishScope::Site(f.site("missing")))],
     );
-    let tree = Tree::new([(parent.clone(), None), (child, Some(parent.name.clone()))]).unwrap();
+    let tree = Tree::new([(parent.clone(), None), (child, Some(parent.id.clone()))]).unwrap();
     assert!(matches!(
         f.registry.approve_tree(&tree, &f.pins()),
         Err(RegistryError::UnknownSite)
@@ -241,8 +264,8 @@ fn invalid_policy_updates_are_atomic_and_cannot_create_sites_by_delegation() {
     f.registry
         .authorize(f.owner, &site, SiteAction::Publish)
         .unwrap();
-    let unknown = Cell::new(
-        "unknown".parse().unwrap(),
+    let unknown = fixtures::cell(
+        "81425432-d0f0-501e-b678-88ce11ee9c5e".parse().unwrap(),
         [Grant::Publish(PublishScope::Namespace(NamespaceId(
             cell::Hash::of(b"unknown"),
         )))],
@@ -250,7 +273,11 @@ fn invalid_policy_updates_are_atomic_and_cannot_create_sites_by_delegation() {
     assert!(matches!(
         f.registry.approve_tree(
             &Tree::new([(unknown, None)]).unwrap(),
-            &[("unknown".parse().unwrap(), f.stranger)].into()
+            &[(
+                "81425432-d0f0-501e-b678-88ce11ee9c5e".parse().unwrap(),
+                f.stranger
+            )]
+            .into()
         ),
         Err(RegistryError::UnknownNamespace)
     ));
@@ -259,15 +286,28 @@ fn invalid_policy_updates_are_atomic_and_cannot_create_sites_by_delegation() {
 #[test]
 fn shared_cell_keys_are_rejected_even_if_one_cell_has_no_grants() {
     let f = Fixture::new();
-    let parent = Cell::new(
-        "parent".parse().unwrap(),
+    let parent = fixtures::cell(
+        "7721fe29-1976-53fa-8250-32afa9e9bb35".parse().unwrap(),
         [Grant::Publish(PublishScope::Namespace(f.namespace.clone()))],
     );
-    let child = Cell::new("child".parse().unwrap(), []);
-    let tree = Tree::new([(parent, None), (child, Some("parent".parse().unwrap()))]).unwrap();
+    let child = fixtures::cell("e3e321ad-3f5e-5221-9ec8-ccc87947084b".parse().unwrap(), []);
+    let tree = Tree::new([
+        (parent, None),
+        (
+            child,
+            Some("7721fe29-1976-53fa-8250-32afa9e9bb35".parse().unwrap()),
+        ),
+    ])
+    .unwrap();
     let pins = [
-        ("parent".parse().unwrap(), f.owner),
-        ("child".parse().unwrap(), f.owner),
+        (
+            "7721fe29-1976-53fa-8250-32afa9e9bb35".parse().unwrap(),
+            f.owner,
+        ),
+        (
+            "e3e321ad-3f5e-5221-9ec8-ccc87947084b".parse().unwrap(),
+            f.owner,
+        ),
     ]
     .into();
     assert!(matches!(

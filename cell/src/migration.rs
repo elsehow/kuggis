@@ -68,7 +68,7 @@ pub fn import_claude(
     fs::create_dir_all(state.join("threads"))?;
     fs::create_dir_all(state.join("pi"))?;
     for (name, runtime) in mapping {
-        let id = crate::legacy::session_id(&cell.name, &name);
+        let id = crate::legacy::session_id(&cell.id, &name);
         let metadata = state.join("threads").join(format!("{id}.json"));
         if metadata.exists() {
             continue;
@@ -142,7 +142,7 @@ pub fn import_claude(
         let temp = transcript.with_extension("tmp");
         fs::write(&temp, text)?;
         fs::rename(temp, transcript)?;
-        let record = Session::restore(id, cell.name.clone(), name.to_string(), true);
+        let record = Session::restore(id, cell.id.clone(), name.to_string(), true);
         let temp = metadata.with_extension("tmp");
         fs::write(&temp, serde_json::to_vec(&record)?)?;
         fs::rename(temp, metadata)?;
@@ -163,12 +163,13 @@ mod tests {
         let source = home.join(".claude/projects/p/old.jsonl");
         let original = [json!({"type":"user","uuid":"a","parentUuid":null,"message":{"role":"user","content":"hello"}}),json!({"type":"assistant","uuid":"wrong","parentUuid":"a","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"wrong branch"}]}}),json!({"type":"assistant","uuid":"b","parentUuid":"a","message":{"role":"assistant","content":[{"type":"text","text":"saved reply"}]}})].iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         fs::write(&source, &original).unwrap();
-        let cell = Cell::new("dev".parse().unwrap(), []);
+        let cell =
+            crate::fixtures::cell("b48244b7-ed96-57fa-a3a2-e7629b8c921e".parse().unwrap(), []);
         let state = home.join("state");
         import_claude(&cell, &home, &home, &state).unwrap();
         import_claude(&cell, &home, &home, &state).unwrap();
         assert_eq!(fs::read_to_string(source).unwrap(), original);
-        let id = crate::legacy::session_id(&cell.name, &"s1".parse().unwrap());
+        let id = crate::legacy::session_id(&cell.id, &"s1".parse().unwrap());
         let session: Session =
             serde_json::from_slice(&fs::read(state.join(format!("threads/{id}.json"))).unwrap())
                 .unwrap();

@@ -63,7 +63,7 @@ pub struct Bridge {
     declaration: PathBuf,
     secret: Secret,
     audience: RequestId,
-    cell: crate::Name,
+    cell: crate::CellId,
 }
 impl Bridge {
     pub fn load(declaration: &Path, secret: &Path, audience: RequestId) -> io::Result<Self> {
@@ -76,7 +76,7 @@ impl Bridge {
             declaration: declaration.into(),
             secret: key,
             audience,
-            cell: cell.name,
+            cell: cell.id,
         })
     }
     pub fn load_config(path: &Path) -> io::Result<Config> {
@@ -87,7 +87,7 @@ impl Bridge {
         // Reload the root-owned declaration for every request; local revocation
         // takes effect without a restart. Remote policy is checked at commit too.
         let cell: Cell = serde_json::from_slice(&trusted(&self.declaration, false)?)?;
-        if cell.name != self.cell {
+        if cell.id != self.cell {
             return Err(io::Error::other("bridge cell identity changed"));
         }
         let needed = match &command {
@@ -230,7 +230,7 @@ async fn run(
 mod tests {
     use super::*;
     use crate::publish::{registry::Registry, SiteId};
-    use crate::{Hash, Name};
+    use crate::{CellId, Hash};
 
     #[tokio::test]
     async fn unix_bridge_checks_peer_grants_and_never_accepts_signing_metadata() {
@@ -239,8 +239,8 @@ mod tests {
         let registry = Registry::create(&directory.join("registry")).unwrap();
         let secret = Secret::generate();
         let namespace = registry.allocate_namespace(secret.public()).unwrap();
-        let name: Name = "author".parse().unwrap();
-        let cell = Cell::new(
+        let name: CellId = "489d239e-1b05-546d-a0ca-abd828de38b9".parse().unwrap();
+        let cell = crate::fixtures::cell(
             name.clone(),
             [Grant::Publish(PublishScope::Namespace(namespace.clone()))],
         );
@@ -285,7 +285,11 @@ mod tests {
         };
         assert!(bridge.sign(&crate::canon::bytes(&foreign)).is_err());
         // Rereads local policy rather than retaining startup privileges.
-        fs::write(&declaration, crate::canon::bytes(&Cell::new(name, []))).unwrap();
+        fs::write(
+            &declaration,
+            crate::canon::bytes(&crate::fixtures::cell(name, [])),
+        )
+        .unwrap();
         assert!(bridge
             .sign(&crate::canon::bytes(&Command::Status { site }))
             .is_err());
@@ -324,7 +328,7 @@ mod tests {
         assert!(socket.exists());
         remove_stale_socket(&socket).unwrap();
         assert!(!socket.exists());
-        fs::write(&socket, "not a socket").unwrap();
+        fs::write(&socket, "not 904254dc-1b8f-5e80-9755-e5afc5b195c5 socket").unwrap();
         assert!(remove_stale_socket(&socket).is_err());
         let config = Config {
             socket,

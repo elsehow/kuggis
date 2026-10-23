@@ -7,8 +7,8 @@ import { effectLabel, ownerLabel } from "./resource-labels";
 
 export const deletionLabel = (job: Deletion) => job.phase.state === "failed" ? "Deletion failed" : "Deleting…";
 
-export function DeleteCell({ name, id, onId, onClose, onChanged, onDeleted }: {
-  name: string | null; id: string | null; onId: (id: string) => void;
+export function DeleteCell({ cellId, id, onId, onClose, onChanged, onDeleted }: {
+  cellId: string | null; id: string | null; onId: (id: string) => void;
   onClose: () => void; onChanged: () => Promise<void>; onDeleted: () => Promise<void>;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -23,18 +23,18 @@ export function DeleteCell({ name, id, onId, onClose, onChanged, onDeleted }: {
   const manual = job?.resources.some(b => b.plan.changes.some(p => p.effects.includes("remote_revocation_requires_manual_action"))) ?? false;
   useEffect(() => { void api<ResourcesView>("/api/resources").then(v => setTargets(v.cells)).catch(() => {}); }, []);
   const done = useRef(false);
-  const previewRequest = useRef<{ name: string; promise: Promise<Deletion> }>(null);
+  const previewRequest = useRef<{ cellId: string; promise: Promise<Deletion> }>(null);
   useEffect(() => { dialog.current?.showModal(); }, []);
   useEffect(() => {
-    if (id || !name) return;
+    if (id || !cellId) return;
     let stopped = false;
     setBusy(true);
-    if (previewRequest.current?.name !== name) previewRequest.current = { name, promise: api<Deletion>(`/api/cells/${name}/delete-plan`, { method: "POST", body: "{}" }) };
+    if (previewRequest.current?.cellId !== cellId) previewRequest.current = { cellId, promise: api<Deletion>(`/api/cells/${cellId}/delete-plan`, { method: "POST", body: "{}" }) };
     void previewRequest.current.promise.then((next) => {
       if (!stopped) { setJob(next); onId(next.id); }
     }).catch((e) => { if (!stopped) setError(explain(e)); }).finally(() => { if (!stopped) setBusy(false); });
     return () => { stopped = true; };
-  }, [name, id]);
+  }, [cellId, id]);
   useEffect(() => {
     if (!id) return;
     let stopped = false;
@@ -74,13 +74,13 @@ export function DeleteCell({ name, id, onId, onClose, onChanged, onDeleted }: {
         const selected = selections[change.resource.id] ?? existing;
         if (selected !== "default") choices[change.resource.id] = selected === "operator" ? "operator" : {cell: selected};
       }
-      const next = await api<Deletion>(`/api/cells/${job.cell.name}/delete-plan`, { method: "POST", body: JSON.stringify({ choices }) });
+      const next = await api<Deletion>(`/api/cells/${job.cell.id}/delete-plan`, { method: "POST", body: JSON.stringify({ choices }) });
       setConfirmation(""); setSelections({}); setChoicesDirty(false); setManualAck(false); setJob(next); onId(next.id);
     } catch (e) { setError(explain(e)); } finally { setBusy(false); }
   };
   const deleting = job?.phase.state === "deleting";
   return <dialog ref={dialog} className="settings delete-cell" aria-labelledby="delete-title" onCancel={(e) => { e.preventDefault(); if (!busy) onClose(); }}>
-    <header><h2 id="delete-title">Delete {job?.cell.name ?? name ?? "cell"}?</h2><button aria-label="Close delete cell" disabled={busy} onClick={onClose}>×</button></header>
+    <header><h2 id="delete-title">Delete {job?.cell.name ?? cellId ?? "cell"}?</h2><button aria-label="Close delete cell" disabled={busy} onClick={onClose}>×</button></header>
     {error && <div role="alert" className="inline-error">{error}</div>}
     {!job ? <>{busy && <p role="status">Checking cell…</p>}<footer className="settings-actions"><button disabled={busy} onClick={onClose}>Cancel</button></footer></> : deleting ? <p role="status">{job.phase.state === "deleting" && job.phase.step === "cleaning_up_resources" ? "Freezing resource access and completing approved cleanup…" : job.phase.state === "deleting" && job.phase.step === "disconnecting" ? "Disconnecting…" : job.phase.state === "deleting" && job.phase.step === "removing_declaration" ? "Removing from tree…" : "Deleting VM…"}</p>
       : job.phase.state === "deleted" ? <><p role="status">Cell deleted.</p>{manual && <><p>Provider cleanup is still manual; resources or charges may remain. Retained resources are available in Resources.</p><button onClick={() => void onDeleted()}>Done — I’ll handle provider cleanup</button></>}</> : <form onSubmit={(e) => { e.preventDefault(); void remove(); }}>

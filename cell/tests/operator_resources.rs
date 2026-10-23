@@ -1,10 +1,12 @@
+#[path = "fixtures/common.rs"]
+mod fixtures;
 use cell::publish::{
     artifact::{Artifact, Entry},
     registry::Registry,
     transport::{self, Command, SignedRequest},
     PublishScope, SiteId,
 };
-use cell::{Cell, Grant, RequestId, Secret, Tree};
+use cell::{Grant, RequestId, Secret, Tree};
 use std::{
     fs,
     io::{BufRead, Read, Write},
@@ -36,20 +38,24 @@ impl Fixture {
         let registry = Registry::create(&root.join("registry")).unwrap();
         let secret = Secret::generate();
         let ns = registry.allocate_namespace(secret.public()).unwrap();
-        let cell = Cell::new(
-            "author".parse().unwrap(),
+        let cell = fixtures::cell(
+            "489d239e-1b05-546d-a0ca-abd828de38b9".parse().unwrap(),
             [Grant::Publish(PublishScope::Namespace(ns.clone()))],
         );
-        fs::write(root.join("tree/author.json"), cell.canonical()).unwrap();
         fs::write(
-            root.join("tree/.pins/author.pub"),
+            root.join("tree/489d239e-1b05-546d-a0ca-abd828de38b9.json"),
+            cell.canonical(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("tree/.pins/489d239e-1b05-546d-a0ca-abd828de38b9.pub"),
             secret.public().to_string(),
         )
         .unwrap();
         registry
             .approve_tree(
                 &Tree::new([(cell.clone(), None)]).unwrap(),
-                &[(cell.name, secret.public())].into(),
+                &[(cell.id, secret.public())].into(),
             )
             .unwrap();
         registry
@@ -184,8 +190,16 @@ fn operator_http_inventory_review_apply_retry_and_retained_custody() {
         applied
     );
     // Inventory and operator actions survive the original declaration/pin disappearing.
-    fs::remove_file(f.root.join("tree/author.json")).unwrap();
-    fs::remove_file(f.root.join("tree/.pins/author.pub")).unwrap();
+    fs::remove_file(
+        f.root
+            .join("tree/489d239e-1b05-546d-a0ca-abd828de38b9.json"),
+    )
+    .unwrap();
+    fs::remove_file(
+        f.root
+            .join("tree/.pins/489d239e-1b05-546d-a0ca-abd828de38b9.pub"),
+    )
+    .unwrap();
     let (_, view) = call(&ui, "/api/resources", None);
     assert_eq!(view["cells"], serde_json::json!([]));
     let (status, plan) = call(

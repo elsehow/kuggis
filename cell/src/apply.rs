@@ -14,7 +14,7 @@ use crate::cell::{Cell, TAG_PREFIX};
 use crate::exe::{self, door_name, vm_of, Integration, Observed, Vm};
 use crate::grant::Grant;
 use crate::plan::{Action, Approved, Plan};
-use crate::prim::{Hash, Name, Repo};
+use crate::prim::{CellId, Hash, Repo};
 use crate::said::{Key, Said, Statement};
 use crate::tree::Tree;
 use std::collections::BTreeMap;
@@ -47,7 +47,7 @@ pub trait Edge {
 
 /// Pin a box's key on first contact; refuse a key that changed. The pin is
 /// `<dir>/<cell>.pub`, and the operator removes it by hand to pin anew.
-pub fn pin(dir: &Path, cell: &Name, key: &Key) -> Fallible {
+pub fn pin(dir: &Path, cell: &CellId, key: &Key) -> Fallible {
     let path = dir.join(format!("{cell}.pub"));
     match fs::read_to_string(&path) {
         Ok(s) => {
@@ -75,7 +75,7 @@ pub fn pin(dir: &Path, cell: &Name, key: &Key) -> Fallible {
 pub fn pull(
     edge: &dyn Edge,
     pins: &Path,
-    cell: &Name,
+    cell: &CellId,
     vm: &str,
 ) -> Fallible<Option<Vec<(Statement, Said)>>> {
     let Some((key, log)) = edge.log(vm)? else {
@@ -107,7 +107,7 @@ pub fn pull(
 pub fn on_box(
     edge: &dyn Edge,
     pins: &Path,
-    cell: &Name,
+    cell: &CellId,
     vm: &str,
 ) -> Fallible<Option<(Hash, Hash)>> {
     let Some(log) = pull(edge, pins, cell, vm)? else {
@@ -125,7 +125,7 @@ pub fn on_box(
 /// What each box last proved, remembered across the loop since only setup
 /// changes it, and the hash of the binary setup would ship, read once.
 struct Boxes {
-    proved: BTreeMap<Name, Option<(Hash, Hash)>>,
+    proved: BTreeMap<CellId, Option<(Hash, Hash)>>,
     bin: Option<Hash>,
 }
 
@@ -145,12 +145,12 @@ fn plan_one(
     seen: &Observed,
     vms: &[Vm],
     boxes: &mut Boxes,
-    name: &Name,
+    name: &CellId,
 ) -> Fallible<Plan> {
     let want = tree
         .get(name)
         .ok_or_else(|| format!("{name}: not in the tree"))?;
-    let children = tree.children(name).map(|c| c.name.clone()).collect();
+    let children = tree.children(name).map(|c| c.id.clone()).collect();
     let proved = match boxes.proved.get(name) {
         Some(h) => *h,
         None => {
@@ -171,8 +171,8 @@ pub fn plans(
     edge: &dyn Edge,
     pins: &Path,
     tree: &Tree,
-    names: &[Name],
-) -> Fallible<BTreeMap<Name, Plan>> {
+    names: &[CellId],
+) -> Fallible<BTreeMap<CellId, Plan>> {
     let (vms, ints) = edge.listing()?;
     exe::cell_vms(&vms)?;
     let seen = exe::observe(&vms, &ints);
@@ -208,9 +208,9 @@ pub fn apply_with_progress(
     tree: &Tree,
     approved: &Approved,
     out: &mut dyn Write,
-    progress: &mut dyn FnMut(&Name, &Action) -> Fallible,
+    progress: &mut dyn FnMut(&CellId, &Action) -> Fallible,
 ) -> Fallible<usize> {
-    let mut order: Vec<&Name> = approved.plans().keys().collect();
+    let mut order: Vec<&CellId> = approved.plans().keys().collect();
     order.sort_by_key(|n| std::cmp::Reverse(tree.depth(n)));
     let mut boxes = Boxes::new(edge)?;
     let mut done = 0;
@@ -249,7 +249,7 @@ fn perform(
     action: &Action,
     out: &mut dyn Write,
 ) -> Fallible {
-    let name = &cell.name;
+    let name = &cell.id;
     let tag = format!("tag:{TAG_PREFIX}{name}");
     let me =
         || vm_of(vms, name).ok_or_else(|| format!("{name}: no VM carries its tag; apply again"));
@@ -324,7 +324,7 @@ fn perform(
 /// An attachment spec that reaches `me` and is ours alone to remove:
 /// `vm:<me>` or our own tag. One by a tag other VMs may share is refused,
 /// not silently detached; one that does not reach `me` is `None`.
-fn ours<'a>(spec: &'a str, me: &Vm, cell: &Name, int: &str) -> Fallible<Option<&'a str>> {
+fn ours<'a>(spec: &'a str, me: &Vm, cell: &CellId, int: &str) -> Fallible<Option<&'a str>> {
     match exe::AttachmentTarget::parse(spec) {
         exe::AttachmentTarget::Vm(vm) => Ok((vm.as_str() == me.vm_name).then_some(spec)),
         exe::AttachmentTarget::Tag(tag) if tag == format!("{TAG_PREFIX}{cell}") => Ok(Some(spec)),
@@ -339,7 +339,7 @@ fn ours<'a>(spec: &'a str, me: &Vm, cell: &Name, int: &str) -> Fallible<Option<&
 
 /// Attach exactly one integration that is exactly this grant. A repository
 /// gets one made in its name if none exists; anything else must already.
-fn attach(edge: &dyn Edge, ints: &[Integration], cell: &Name, tag: &str, g: &Grant) -> Fallible {
+fn attach(edge: &dyn Edge, ints: &[Integration], cell: &CellId, tag: &str, g: &Grant) -> Fallible {
     let exact = ints
         .iter()
         .find(|i| i.door().is_none() && i.grants() == [g.clone()]);
@@ -530,7 +530,7 @@ mod tests {
             let seq = log.len() as u64 + 1;
             log.push(Statement::sign(
                 secret,
-                cell.name.clone(),
+                cell.id.clone(),
                 seq,
                 Said::Checked {
                     cell: cell.hash(),
@@ -570,8 +570,8 @@ mod tests {
         dir
     }
 
-    fn all(tree: &Tree) -> Vec<Name> {
-        tree.iter().map(|c| c.name.clone()).collect()
+    fn all(tree: &Tree) -> Vec<CellId> {
+        tree.iter().map(|c| c.id.clone()).collect()
     }
 
     fn approve(edge: &dyn Edge, pins: &Path, tree: &Tree) -> Approved {
@@ -579,14 +579,14 @@ mod tests {
         Approved::new(plans.clone(), &Approved::hash(&plans)).unwrap()
     }
 
-    const A: &str = r#"{"name":"a","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true}}]}"#;
-    const B: &str = r#"{"name":"b","grants":[{"provider":"anthropic"}]}"#;
+    const A: &str = r#"{"id":"904254dc-1b8f-5e80-9755-e5afc5b195c5","name":"904254dc-1b8f-5e80-9755-e5afc5b195c5","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true}}]}"#;
+    const B: &str = r#"{"id":"46b16f13-11ac-5315-b431-845f196f907e","name":"46b16f13-11ac-5315-b431-845f196f907e","grants":[{"provider":"anthropic"}]}"#;
 
     #[test]
     fn a_fresh_tree_converges_leaves_first_and_then_rests() {
         let f = Fake::default();
         let pins = pins();
-        let t = tree(&[("", A), ("a", B)]);
+        let t = tree(&[("", A), ("904254dc-1b8f-5e80-9755-e5afc5b195c5", B)]);
         let approved = approve(&f, &pins, &t);
         let mut out = Vec::new();
         let n = apply(&f, &pins, &t, &approved, &mut out).unwrap();
@@ -596,18 +596,27 @@ mod tests {
         assert_eq!(
             f.calls(),
             [
-                "new --name=cell-b --tag=cell-b --no-email".to_string(),
-                format!("setup cell-b {}", b.hash()),
-                "new --name=cell-a --tag=cell-a --no-email".into(),
-                "integrations add github --name=gh-example-x --repository=example/x --attach=tag:cell-a".into(),
-                "integrations add http-proxy --name=door-b --target=https://cell-b.exe.xyz/ --peer --attach=tag:cell-a".into(),
-                format!("setup cell-a {}", a.hash()),
+                "new --name=cell-46b16f13-11ac-5315-b431-845f196f907e --tag=cell-46b16f13-11ac-5315-b431-845f196f907e --no-email".to_string(),
+                format!("setup cell-46b16f13-11ac-5315-b431-845f196f907e {}", b.hash()),
+                "new --name=cell-904254dc-1b8f-5e80-9755-e5afc5b195c5 --tag=cell-904254dc-1b8f-5e80-9755-e5afc5b195c5 --no-email".into(),
+                "integrations add github --name=gh-example-x --repository=example/x --attach=tag:cell-904254dc-1b8f-5e80-9755-e5afc5b195c5".into(),
+                "integrations add http-proxy --name=door-46b16f13-11ac-5315-b431-845f196f907e --target=https://cell-46b16f13-11ac-5315-b431-845f196f907e.exe.xyz/ --peer --attach=tag:cell-904254dc-1b8f-5e80-9755-e5afc5b195c5".into(),
+                format!("setup cell-904254dc-1b8f-5e80-9755-e5afc5b195c5 {}", a.hash()),
             ]
         );
         let out = String::from_utf8(out).unwrap();
-        assert!(out.starts_with("b: \"create\"\n"), "{out}");
-        assert!(out.contains("a: {\"open\":\"b\"}\n"), "{out}");
-        assert!(pins.join("a.pub").exists() && pins.join("b.pub").exists());
+        assert!(
+            out.starts_with("46b16f13-11ac-5315-b431-845f196f907e: \"create\"\n"),
+            "{out}"
+        );
+        assert!(out.contains("904254dc-1b8f-5e80-9755-e5afc5b195c5: {\"open\":\"46b16f13-11ac-5315-b431-845f196f907e\"}\n"), "{out}");
+        assert!(
+            pins.join("904254dc-1b8f-5e80-9755-e5afc5b195c5.pub")
+                .exists()
+                && pins
+                    .join("46b16f13-11ac-5315-b431-845f196f907e.pub")
+                    .exists()
+        );
 
         let again = approve(&f, &pins, &t);
         assert!(again.plans().values().all(Plan::is_empty));
@@ -618,15 +627,15 @@ mod tests {
     fn a_child_writes_its_fork_and_the_parent_writes_the_upstream() {
         let f = Fake::default();
         let pins = pins();
-        let p = r#"{"name":"p","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true}},{"code":{"repo":"example/x","write":true,"via":"cells/x"}}]}"#;
-        let c = r#"{"name":"c","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true,"via":"cells/x"}}]}"#;
-        let t = tree(&[("", p), ("p", c)]);
+        let p = r#"{"id":"30f2fb95-bfa2-5caa-b55c-5f41d348f293","name":"p","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true}},{"code":{"repo":"example/x","write":true,"via":"cells/x"}}]}"#;
+        let c = r#"{"id":"acc27909-a4a4-5232-953d-15b8d534ae2a","name":"acc27909-a4a4-5232-953d-15b8d534ae2a","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true,"via":"cells/x"}}]}"#;
+        let t = tree(&[("", p), ("30f2fb95-bfa2-5caa-b55c-5f41d348f293", c)]);
         apply(&f, &pins, &t, &approve(&f, &pins, &t), &mut Vec::new()).unwrap();
         let calls = f.calls();
         for call in [
-            "integrations add github --name=gh-cells-x --repository=cells/x --attach=tag:cell-c",
-            "integrations attach gh-cells-x tag:cell-p",
-            "integrations add github --name=gh-example-x --repository=example/x --attach=tag:cell-p",
+            "integrations add github --name=gh-cells-x --repository=cells/x --attach=tag:cell-acc27909-a4a4-5232-953d-15b8d534ae2a",
+            "integrations attach gh-cells-x tag:cell-30f2fb95-bfa2-5caa-b55c-5f41d348f293",
+            "integrations add github --name=gh-example-x --repository=example/x --attach=tag:cell-30f2fb95-bfa2-5caa-b55c-5f41d348f293",
         ] {
             assert!(calls.contains(&call.to_string()), "{call}\n{calls:?}");
         }
@@ -640,18 +649,21 @@ mod tests {
         let t = tree(&[("", A)]);
         let a: Cell = serde_json::from_str(A).unwrap();
         apply(&f, &pins, &t, &approve(&f, &pins, &t), &mut Vec::new()).unwrap();
-        assert!(approve(&f, &pins, &t).plans()[&a.name].is_empty());
+        assert!(approve(&f, &pins, &t).plans()[&a.id].is_empty());
 
         *f.bin.borrow_mut() = Some(Hash::of(b"v2"));
         let approved = approve(&f, &pins, &t);
-        assert_eq!(approved.plans()[&a.name].actions, vec![Action::Setup]);
-        assert_eq!(approved.plans()[&a.name].bin, Hash::of(b"v2"));
+        assert_eq!(approved.plans()[&a.id].actions, vec![Action::Setup]);
+        assert_eq!(approved.plans()[&a.id].bin, Hash::of(b"v2"));
         assert_eq!(apply(&f, &pins, &t, &approved, &mut Vec::new()).unwrap(), 1);
         assert_eq!(
             f.calls().last().unwrap(),
-            &format!("setup cell-a {}", a.hash())
+            &format!(
+                "setup cell-904254dc-1b8f-5e80-9755-e5afc5b195c5 {}",
+                a.hash()
+            )
         );
-        assert!(approve(&f, &pins, &t).plans()[&a.name].is_empty());
+        assert!(approve(&f, &pins, &t).plans()[&a.id].is_empty());
     }
 
     #[test]
@@ -666,26 +678,30 @@ mod tests {
         f.int(
             "gh-extra",
             "github",
-            &["vm:cell-a"],
+            &["vm:cell-904254dc-1b8f-5e80-9755-e5afc5b195c5"],
             serde_json::json!({"repositories": ["o/extra"]}),
         );
         let e = apply(&f, &pins, &t, &settled, &mut Vec::new())
             .unwrap_err()
             .to_string();
         assert!(
-            e.contains("a: {\"detach\":") && e.contains("not approved"),
+            e.contains("904254dc-1b8f-5e80-9755-e5afc5b195c5: {\"detach\":")
+                && e.contains("not approved"),
             "{e}"
         );
         assert_eq!(f.calls().len(), before, "nothing ran");
 
         let wider = tree(&[(
             "",
-            r#"{"name":"a","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true}},{"host":"pypi.org"}]}"#,
+            r#"{"id":"904254dc-1b8f-5e80-9755-e5afc5b195c5","name":"904254dc-1b8f-5e80-9755-e5afc5b195c5","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true}},{"host":"pypi.org"}]}"#,
         )]);
         let e = apply(&f, &pins, &wider, &settled, &mut Vec::new())
             .unwrap_err()
             .to_string();
-        assert!(e.contains("a: not what was approved"), "{e}");
+        assert!(
+            e.contains("904254dc-1b8f-5e80-9755-e5afc5b195c5: not what was approved"),
+            "{e}"
+        );
     }
 
     #[test]
@@ -693,16 +709,27 @@ mod tests {
         let f = Fake::default();
         let pins = pins();
         let t = tree(&[("", A)]);
-        f.vm("a", &["cell-a"]);
+        f.vm(
+            "904254dc-1b8f-5e80-9755-e5afc5b195c5",
+            &["cell-904254dc-1b8f-5e80-9755-e5afc5b195c5"],
+        );
         f.int(
             "gh-both",
             "github",
-            &["tag:cell-a", "vm:other"],
+            &[
+                "tag:cell-904254dc-1b8f-5e80-9755-e5afc5b195c5",
+                "vm:70ee78ad-5e3a-510a-af20-6f485ecb6f16",
+            ],
             serde_json::json!({"repositories": ["example/x", "o/y"]}),
         );
-        f.setup("a", t.get(&"a".parse().unwrap()).unwrap()).unwrap();
+        f.setup(
+            "904254dc-1b8f-5e80-9755-e5afc5b195c5",
+            t.get(&"904254dc-1b8f-5e80-9755-e5afc5b195c5".parse().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
         let approved = approve(&f, &pins, &t);
-        let a: Name = "a".parse().unwrap();
+        let a: CellId = "904254dc-1b8f-5e80-9755-e5afc5b195c5".parse().unwrap();
         assert_eq!(
             approved.plans()[&a].actions,
             [Action::Detach(Grant::Code {
@@ -720,9 +747,13 @@ mod tests {
         );
         assert_eq!(
             f.calls().last().unwrap(),
-            "integrations detach gh-both tag:cell-a"
+            "integrations detach gh-both tag:cell-904254dc-1b8f-5e80-9755-e5afc5b195c5"
         );
-        assert_eq!(f.attachments("gh-both"), ["vm:other"], "other VMs keep it");
+        assert_eq!(
+            f.attachments("gh-both"),
+            ["vm:70ee78ad-5e3a-510a-af20-6f485ecb6f16"],
+            "70ee78ad-5e3a-510a-af20-6f485ecb6f16 VMs keep it"
+        );
     }
 
     #[test]
@@ -730,11 +761,14 @@ mod tests {
         let f = Fake::default();
         let pins = pins();
         let t = tree(&[("", A)]);
-        f.vm("a", &["cell-a", "shared"]);
+        f.vm(
+            "904254dc-1b8f-5e80-9755-e5afc5b195c5",
+            &["cell-904254dc-1b8f-5e80-9755-e5afc5b195c5", "shared"],
+        );
         f.int(
             "gh-x",
             "github",
-            &["tag:cell-a"],
+            &["tag:cell-904254dc-1b8f-5e80-9755-e5afc5b195c5"],
             serde_json::json!({"repositories": ["example/x"]}),
         );
         f.int(
@@ -743,7 +777,12 @@ mod tests {
             &["tag:shared"],
             serde_json::json!({"repositories": ["o/z"]}),
         );
-        f.setup("a", t.get(&"a".parse().unwrap()).unwrap()).unwrap();
+        f.setup(
+            "904254dc-1b8f-5e80-9755-e5afc5b195c5",
+            t.get(&"904254dc-1b8f-5e80-9755-e5afc5b195c5".parse().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
         let approved = approve(&f, &pins, &t);
         let before = f.calls().len();
         let e = apply(&f, &pins, &t, &approved, &mut Vec::new())
@@ -758,68 +797,96 @@ mod tests {
         let f = Fake::default();
         let pins = pins();
         let t = tree(&[("", A), ("", B)]);
-        f.vm("a", &["cell-a"]);
-        f.vm("b", &["cell-b"]);
+        f.vm(
+            "904254dc-1b8f-5e80-9755-e5afc5b195c5",
+            &["cell-904254dc-1b8f-5e80-9755-e5afc5b195c5"],
+        );
+        f.vm(
+            "46b16f13-11ac-5315-b431-845f196f907e",
+            &["cell-46b16f13-11ac-5315-b431-845f196f907e"],
+        );
         f.int(
             "gh-x",
             "github",
-            &["tag:cell-a"],
+            &["tag:cell-904254dc-1b8f-5e80-9755-e5afc5b195c5"],
             serde_json::json!({"repositories": ["example/x"]}),
         );
         f.int(
-            "door-b",
+            "door-46b16f13-11ac-5315-b431-845f196f907e",
             "http-proxy",
-            &["tag:cell-a", "vm:elsewhere"],
-            serde_json::json!({"target": "https://b.exe.xyz/", "peer": true}),
+            &["tag:cell-904254dc-1b8f-5e80-9755-e5afc5b195c5", "vm:elsewhere"],
+            serde_json::json!({"target": "https://46b16f13-11ac-5315-b431-845f196f907e.exe.xyz/", "peer": true}),
         );
         for c in t.iter() {
-            f.setup(c.name.as_str(), c).unwrap();
+            f.setup(c.id.as_str(), c).unwrap();
         }
         let approved = approve(&f, &pins, &t);
         let n = apply(&f, &pins, &t, &approved, &mut Vec::new()).unwrap();
         assert_eq!(n, 1);
         assert_eq!(
             f.calls().last().unwrap(),
-            "integrations detach door-b tag:cell-a"
+            "integrations detach door-46b16f13-11ac-5315-b431-845f196f907e tag:cell-904254dc-1b8f-5e80-9755-e5afc5b195c5"
         );
-        assert_eq!(f.attachments("door-b"), ["vm:elsewhere"]);
+        assert_eq!(
+            f.attachments("door-46b16f13-11ac-5315-b431-845f196f907e"),
+            ["vm:elsewhere"]
+        );
 
-        f.run(&["integrations", "detach", "door-b", "vm:elsewhere"])
-            .unwrap();
-        f.run(&["integrations", "attach", "door-b", "tag:cell-a"])
-            .unwrap();
+        f.run(&[
+            "integrations",
+            "detach",
+            "door-46b16f13-11ac-5315-b431-845f196f907e",
+            "vm:elsewhere",
+        ])
+        .unwrap();
+        f.run(&[
+            "integrations",
+            "attach",
+            "door-46b16f13-11ac-5315-b431-845f196f907e",
+            "tag:cell-904254dc-1b8f-5e80-9755-e5afc5b195c5",
+        ])
+        .unwrap();
         let approved = approve(&f, &pins, &t);
         apply(&f, &pins, &t, &approved, &mut Vec::new()).unwrap();
-        assert_eq!(f.calls().last().unwrap(), "integrations remove door-b");
+        assert_eq!(
+            f.calls().last().unwrap(),
+            "integrations remove door-46b16f13-11ac-5315-b431-845f196f907e"
+        );
     }
 
     #[test]
     fn an_existing_door_is_reattached_rather_than_remade() {
         let f = Fake::default();
         let pins = pins();
-        let t = tree(&[("", A), ("a", B)]);
-        f.vm("a", &["cell-a"]);
-        f.vm("b", &["cell-b"]);
+        let t = tree(&[("", A), ("904254dc-1b8f-5e80-9755-e5afc5b195c5", B)]);
+        f.vm(
+            "904254dc-1b8f-5e80-9755-e5afc5b195c5",
+            &["cell-904254dc-1b8f-5e80-9755-e5afc5b195c5"],
+        );
+        f.vm(
+            "46b16f13-11ac-5315-b431-845f196f907e",
+            &["cell-46b16f13-11ac-5315-b431-845f196f907e"],
+        );
         f.int(
             "gh-x",
             "github",
-            &["tag:cell-a"],
+            &["tag:cell-904254dc-1b8f-5e80-9755-e5afc5b195c5"],
             serde_json::json!({"repositories": ["example/x"]}),
         );
         f.int(
-            "door-b",
+            "door-46b16f13-11ac-5315-b431-845f196f907e",
             "http-proxy",
             &[],
-            serde_json::json!({"target": "https://b.exe.xyz/", "peer": true}),
+            serde_json::json!({"target": "https://46b16f13-11ac-5315-b431-845f196f907e.exe.xyz/", "peer": true}),
         );
         for c in t.iter() {
-            f.setup(c.name.as_str(), c).unwrap();
+            f.setup(c.id.as_str(), c).unwrap();
         }
         let approved = approve(&f, &pins, &t);
         assert_eq!(apply(&f, &pins, &t, &approved, &mut Vec::new()).unwrap(), 1);
         assert_eq!(
             f.calls().last().unwrap(),
-            "integrations attach door-b tag:cell-a"
+            "integrations attach door-46b16f13-11ac-5315-b431-845f196f907e tag:cell-904254dc-1b8f-5e80-9755-e5afc5b195c5"
         );
     }
 
@@ -829,15 +896,18 @@ mod tests {
         let pins = pins();
         let t = tree(&[("", B)]);
         let b: Cell = serde_json::from_str(B).unwrap();
-        f.vm("b", &["cell-b"]);
-        f.setup("b", &b).unwrap();
+        f.vm(
+            "46b16f13-11ac-5315-b431-845f196f907e",
+            &["cell-46b16f13-11ac-5315-b431-845f196f907e"],
+        );
+        f.setup("46b16f13-11ac-5315-b431-845f196f907e", &b).unwrap();
         assert!(approve(&f, &pins, &t).plans().values().all(Plan::is_empty));
 
         f.boxes.borrow_mut().clear();
-        f.setup("b", &b).unwrap();
+        f.setup("46b16f13-11ac-5315-b431-845f196f907e", &b).unwrap();
         let e = plans(&f, &pins, &t, &all(&t)).unwrap_err().to_string();
         assert!(e.contains("not the pinned"), "{e}");
-        fs::remove_file(pins.join("b.pub")).unwrap();
+        fs::remove_file(pins.join("46b16f13-11ac-5315-b431-845f196f907e.pub")).unwrap();
         assert!(plans(&f, &pins, &t, &all(&t)).is_ok());
     }
 
@@ -846,7 +916,7 @@ mod tests {
         let f = Fake::default();
         let pins = pins();
         let b: Cell = serde_json::from_str(B).unwrap();
-        let name = b.name.clone();
+        let name = b.id.clone();
         let secret = Secret::generate();
         let checked = |seq, ok| {
             Statement::sign(
@@ -863,24 +933,30 @@ mod tests {
             )
         };
         f.boxes.borrow_mut().insert(
-            "b".into(),
+            "46b16f13-11ac-5315-b431-845f196f907e".into(),
             (secret.clone(), vec![checked(1, true), checked(2, false)]),
         );
-        assert_eq!(on_box(&f, &pins, &name, "b").unwrap(), None);
-
-        f.boxes
-            .borrow_mut()
-            .insert("b".into(), (secret.clone(), vec![checked(1, true)]));
         assert_eq!(
-            on_box(&f, &pins, &name, "b").unwrap(),
+            on_box(&f, &pins, &name, "46b16f13-11ac-5315-b431-845f196f907e").unwrap(),
+            None
+        );
+
+        f.boxes.borrow_mut().insert(
+            "46b16f13-11ac-5315-b431-845f196f907e".into(),
+            (secret.clone(), vec![checked(1, true)]),
+        );
+        assert_eq!(
+            on_box(&f, &pins, &name, "46b16f13-11ac-5315-b431-845f196f907e").unwrap(),
             Some((b.hash(), Hash::ZERO))
         );
 
         f.boxes.borrow_mut().insert(
-            "b".into(),
+            "46b16f13-11ac-5315-b431-845f196f907e".into(),
             (secret.clone(), vec![checked(1, true), checked(3, true)]),
         );
-        let e = on_box(&f, &pins, &name, "b").unwrap_err().to_string();
+        let e = on_box(&f, &pins, &name, "46b16f13-11ac-5315-b431-845f196f907e")
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("out of sequence"), "{e}");
 
         let forged = Statement::sign(
@@ -891,10 +967,13 @@ mod tests {
                 url: "https://x.example/".parse().unwrap(),
             },
         );
-        f.boxes
-            .borrow_mut()
-            .insert("b".into(), (secret, vec![forged]));
-        let e = on_box(&f, &pins, &name, "b").unwrap_err().to_string();
+        f.boxes.borrow_mut().insert(
+            "46b16f13-11ac-5315-b431-845f196f907e".into(),
+            (secret, vec![forged]),
+        );
+        let e = on_box(&f, &pins, &name, "46b16f13-11ac-5315-b431-845f196f907e")
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("does not verify"), "{e}");
     }
 
@@ -903,27 +982,41 @@ mod tests {
         let f = Fake::default();
         let pins = pins();
         let b: Cell = serde_json::from_str(B).unwrap();
-        f.vm("b", &["cell-b"]);
+        f.vm(
+            "46b16f13-11ac-5315-b431-845f196f907e",
+            &["cell-46b16f13-11ac-5315-b431-845f196f907e"],
+        );
         assert!(
-            pull(&f, &pins, &b.name, "b").unwrap().is_none(),
+            pull(&f, &pins, &b.id, "46b16f13-11ac-5315-b431-845f196f907e")
+                .unwrap()
+                .is_none(),
             "nothing before setup"
         );
-        f.setup("b", &b).unwrap();
-        f.setup("b", &b).unwrap();
-        let log = pull(&f, &pins, &b.name, "b").unwrap().unwrap();
+        f.setup("46b16f13-11ac-5315-b431-845f196f907e", &b).unwrap();
+        f.setup("46b16f13-11ac-5315-b431-845f196f907e", &b).unwrap();
+        let log = pull(&f, &pins, &b.id, "46b16f13-11ac-5315-b431-845f196f907e")
+            .unwrap()
+            .unwrap();
         assert_eq!(log.len(), 2);
         assert!(matches!(log[1].1, Said::Checked { .. }));
         assert_eq!(log[1].0.seq, 2);
         let brief = Said::Brief {
             request: crate::RequestId::generate(),
             session: crate::SessionRef {
-                cell: b.name.clone(),
+                cell: b.id.clone(),
                 id: crate::SessionId::generate(),
             },
             text: "go".into(),
         };
-        assert_eq!(f.knock("b", &brief).unwrap(), 1);
-        assert_eq!(f.inboxes.borrow()["b"], [brief]);
+        assert_eq!(
+            f.knock("46b16f13-11ac-5315-b431-845f196f907e", &brief)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            f.inboxes.borrow()["46b16f13-11ac-5315-b431-845f196f907e"],
+            [brief]
+        );
     }
 
     #[test]

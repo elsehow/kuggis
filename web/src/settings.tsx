@@ -11,8 +11,9 @@ type ConnectionDraft = ConnectionConfig & Pick<ConnectionUpdate, "credential">;
 type Preview = ChangePreview & { grants: Grant[] };
 const grantLabel = (grant: Grant) => "provider" in grant ? providerLabel(grant.provider) : "code" in grant ? `${grant.code.write ? "Write" : "Read"} ${grant.code.repo}${grant.code.via ? ` via ${grant.code.via}` : ""}` : "host" in grant ? `Connect to ${grant.host}` : "publish" in grant ? publishLabel(grant.publish) : `Connect to ${grant.edge}`;
 
-export function Settings({ cell, base, canApply, onClose, onApplied, onDelete }: { cell: CellInfo; base: string; canApply: boolean; onClose: () => void; onApplied: () => Promise<void>; onDelete?: () => void }) {
+export function Settings({ cell, base, canApply, canRename, onClose, onApplied, onDelete }: { cell: CellInfo; base: string; canApply: boolean; canRename: boolean; onClose: () => void; onApplied: () => Promise<void>; onDelete?: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const [name, setName] = useState(cell.name);
   const [detail, setDetail] = useState<SettingsView>();
   const [providers, setProviders] = useState(cell.grants.flatMap((g) => "provider" in g ? [g.provider] : []));
   const [repos, setRepos] = useState(cell.grants.flatMap((g) => "code" in g ? [g.code] : []));
@@ -54,6 +55,10 @@ export function Settings({ cell, base, canApply, onClose, onApplied, onDelete }:
   return <dialog ref={dialog} className="settings" onCancel={(e) => { e.preventDefault(); if (!busy) onClose(); }} aria-labelledby="settings-title">
     <header><h2 id="settings-title">{cell.name}</h2><button aria-label="Close settings" disabled={busy} onClick={onClose}>×</button></header>
     {error && <div className="inline-error" role="alert">{error}</div>}
+    {canRename && <section><label>Cell name<input aria-label="Cell name" value={name} onChange={e => setName(e.target.value)} disabled={busy} /></label><button disabled={busy || name === cell.name || !name.trim()} onClick={() => void work(async () => {
+      await api(`${base}/rename`, { method: "POST", body: JSON.stringify({ name: name.trim() }) });
+      await onApplied(); setSaved(true);
+    })}>Rename</button></section>}
     {preview ? <section className="review"><h3>Review changes</h3><ul>
       {preview.grants.filter((g) => !cell.grants.some((old) => same([g], [old]))).map((g) => <li key={`add-${JSON.stringify(g)}`}>Allow: {grantLabel(g)}</li>)}
       {cell.grants.filter((g) => !preview.grants.some((next) => same([g], [next]))).map((g) => <li key={`remove-${JSON.stringify(g)}`}>Remove: {grantLabel(g)}</li>)}

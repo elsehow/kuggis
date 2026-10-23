@@ -8,7 +8,7 @@ use std::{collections::BTreeSet, io::Write, os::unix::fs::OpenOptionsExt, path::
 #[serde(deny_unknown_fields)]
 pub(super) struct NewCell {
     name: Name,
-    parent: Option<Name>,
+    parent: Option<CellId>,
     grants: BTreeSet<Grant>,
 }
 
@@ -47,10 +47,10 @@ pub(crate) enum CreationStep {
 pub(crate) struct Creation {
     pub id: RequestId,
     pub cell: Cell,
-    pub parent: Option<Name>,
+    pub parent: Option<CellId>,
     before: Hash,
     pub approval: Hash,
-    plans: BTreeMap<Name, Plan>,
+    plans: BTreeMap<CellId, Plan>,
     pub phase: CreationPhase,
 }
 impl Creation {
@@ -128,8 +128,8 @@ pub(super) fn recover(state: &FsPath) -> std::io::Result<()> {
     Ok(())
 }
 
-pub(super) fn retire(state: &FsPath, name: &Name) -> std::io::Result<()> {
-    for mut job in list(state)?.into_iter().filter(|j| &j.cell.name == name) {
+pub(super) fn retire(state: &FsPath, name: &CellId) -> std::io::Result<()> {
+    for mut job in list(state)?.into_iter().filter(|j| &j.cell.id == name) {
         job.phase = CreationPhase::Deleted;
         job.save(state)?;
     }
@@ -140,15 +140,15 @@ fn fingerprint(tree: &Tree) -> Hash {
     Hash::of(&crate::canon::bytes(
         &tree
             .iter()
-            .map(|c| (c, tree.parent(&c.name).map(|p| &p.name)))
+            .map(|c| (c, tree.parent(&c.id).map(|p| &p.id)))
             .collect::<Vec<_>>(),
     ))
 }
 
-fn add(tree: &Tree, cell: &Cell, parent: &Option<Name>) -> Result<Tree> {
+fn add(tree: &Tree, cell: &Cell, parent: &Option<CellId>) -> Result<Tree> {
     Tree::new(
         tree.iter()
-            .map(|c| (c.clone(), tree.parent(&c.name).map(|p| p.name.clone())))
+            .map(|c| (c.clone(), tree.parent(&c.id).map(|p| p.id.clone())))
             .chain(std::iter::once((cell.clone(), parent.clone()))),
     )
     .map_err(bad)
@@ -156,9 +156,9 @@ fn add(tree: &Tree, cell: &Cell, parent: &Option<Name>) -> Result<Tree> {
 
 fn destination(
     root: &FsPath,
-    paths: &BTreeMap<Name, PathBuf>,
-    parent: &Option<Name>,
-    name: &Name,
+    paths: &BTreeMap<CellId, PathBuf>,
+    parent: &Option<CellId>,
+    name: &CellId,
 ) -> Result<PathBuf> {
     let dir = match parent {
         None => root.to_owned(),
@@ -189,15 +189,15 @@ pub(super) async fn preview(
     }
     let (before, paths) = op.tree()?;
     let cell = Cell::new(input.name, input.grants);
-    super::deletion::ensure_available(&op.config.state, &cell.name)?;
+    super::deletion::ensure_available(&op.config.state, &cell.id)?;
     if let Some(parent) = &input.parent {
         super::deletion::ensure_available(&op.config.state, parent)?;
     }
-    if before.get(&cell.name).is_some()
+    if before.iter().any(|c| c.name == cell.name)
         || list(&op.config.state)
             .map_err(fail)?
             .iter()
-            .any(|j| j.cell.name == cell.name && j.is_current())
+            .any(|j| j.cell.name == cell.name && j.is_current() && before.get(&j.cell.id).is_none())
     {
         return Err(Error(
             StatusCode::CONFLICT,
@@ -205,17 +205,17 @@ pub(super) async fn preview(
         ));
     }
     let after = add(&before, &cell, &input.parent)?;
-    destination(&op.config.tree, &paths, &input.parent, &cell.name)?;
+    destination(&op.config.tree, &paths, &input.parent, &cell.id)?;
     let edge = op.edge.clone();
     let pins = op.config.tree.join(".pins");
-    let mut names = vec![cell.name.clone()];
+    let mut names = vec![cell.id.clone()];
     names.extend(input.parent.iter().cloned());
-    let name = cell.name.clone();
+    let name = cell.id.clone();
     let plans = tokio::task::spawn_blocking(move || -> std::result::Result<_, String> {
         let (vms, _) = edge.listing().map_err(|e| e.to_string())?;
         let vm_name = crate::exe::provision_name(&name);
-        if vms.iter().any(|v| v.vm_name == vm_name || v.cell_name().as_ref() == Some(&name)) {
-            return Err("A VM with this cell's name already exists; choose another name".into());
+        if vms.iter().any(|v| v.vm_name == vm_name || v.cell_id().as_ref() == Some(&name)) {
+            return Err("A VM with this cell's ID already exists; review a new creation".into());
         }
         let plans = apply::plans(edge.as_ref(), &pins, &after, &names).map_err(|e| e.to_string())?;
         // Creation may connect the parent to its new child. It does not silently
@@ -251,9 +251,8 @@ pub(super) async fn get(
 /// reuse only the identical declaration in the identical tree position.
 fn declare(op: &Operator, job: &Creation) -> Result<Tree> {
     let (tree, paths) = op.tree()?;
-    if let Some(existing) = tree.get(&job.cell.name) {
-        if existing != &job.cell
-            || tree.parent(&job.cell.name).map(|p| &p.name) != job.parent.as_ref()
+    if let Some(existing) = tree.get(&job.cell.id) {
+        if existing != &job.cell || tree.parent(&job.cell.id).map(|p| &p.id) != job.parent.as_ref()
         {
             return Err(Error(
                 StatusCode::CONFLICT,
@@ -263,7 +262,7 @@ fn declare(op: &Operator, job: &Creation) -> Result<Tree> {
         return Ok(tree);
     }
     let after = add(&tree, &job.cell, &job.parent)?;
-    let path = destination(&op.config.tree, &paths, &job.parent, &job.cell.name)?;
+    let path = destination(&op.config.tree, &paths, &job.parent, &job.cell.id)?;
     let dir = path.parent().unwrap();
     fs::create_dir_all(dir).map_err(fail)?;
     // A complete temporary file is linked into place atomically, without the
@@ -298,7 +297,7 @@ pub(super) async fn start(
     if matches!(job.phase, CreationPhase::Deleted) {
         return Err(Error(StatusCode::GONE, "This cell was deleted".into()));
     }
-    super::deletion::ensure_available(&op.config.state, &job.cell.name)?;
+    super::deletion::ensure_available(&op.config.state, &job.cell.id)?;
     if let Some(parent) = &job.parent {
         super::deletion::ensure_available(&op.config.state, parent)?;
     }
@@ -369,7 +368,7 @@ async fn provision(op: &Arc<Operator>, job: &mut Creation, approved: Approved) -
             &approved,
             &mut std::io::sink(),
             &mut |name, action| {
-                let step = if *name != progress.cell.name {
+                let step = if *name != progress.cell.id {
                     CreationStep::ConnectingParent
                 } else {
                     match action {
@@ -396,8 +395,8 @@ async fn provision(op: &Arc<Operator>, job: &mut Creation, approved: Approved) -
     // If the gateway stopped just after creating the first chat, discover that
     // chat on retry rather than creating a second one.
     let threads: Vec<crate::chat::types::SessionSummary> =
-        cell_json(op, &job.cell.name, "GET", "/api/pi/threads", None).await?;
-    if threads.iter().any(|s| s.cell != job.cell.name) {
+        cell_json(op, &job.cell.id, "GET", "/api/pi/threads", None).await?;
+    if threads.iter().any(|s| s.cell != job.cell.id) {
         return Err(fail("Cell returned chats belonging to another cell"));
     }
     let id = match threads.first() {
@@ -405,13 +404,13 @@ async fn provision(op: &Arc<Operator>, job: &mut Creation, approved: Approved) -
         None => {
             let created: crate::chat::types::CreatedThread = cell_json(
                 op,
-                &job.cell.name,
+                &job.cell.id,
                 "POST",
                 "/api/pi/threads",
                 Some(json!({"title":"New chat"})),
             )
             .await?;
-            if created.metadata.cell != job.cell.name {
+            if created.metadata.cell != job.cell.id {
                 return Err(fail("Cell returned a chat belonging to another cell"));
             }
             created.metadata.id
@@ -419,7 +418,7 @@ async fn provision(op: &Arc<Operator>, job: &mut Creation, approved: Approved) -
     };
     job.phase = CreationPhase::Ready {
         session: SessionRef {
-            cell: job.cell.name.clone(),
+            cell: job.cell.id.clone(),
             id,
         },
     };
@@ -429,7 +428,7 @@ async fn provision(op: &Arc<Operator>, job: &mut Creation, approved: Approved) -
 
 async fn cell_json<T: serde::de::DeserializeOwned>(
     op: &Operator,
-    name: &Name,
+    name: &CellId,
     method: &str,
     path: &str,
     body: Option<Value>,
@@ -515,7 +514,7 @@ mod tests {
             ))
         }
         fn binary(&self) -> apply::Fallible<Option<Hash>> {
-            Ok(Some(Hash::of(b"fixture")))
+            Ok(Some(Hash::of(b"ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef")))
         }
         fn run(&self, args: &[&str]) -> apply::Fallible<String> {
             let arg = |prefix: &str| {
@@ -571,13 +570,13 @@ mod tests {
                 .or_insert_with(|| (Secret::generate(), Vec::new()));
             log.push(Statement::sign(
                 secret,
-                cell.name.clone(),
+                cell.id.clone(),
                 log.len() as u64 + 1,
                 Said::Checked {
                     cell: cell.hash(),
                     ok: true,
                     report: String::new(),
-                    binary: Hash::of(b"fixture"),
+                    binary: Hash::of(b"ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef"),
                     signed: BTreeSet::new(),
                 },
             ));
@@ -598,18 +597,23 @@ mod tests {
             fs::create_dir_all(dir.join("tree")).unwrap();
             fs::create_dir_all(dir.join("sockets")).unwrap();
             let parent: Cell = serde_json::from_value(
-                json!({"name":"project","grants":[{"provider":"anthropic"}]}),
+                json!({"id":"44fc36e4-5adc-51aa-a6e3-3db15ade9819","name":"44fc36e4-5adc-51aa-a6e3-3db15ade9819","grants":[{"provider":"anthropic"}]}),
             )
             .unwrap();
-            fs::write(dir.join("tree/project.json"), parent.canonical()).unwrap();
+            fs::write(
+                dir.join("tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819.json"),
+                parent.canonical(),
+            )
+            .unwrap();
             let edge = Arc::new(FakeEdge::default());
             edge.vms.lock().unwrap().push(Vm {
                 created_at: Some("fixture-incarnation".into()),
-                vm_name: "project".into(),
-                tags: vec!["cell-project".into()],
+                vm_name: "44fc36e4-5adc-51aa-a6e3-3db15ade9819".into(),
+                tags: vec!["cell-44fc36e4-5adc-51aa-a6e3-3db15ade9819".into()],
                 status: "running".into(),
             });
-            edge.setup("project", &parent).unwrap();
+            edge.setup("44fc36e4-5adc-51aa-a6e3-3db15ade9819", &parent)
+                .unwrap();
             let op = Arc::new(Operator {
                 config: Config {
                     tree: dir.join("tree"),
@@ -620,7 +624,7 @@ mod tests {
                     sockets: None,
                     access: Access::Local,
                 },
-                authority: "fixture".into(),
+                authority: "ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef".into(),
                 relays: Mutex::new(BTreeMap::new()),
                 vms: tokio::sync::RwLock::new(BTreeMap::new()),
                 edge: edge.clone(),
@@ -674,13 +678,17 @@ mod tests {
         )
         .is_err());
         assert!(fixture
-            .preview("project-dev", Some("missing"), json!([]))
+            .preview(
+                "e95cc7f0-21bb-5212-8fa9-abbfde3f6b21",
+                Some("9f1bc83a-82d5-59ba-9fb5-45088d81526b"),
+                json!([])
+            )
             .await
             .is_err());
         assert!(fixture
             .preview(
-                "project-dev",
-                Some("project"),
+                "e95cc7f0-21bb-5212-8fa9-abbfde3f6b21",
+                Some("44fc36e4-5adc-51aa-a6e3-3db15ade9819"),
                 json!([{"provider":"openai"}])
             )
             .await
@@ -689,7 +697,7 @@ mod tests {
             .contains("not covered"));
         assert_eq!(
             fixture
-                .preview("project", None, json!([]))
+                .preview("44fc36e4-5adc-51aa-a6e3-3db15ade9819", None, json!([]))
                 .await
                 .unwrap_err()
                 .0,
@@ -701,34 +709,34 @@ mod tests {
             tags: vec![],
             status: "running".into(),
         });
-        assert!(fixture
-            .preview("taken", None, json!([]))
-            .await
-            .unwrap_err()
-            .1
-            .contains("already exists"));
+        assert!(fixture.preview("taken", None, json!([])).await.is_ok());
         fixture.edge.vms.lock().unwrap().push(Vm {
             created_at: Some("fixture-incarnation".into()),
             vm_name: "cell-app".into(),
             tags: vec![],
             status: "running".into(),
         });
-        assert!(fixture
-            .preview("app", None, json!([]))
-            .await
-            .unwrap_err()
-            .1
-            .contains("already exists"));
+        assert!(fixture.preview("app", None, json!([])).await.is_ok());
         let job = fixture
-            .preview("project-dev", Some("project"), json!([]))
+            .preview(
+                "e95cc7f0-21bb-5212-8fa9-abbfde3f6b21",
+                Some("44fc36e4-5adc-51aa-a6e3-3db15ade9819"),
+                json!([]),
+            )
             .await
             .unwrap();
         assert_eq!(
-            job.plans[&"project".parse().unwrap()].actions,
-            vec![Action::Open("project-dev".parse().unwrap())]
+            job.plans[&"44fc36e4-5adc-51aa-a6e3-3db15ade9819".parse().unwrap()].actions,
+            vec![Action::Open(job.cell.id.clone())]
         );
         assert!(
-            !fixture.dir.join("tree/project/project-dev.json").exists(),
+            !fixture
+                .dir
+                .join(format!(
+                    "tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819/{}.json",
+                    job.cell.id
+                ))
+                .exists(),
             "preview must not declare or provision"
         );
         assert!(start(
@@ -741,8 +749,10 @@ mod tests {
         .await
         .is_err());
         fs::write(
-            fixture.dir.join("tree/another.json"),
-            br#"{"name":"another","grants":[]}"#,
+            fixture
+                .dir
+                .join("tree/68db3576-c08c-57b9-8853-165445ea6508.json"),
+            br#"{"id":"68db3576-c08c-57b9-8853-165445ea6508","name":"another","grants":[]}"#,
         )
         .unwrap();
         let stale = start(
@@ -761,18 +771,32 @@ mod tests {
                 ..
             }
         ));
-        assert!(!fixture.dir.join("tree/project/project-dev.json").exists());
+        assert!(!fixture
+            .dir
+            .join(format!(
+                "tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819/{}.json",
+                job.cell.id
+            ))
+            .exists());
         let reviewed = fixture
-            .preview("project-dev", Some("project"), json!([]))
+            .preview(
+                "e95cc7f0-21bb-5212-8fa9-abbfde3f6b21",
+                Some("44fc36e4-5adc-51aa-a6e3-3db15ade9819"),
+                json!([]),
+            )
             .await
             .unwrap();
         assert_ne!(
             reviewed.id, job.id,
-            "review creates a fresh operation and approval"
+            "review creates 904254dc-1b8f-5e80-9755-e5afc5b195c5 fresh operation and approval"
         );
         fixture.edge.logs.lock().unwrap().clear();
         assert!(fixture
-            .preview("project-other", Some("project"), json!([]))
+            .preview(
+                "8bffac11-c9cf-5079-b612-0a817dbe9a66",
+                Some("44fc36e4-5adc-51aa-a6e3-3db15ade9819"),
+                json!([])
+            )
             .await
             .unwrap_err()
             .1
@@ -785,8 +809,8 @@ mod tests {
         let mut fixture = Fixture::new();
         let job = fixture
             .preview(
-                "project-dev",
-                Some("project"),
+                "e95cc7f0-21bb-5212-8fa9-abbfde3f6b21",
+                Some("44fc36e4-5adc-51aa-a6e3-3db15ade9819"),
                 json!([{"provider":"anthropic"}]),
             )
             .await
@@ -809,14 +833,23 @@ mod tests {
             CreationPhase::Failed { .. }
         ));
         assert_eq!(fixture.edge.creates.load(Ordering::SeqCst), 1);
-        assert!(fixture.dir.join("tree/project/project-dev.json").exists());
+        assert!(fixture
+            .dir
+            .join(format!(
+                "tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819/{}.json",
+                job.cell.id
+            ))
+            .exists());
 
-        let listener =
-            tokio::net::UnixListener::bind(fixture.dir.join("sockets/project-dev.sock")).unwrap();
+        let listener = tokio::net::UnixListener::bind(
+            fixture.dir.join(format!("sockets/{}.sock", job.cell.id)),
+        )
+        .unwrap();
         let chats = Arc::new(StdMutex::new(Vec::<Value>::new()));
         let creates = Arc::new(AtomicUsize::new(0));
         let stored = chats.clone();
         let count = creates.clone();
+        let cell_id = job.cell.id.clone();
         let server = tokio::spawn(async move {
             loop {
                 let (mut socket, _) = listener.accept().await.unwrap();
@@ -833,7 +866,7 @@ mod tests {
                 let body = if text.starts_with("POST ") {
                     count.fetch_add(1, Ordering::SeqCst);
                     let chat =
-                        json!({"id":SessionId::generate(),"cell":"project-dev","title":"New chat","status":"idle"});
+                        json!({"id":SessionId::generate(),"cell":cell_id,"title":"New chat","status":"idle"});
                     stored.lock().unwrap().push(chat.clone());
                     json!({"metadata":chat})
                 } else {
@@ -863,15 +896,20 @@ mod tests {
         assert_eq!(
             fixture.edge.setups.load(Ordering::SeqCst),
             2,
-            "the parent must not restart"
+            "the 7721fe29-1976-53fa-8250-32afa9e9bb35 must not restart"
         );
         assert_eq!(
             fixture.edge.integrations.lock().unwrap().len(),
             1,
-            "the parent gets its child door"
+            "the 7721fe29-1976-53fa-8250-32afa9e9bb35 gets its e3e321ad-3f5e-5221-9ec8-ccc87947084b door"
         );
         assert_eq!(creates.load(Ordering::SeqCst), 1);
-        let parent_bytes = fs::read(fixture.dir.join("tree/project.json")).unwrap();
+        let parent_bytes = fs::read(
+            fixture
+                .dir
+                .join("tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819.json"),
+        )
+        .unwrap();
         // Simulate shutdown after the chat was created, before Ready was saved.
         let mut interrupted = ready.clone();
         interrupted.phase = CreationPhase::Provisioning {
@@ -919,7 +957,12 @@ mod tests {
         assert_eq!(fixture.settled(job.id).await.phase, ready.phase);
         assert_eq!(creates.load(Ordering::SeqCst), 1);
         assert_eq!(
-            fs::read(fixture.dir.join("tree/project.json")).unwrap(),
+            fs::read(
+                fixture
+                    .dir
+                    .join("tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819.json")
+            )
+            .unwrap(),
             parent_bytes
         );
         // A completed request is safely replayable.
@@ -943,11 +986,11 @@ mod tests {
     #[test]
     fn declaration_retry_never_overwrites_a_changed_cell_or_moves_it() {
         let fixture = Fixture::new();
-        let cell: Cell = serde_json::from_value(json!({"name":"project-dev","grants":[]})).unwrap();
+        let cell: Cell = serde_json::from_value(json!({"id":"e95cc7f0-21bb-5212-8fa9-abbfde3f6b21","name":"e95cc7f0-21bb-5212-8fa9-abbfde3f6b21","grants":[]})).unwrap();
         let job = Creation {
             id: RequestId::generate(),
             cell,
-            parent: Some("project".parse().unwrap()),
+            parent: Some("44fc36e4-5adc-51aa-a6e3-3db15ade9819".parse().unwrap()),
             before: Hash::ZERO,
             approval: Hash::ZERO,
             plans: BTreeMap::new(),
@@ -956,17 +999,23 @@ mod tests {
         declare(&fixture.op, &job).unwrap();
         declare(&fixture.op, &job).unwrap();
         fs::write(
-            fixture.dir.join("tree/project/project-dev.json"),
-            br#"{"name":"project-dev","grants":[{"provider":"anthropic"}]}"#,
+            fixture.dir.join(format!("tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819/{}.json", job.cell.id)),
+            br#"{"id":"e95cc7f0-21bb-5212-8fa9-abbfde3f6b21","name":"e95cc7f0-21bb-5212-8fa9-abbfde3f6b21","grants":[{"provider":"anthropic"}]}"#,
         )
         .unwrap();
         assert_eq!(
             declare(&fixture.op, &job).unwrap_err().0,
             StatusCode::CONFLICT
         );
-        fs::remove_file(fixture.dir.join("tree/project/project-dev.json")).unwrap();
+        fs::remove_file(fixture.dir.join(format!(
+            "tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819/{}.json",
+            job.cell.id
+        )))
+        .unwrap();
         fs::write(
-            fixture.dir.join("tree/project-dev.json"),
+            fixture
+                .dir
+                .join("tree/e95cc7f0-21bb-5212-8fa9-abbfde3f6b21.json"),
             job.cell.canonical(),
         )
         .unwrap();

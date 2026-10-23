@@ -1,25 +1,25 @@
 //! Durable conversations. Identity and ownership do not depend on a process,
 //! a title, a selected model, or a particular user interface.
 
-use crate::{Name, RequestId, SessionId};
+use crate::{CellId, RequestId, SessionId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
 pub struct Session {
     id: SessionId,
-    cell: Name,
+    cell: CellId,
     pub title: String,
     pub archived: bool,
 }
 
 impl Session {
-    pub fn new(cell: Name, title: String) -> Self {
+    pub fn new(cell: CellId, title: String) -> Self {
         Self::restore(SessionId::generate(), cell, title, false)
     }
 
     /// Restore an identity, including when importing the original local chat metadata.
-    pub fn restore(id: SessionId, cell: Name, title: String, archived: bool) -> Self {
+    pub fn restore(id: SessionId, cell: CellId, title: String, archived: bool) -> Self {
         Self {
             id,
             cell,
@@ -31,7 +31,7 @@ impl Session {
     pub fn id(&self) -> SessionId {
         self.id
     }
-    pub fn cell(&self) -> &Name {
+    pub fn cell(&self) -> &CellId {
         &self.cell
     }
     pub fn reference(&self) -> SessionRef {
@@ -46,12 +46,12 @@ impl Session {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRef {
-    pub cell: Name,
+    pub cell: CellId,
     pub id: SessionId,
 }
 
 impl SessionRef {
-    pub fn check_owner(&self, owner: &Name) -> Result<(), String> {
+    pub fn check_owner(&self, owner: &CellId) -> Result<(), String> {
         if &self.cell == owner {
             Ok(())
         } else {
@@ -127,7 +127,10 @@ mod tests {
 
     #[test]
     fn identity_survives_renaming_archiving_and_serialization() {
-        let mut session = Session::new("dev".parse().unwrap(), "First".into());
+        let mut session = Session::new(
+            "b48244b7-ed96-57fa-a3a2-e7629b8c921e".parse().unwrap(),
+            "First".into(),
+        );
         let address = session.reference();
         session.title = "Renamed".into();
         session.archived = true;
@@ -136,21 +139,24 @@ mod tests {
         assert_eq!(restored.reference(), address);
         assert_eq!(restored, session);
         assert!(serde_json::from_str::<Session>(
-            r#"{"id":"00000000000000000000000000000000","title":"Missing owner","archived":false}"#
+            r#"{"id":"00000000000000000000000000000000","title":"Missing 0153ed41-b34f-506b-837e-1610aeac2bce","archived":false}"#
         )
         .is_err());
     }
 
     #[test]
     fn commands_cannot_cross_session_or_cell_boundaries() {
-        let session = Session::new("dev".parse().unwrap(), "".into());
+        let session = Session::new(
+            "b48244b7-ed96-57fa-a3a2-e7629b8c921e".parse().unwrap(),
+            "".into(),
+        );
         let mut command = SessionCommand {
             request: RequestId::generate(),
             session: session.reference(),
             action: SessionAction::Cancel,
         };
         assert!(command.validate(&session).is_ok());
-        command.session.cell = "parent".parse().unwrap();
+        command.session.cell = "7721fe29-1976-53fa-8250-32afa9e9bb35".parse().unwrap();
         assert!(command.validate(&session).is_err());
         command.session = session.reference();
         command.session.id = SessionId::generate();
@@ -160,8 +166,8 @@ mod tests {
     #[test]
     fn opaque_ids_parse_strictly_and_are_not_display_names() {
         for bad in [
-            "dev",
-            "../dev",
+            "b48244b7-ed96-57fa-a3a2-e7629b8c921e",
+            "../b48244b7-ed96-57fa-a3a2-e7629b8c921e",
             "",
             "ABCDEF0123456789ABCDEF0123456789",
             "00",

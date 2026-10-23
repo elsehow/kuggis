@@ -1,5 +1,5 @@
 //! Local development and cell execution require different resources.
-use crate::{Cell, Name};
+use crate::{Cell, CellId};
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -29,10 +29,12 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn cell(&self) -> Name {
+    // Standalone local development has no provisioned cell. Its fixed UUID is
+    // scoped to the local state directory and is never used as a VM binding.
+    pub fn cell(&self) -> CellId {
         self.declaration()
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| "local".parse().unwrap())
+            .map(|c| c.id.clone())
+            .unwrap_or_else(|| "00000000-0000-4000-8000-000000000000".parse().unwrap())
     }
     pub fn declaration(&self) -> Option<&Cell> {
         match &self.mode {

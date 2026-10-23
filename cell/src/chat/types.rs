@@ -110,7 +110,7 @@ pub(crate) enum RunStatus {
 #[derive(Debug, Deserialize)]
 pub(crate) struct SessionSummary {
     pub id: SessionId,
-    pub cell: crate::Name,
+    pub cell: crate::CellId,
     pub status: RunStatus,
 }
 

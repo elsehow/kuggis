@@ -37,10 +37,10 @@ test("hosted ingress protects every route and removes credentials before cell re
     await rm(dir, { recursive: true, force: true });
   });
   for (const name of ["tree", "sockets", "web"]) await mkdir(join(dir, name));
-  await writeFile(join(dir, "tree/project.json"), JSON.stringify({ name: "project", grants: [] }));
+  await writeFile(join(dir, "tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819.json"), JSON.stringify({ id: "44fc36e4-5adc-51aa-a6e3-3db15ade9819", name: "44fc36e4-5adc-51aa-a6e3-3db15ade9819", grants: [] }));
   await writeFile(join(dir, "web/index.html"), "hosted fixture");
   await writeFile(join(dir, "access.json"), JSON.stringify({ origin: "https://supervisor.example", users: ["usr_fixture"] }));
-  cell.listen(join(dir, "sockets/project.sock")); await once(cell, "listening");
+  cell.listen(join(dir, "sockets/44fc36e4-5adc-51aa-a6e3-3db15ade9819.sock")); await once(cell, "listening");
   const reservation = createServer();
   reservation.listen(0, "127.0.0.1"); await once(reservation, "listening");
   const port = reservation.address().port;
@@ -53,7 +53,7 @@ test("hosted ingress protects every route and removes credentials before cell re
   assert.match(log, /Kuggis UI: https:\/\/supervisor.example/);
   const base = `http://127.0.0.1:${port}`;
   const good = { Host: "supervisor.example", "X-Forwarded-Host": "supervisor.example", "X-Forwarded-Proto": "https", "X-ExeDev-UserID": "usr_fixture", Origin: "https://supervisor.example" };
-  for (const [path, method] of [["/", "GET"], ["/api/cells", "GET"], ["/api/cells/plan", "POST"], ["/api/cells/project/events", "GET"]]) {
+  for (const [path, method] of [["/", "GET"], ["/api/cells", "GET"], ["/api/cells/plan", "POST"], ["/api/cells/44fc36e4-5adc-51aa-a6e3-3db15ade9819/events", "GET"]]) {
     for (const headers of [{}, { ...good, "X-ExeDev-UserID": "usr_other" }, { ...good, Origin: "https://evil.example" }]) {
       const r = await fetch(base + path, { method, headers });
       assert.equal(r.status, 403, `${method} ${path}`);
@@ -70,8 +70,8 @@ test("hosted ingress protects every route and removes credentials before cell re
   assert.equal((await fetch(base + "/api/cells", { headers: navigation })).status, 403);
   assert.equal((await fetch(base + "/", { method: "POST", headers: navigation })).status, 403);
   const inventory = await (await fetch(base + "/api/cells", { headers: good })).json();
-  assert.deepEqual(inventory.cells.map(c => c.name), ["project"]);
-  const relayed = await (await fetch(base + "/api/cells/project/info", { headers: { ...good, Cookie: "private", Authorization: "Bearer private", "X-ExeDev-Email": "private@example.com", "X-Forwarded-For": "private", "Content-Type": "application/json" } })).json();
+  assert.deepEqual(inventory.cells.map(c => c.name), ["44fc36e4-5adc-51aa-a6e3-3db15ade9819"]);
+  const relayed = await (await fetch(base + "/api/cells/44fc36e4-5adc-51aa-a6e3-3db15ade9819/info", { headers: { ...good, Cookie: "private", Authorization: "Bearer private", "X-ExeDev-Email": "private@example.com", "X-Forwarded-For": "private", "Content-Type": "application/json" } })).json();
   assert.equal(relayed.path, "/api/info");
   assert.equal(relayed.headers.host, "cell.internal");
   assert.equal(relayed.headers["content-type"], "application/json");

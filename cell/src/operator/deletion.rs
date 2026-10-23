@@ -26,7 +26,7 @@ struct Door {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Target {
     cell: Cell,
-    parent: Option<Name>,
+    parent: Option<CellId>,
     vm: Option<VmIdentity>,
     attachments: Vec<Attachment>,
     door: Option<Door>,
@@ -76,7 +76,7 @@ pub(super) struct Deletion {
 pub(crate) struct DeletionView {
     pub id: RequestId,
     cell: Cell,
-    parent: Option<Name>,
+    parent: Option<CellId>,
     vm: Option<String>,
     approval: Hash,
     phase: DeletionPhase,
@@ -87,7 +87,7 @@ impl Deletion {
     pub fn cell(&self) -> &Cell {
         &self.target.cell
     }
-    pub fn parent(&self) -> &Option<Name> {
+    pub fn parent(&self) -> &Option<CellId> {
         &self.target.parent
     }
     pub fn active(&self) -> bool {
@@ -187,11 +187,11 @@ pub(super) fn recover(state: &FsPath) -> std::io::Result<()> {
     }
     Ok(())
 }
-pub(super) fn ensure_available(state: &FsPath, name: &Name) -> Result<()> {
+pub(super) fn ensure_available(state: &FsPath, name: &CellId) -> Result<()> {
     if list(state)
         .map_err(fail)?
         .iter()
-        .any(|j| j.active() && j.cell().name == *name)
+        .any(|j| j.active() && j.cell().id == *name)
     {
         return Err(Error(
             StatusCode::CONFLICT,
@@ -201,7 +201,7 @@ pub(super) fn ensure_available(state: &FsPath, name: &Name) -> Result<()> {
     Ok(())
 }
 
-fn pin(tree: &FsPath, name: &Name) -> std::io::Result<Option<Hash>> {
+fn pin(tree: &FsPath, name: &CellId) -> std::io::Result<Option<Hash>> {
     match fs::read(tree.join(".pins").join(format!("{name}.pub"))) {
         Ok(bytes) => Ok(Some(Hash::of(&bytes))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -215,7 +215,7 @@ fn config(integration: &Integration) -> Hash {
     )))
 }
 
-fn identity(vms: &[Vm], name: &Name) -> Result<Option<VmIdentity>> {
+fn identity(vms: &[Vm], name: &CellId) -> Result<Option<VmIdentity>> {
     let Some(vm) = crate::exe::cell_vm(vms, name).map_err(bad)? else {
         return Ok(None);
     };
@@ -234,8 +234,8 @@ fn identity(vms: &[Vm], name: &Name) -> Result<Option<VmIdentity>> {
 fn owned(
     vms: &[Vm],
     integrations: &[Integration],
-    cell: &Name,
-    parent: &Option<Name>,
+    cell: &CellId,
+    parent: &Option<CellId>,
     vm: &Option<VmIdentity>,
 ) -> Result<(Vec<Attachment>, Option<Door>)> {
     let own_tag = format!("cell-{cell}");
@@ -306,23 +306,23 @@ fn owned(
 /// has already been removed by a partially completed deletion.
 fn check_tree(op: &Operator, target: &Target) -> Result<()> {
     let (tree, _) = op.tree()?;
-    if let Some(current) = tree.get(&target.cell.name) {
+    if let Some(current) = tree.get(&target.cell.id) {
         if current != &target.cell
-            || tree.parent(&current.name).map(|p| &p.name) != target.parent.as_ref()
+            || tree.parent(&current.id).map(|p| &p.id) != target.parent.as_ref()
         {
             return Err(Error(
                 StatusCode::CONFLICT,
                 "This cell changed. Review its deletion again.".into(),
             ));
         }
-        if tree.children(&current.name).next().is_some() {
+        if tree.children(&current.id).next().is_some() {
             return Err(bad("Delete this cell's subcells first"));
         }
     }
     if creation::list(&op.config.state)
         .map_err(fail)?
         .iter()
-        .any(|j| j.is_current() && j.parent.as_ref() == Some(&target.cell.name))
+        .any(|j| j.is_current() && j.parent.as_ref() == Some(&target.cell.id))
     {
         return Err(bad("Delete this cell's subcells first"));
     }
@@ -337,7 +337,7 @@ pub(super) struct Options {
 }
 pub(super) async fn preview_request(
     State(op): State<Arc<Operator>>,
-    Path(name): Path<Name>,
+    Path(name): Path<CellId>,
     body: axum::body::Bytes,
 ) -> Result<Json<DeletionView>> {
     if body.len() > crate::resource_rpc::MAX_RPC_BYTES {
@@ -353,13 +353,13 @@ pub(super) async fn preview_request(
 #[cfg(test)]
 pub(super) async fn preview(
     State(op): State<Arc<Operator>>,
-    Path(name): Path<Name>,
+    Path(name): Path<CellId>,
 ) -> Result<Json<DeletionView>> {
     preview_with(op, name, Options::default()).await
 }
 async fn preview_with(
     op: Arc<Operator>,
-    name: Name,
+    name: CellId,
     options: Options,
 ) -> Result<Json<DeletionView>> {
     let _lock = op.applying.try_lock().map_err(|_| {
@@ -374,7 +374,7 @@ async fn preview_with(
     let prior = list(&op.config.state)
         .map_err(fail)?
         .into_iter()
-        .filter(|j| j.cell().name == name && !matches!(j.phase, DeletionPhase::Deleted))
+        .filter(|j| j.cell().id == name && !matches!(j.phase, DeletionPhase::Deleted))
         .max_by_key(|j| (j.resources_done.len(), j.active()));
     if let Some(job) = prior
         .as_ref()
@@ -384,12 +384,12 @@ async fn preview_with(
     }
     let (tree, _) = op.tree()?;
     let (cell, parent) = if let Some(cell) = tree.get(&name) {
-        (cell.clone(), tree.parent(&name).map(|p| p.name.clone()))
+        (cell.clone(), tree.parent(&name).map(|p| p.id.clone()))
     } else {
         let job = creation::list(&op.config.state)
             .map_err(fail)?
             .into_iter()
-            .find(|j| j.cell.name == name && j.is_current())
+            .find(|j| j.cell.id == name && j.is_current())
             .ok_or_else(|| Error(StatusCode::NOT_FOUND, "Cell not found".into()))?;
         (job.cell, job.parent)
     };
@@ -438,11 +438,12 @@ async fn preview_with(
     for mut old in list(&op.config.state)
         .map_err(fail)?
         .into_iter()
-        .filter(|j| j.cell().name == name && !matches!(j.phase, DeletionPhase::Deleted))
+        .filter(|j| j.cell().id == name && !matches!(j.phase, DeletionPhase::Deleted))
     {
         old.superseded = true;
         old.phase = DeletionPhase::Failed {
-            message: "Superseded by a new deletion review".into(),
+            message: "Superseded by 904254dc-1b8f-5e80-9755-e5afc5b195c5 new deletion review"
+                .into(),
             step: None,
             recovery: RecoveryAction::Review,
         };
@@ -504,11 +505,12 @@ pub(super) async fn start(
     if list(&op.config.state)
         .map_err(fail)?
         .iter()
-        .any(|j| j.active() && j.cell().name == job.cell().name && j.id != id)
+        .any(|j| j.active() && j.cell().id == job.cell().id && j.id != id)
     {
         return Err(Error(
             StatusCode::CONFLICT,
-            "This cell already has a deletion in progress".into(),
+            "This cell already has 904254dc-1b8f-5e80-9755-e5afc5b195c5 deletion in progress"
+                .into(),
         ));
     }
     let preflight = async {
@@ -559,7 +561,7 @@ pub(super) async fn start(
         .await;
         match result {
             Ok(Ok(())) => {
-                op.vms.write().await.remove(&job.cell().name);
+                op.vms.write().await.remove(&job.cell().id);
             }
             failure => {
                 let recovery = match &failure {
@@ -611,7 +613,7 @@ struct Remaining {
 
 fn remaining(op: &Operator, target: &Target) -> Result<Remaining> {
     let (vms, integrations) = op.edge.listing().map_err(fail)?;
-    let live = identity(&vms, &target.cell.name)?;
+    let live = identity(&vms, &target.cell.id)?;
     if live.is_some() && live != target.vm {
         return Err(bad("The VM changed since this deletion was reviewed"));
     }
@@ -621,17 +623,19 @@ fn remaining(op: &Operator, target: &Target) -> Result<Remaining> {
                 && (v.created_at.as_ref() != Some(&vm.created_at)
                     || !v.tags.contains(&target.cell.tag()))
         }) {
-            return Err(bad("The VM name now belongs to a different VM"));
+            return Err(bad(
+                "The VM name now belongs to 904254dc-1b8f-5e80-9755-e5afc5b195c5 different VM",
+            ));
         }
     }
-    let current_pin = pin(&op.config.tree, &target.cell.name).map_err(fail)?;
+    let current_pin = pin(&op.config.tree, &target.cell.id).map_err(fail)?;
     if current_pin != target.pin && !(live.is_none() && current_pin.is_none()) {
         return Err(bad("The cell's pinned identity changed"));
     }
     let (attachments, door) = owned(
         &vms,
         &integrations,
-        &target.cell.name,
+        &target.cell.id,
         &target.parent,
         &target.vm,
     )?;
@@ -732,9 +736,9 @@ fn execute_with_manual(
     check_tree(op, &target)?;
     // Retire old creation receipts before unlinking the declaration so they
     // cannot resurrect this cell, including after a crash or name reuse.
-    creation::retire(&op.config.state, &target.cell.name).map_err(fail)?;
+    creation::retire(&op.config.state, &target.cell.id).map_err(fail)?;
     let (_, paths) = op.tree()?;
-    if let Some(path) = paths.get(&target.cell.name) {
+    if let Some(path) = paths.get(&target.cell.id) {
         fs::remove_file(path).map_err(fail)?;
         fs::File::open(path.parent().unwrap())
             .and_then(|f| f.sync_all())
@@ -744,8 +748,8 @@ fn execute_with_manual(
         .config
         .tree
         .join(".pins")
-        .join(format!("{}.pub", target.cell.name));
-    let current_pin = pin(&op.config.tree, &target.cell.name).map_err(fail)?;
+        .join(format!("{}.pub", target.cell.id));
+    let current_pin = pin(&op.config.tree, &target.cell.id).map_err(fail)?;
     if current_pin.is_some() && current_pin != target.pin {
         return Err(bad("The cell pin changed during deletion"));
     }
@@ -871,49 +875,53 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let dir = std::env::temp_dir().join(format!("cell-delete-{}", RequestId::generate()));
-            fs::create_dir_all(dir.join("tree/project")).unwrap();
+            fs::create_dir_all(dir.join("tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819")).unwrap();
             fs::create_dir_all(dir.join("tree/.pins")).unwrap();
             fs::create_dir_all(dir.join("state/creations")).unwrap();
             fs::write(
-                dir.join("tree/project.json"),
-                br#"{"name":"project","grants":[]}"#,
+                dir.join("tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819.json"),
+                br#"{"id":"44fc36e4-5adc-51aa-a6e3-3db15ade9819","name":"44fc36e4-5adc-51aa-a6e3-3db15ade9819","grants":[]}"#,
             )
             .unwrap();
             fs::write(
-                dir.join("tree/project/project-dev.json"),
-                br#"{"name":"project-dev","grants":[]}"#,
+                dir.join("tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819/e95cc7f0-21bb-5212-8fa9-abbfde3f6b21.json"),
+                br#"{"id":"e95cc7f0-21bb-5212-8fa9-abbfde3f6b21","name":"e95cc7f0-21bb-5212-8fa9-abbfde3f6b21","grants":[]}"#,
             )
             .unwrap();
             let secret = crate::Secret::generate();
             fs::write(
-                dir.join("tree/.pins/project-dev.pub"),
+                dir.join("tree/.pins/e95cc7f0-21bb-5212-8fa9-abbfde3f6b21.pub"),
                 secret.public().to_string(),
             )
             .unwrap();
             let creation = RequestId::generate();
             fs::write(dir.join("state/creations").join(format!("{creation}.json")), json!({
-                "id":creation,"cell":{"name":"project-dev","grants":[]},"parent":"project","before":Hash::ZERO,"approval":Hash::ZERO,"plans":{},
-                "phase":{"state":"ready","session":{"cell":"project-dev","id":"a".repeat(32)}}
+                "id":creation,"cell":{"id":"e95cc7f0-21bb-5212-8fa9-abbfde3f6b21","name":"e95cc7f0-21bb-5212-8fa9-abbfde3f6b21","grants":[]},"parent":"44fc36e4-5adc-51aa-a6e3-3db15ade9819","before":Hash::ZERO,"approval":Hash::ZERO,"plans":{},
+                "phase":{"state":"ready","session":{"cell":"e95cc7f0-21bb-5212-8fa9-abbfde3f6b21","id":"a".repeat(32)}}
             }).to_string()).unwrap();
             let edge = Arc::new(Fake::default());
-            *edge.vms.lock().unwrap() = vec![vm("project"), vm("project-dev"), vm("unrelated")];
+            *edge.vms.lock().unwrap() = vec![
+                vm("44fc36e4-5adc-51aa-a6e3-3db15ade9819"),
+                vm("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21"),
+                vm("unrelated"),
+            ];
             *edge.integrations.lock().unwrap() = vec![
                 Integration {
                     name: "shared-repo".into(),
                     kind: "github".into(),
                     attachments: vec![
-                        "tag:cell-project-dev".into(),
-                        "vm:project-dev".into(),
-                        "tag:other".into(),
+                        "tag:cell-e95cc7f0-21bb-5212-8fa9-abbfde3f6b21".into(),
+                        "vm:e95cc7f0-21bb-5212-8fa9-abbfde3f6b21".into(),
+                        "tag:70ee78ad-5e3a-510a-af20-6f485ecb6f16".into(),
                         "vm:unrelated".into(),
                     ],
-                    config: json!({"repositories":["owner/repo"],"readonly":true}),
+                    config: json!({"repositories":["0153ed41-b34f-506b-837e-1610aeac2bce/repo"],"readonly":true}),
                 },
                 Integration {
-                    name: "door-project-dev".into(),
+                    name: "door-e95cc7f0-21bb-5212-8fa9-abbfde3f6b21".into(),
                     kind: "http-proxy".into(),
-                    attachments: vec!["tag:cell-project".into()],
-                    config: json!({"peer_vm":"project-dev","target":"https://project-dev.exe.xyz/"}),
+                    attachments: vec!["tag:cell-44fc36e4-5adc-51aa-a6e3-3db15ade9819".into()],
+                    config: json!({"peer_vm":"e95cc7f0-21bb-5212-8fa9-abbfde3f6b21","target":"https://e95cc7f0-21bb-5212-8fa9-abbfde3f6b21.exe.xyz/"}),
                 },
             ];
             let op = Arc::new(Operator {
@@ -926,7 +934,7 @@ mod tests {
                     sockets: None,
                     access: Access::Local,
                 },
-                authority: "fixture".into(),
+                authority: "ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef".into(),
                 relays: Mutex::new(BTreeMap::new()),
                 vms: tokio::sync::RwLock::new(BTreeMap::new()),
                 edge: edge.clone(),
@@ -985,10 +993,16 @@ mod tests {
     #[tokio::test]
     async fn confirmed_leaf_deletion_cleans_only_owned_resources_and_retires_creation() {
         let f = Fixture::new();
-        let job = f.preview("project-dev").await.unwrap();
+        let job = f
+            .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+            .await
+            .unwrap();
         assert_eq!(job.phase, DeletionPhase::Review);
         assert!(f.edge.calls.lock().unwrap().is_empty());
-        for (name, approval) in [("project", job.approval), ("project-dev", Hash::ZERO)] {
+        for (name, approval) in [
+            ("44fc36e4-5adc-51aa-a6e3-3db15ade9819", job.approval),
+            ("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21", Hash::ZERO),
+        ] {
             assert!(start(
                 State(f.op.clone()),
                 Path(job.id),
@@ -1004,9 +1018,15 @@ mod tests {
         assert!(f.edge.calls.lock().unwrap().is_empty());
         let _ = f.start(&job).await.unwrap();
         assert_eq!(f.settled(job.id).await.phase, DeletionPhase::Deleted);
-        assert!(!f.dir.join("tree/project/project-dev.json").exists());
-        assert!(f.dir.join("tree/project.json").exists());
-        assert!(!f.dir.join("tree/.pins/project-dev.pub").exists());
+        assert!(!f.dir.join("tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819/e95cc7f0-21bb-5212-8fa9-abbfde3f6b21.json").exists());
+        assert!(f
+            .dir
+            .join("tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819.json")
+            .exists());
+        assert!(!f
+            .dir
+            .join("tree/.pins/e95cc7f0-21bb-5212-8fa9-abbfde3f6b21.pub")
+            .exists());
         assert_eq!(
             f.edge
                 .vms
@@ -1015,14 +1035,14 @@ mod tests {
                 .iter()
                 .map(|v| v.vm_name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["project", "unrelated"]
+            vec!["44fc36e4-5adc-51aa-a6e3-3db15ade9819", "unrelated"]
         );
         let integrations = f.edge.integrations.lock().unwrap();
         assert_eq!(integrations.len(), 1);
         assert_eq!(integrations[0].name, "shared-repo");
         assert_eq!(
             integrations[0].attachments,
-            vec!["tag:other", "vm:unrelated"]
+            vec!["tag:70ee78ad-5e3a-510a-af20-6f485ecb6f16", "vm:unrelated"]
         );
         drop(integrations);
         assert!(matches!(
@@ -1046,13 +1066,13 @@ mod tests {
         let calls = f.edge.calls.lock().unwrap().len();
         f.edge.vms.lock().unwrap().push(Vm {
             created_at: Some("new-incarnation".into()),
-            ..vm("project-dev")
+            ..vm("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
         });
         let _ = f.start(&job).await.unwrap();
         assert_eq!(
             f.edge.calls.lock().unwrap().len(),
             calls,
-            "old deletion cannot delete a reused name"
+            "old deletion cannot delete 904254dc-1b8f-5e80-9755-e5afc5b195c5 reused name"
         );
         assert!(f
             .edge
@@ -1060,19 +1080,22 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .any(|v| v.vm_name == "project-dev"));
+            .any(|v| v.vm_name == "e95cc7f0-21bb-5212-8fa9-abbfde3f6b21"));
     }
 
     #[tokio::test]
     async fn a_lost_delete_acknowledgement_recovers_without_deleting_twice() {
         let f = Fixture::new();
-        let job = f.preview("project-dev").await.unwrap();
+        let job = f
+            .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+            .await
+            .unwrap();
         f.edge.lose_delete_reply.store(true, Ordering::SeqCst);
         let _ = f.start(&job).await.unwrap();
         let mut failed = f.settled(job.id).await;
         assert!(matches!(failed.phase, DeletionPhase::Failed { .. }));
-        assert!(f.dir.join("tree/project/project-dev.json").exists());
-        assert!(ensure_available(&f.op.config.state, &job.cell().name).is_err());
+        assert!(f.dir.join("tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819/e95cc7f0-21bb-5212-8fa9-abbfde3f6b21.json").exists());
+        assert!(ensure_available(&f.op.config.state, &job.cell().id).is_err());
         // Restart after dispatch, before a completed receipt was written.
         failed.phase = DeletionPhase::Deleting {
             step: DeletionStep::DeletingVm,
@@ -1101,17 +1124,17 @@ mod tests {
     async fn children_and_ambiguous_vm_ownership_are_refused() {
         let f = Fixture::new();
         assert!(f
-            .preview("project")
+            .preview("44fc36e4-5adc-51aa-a6e3-3db15ade9819")
             .await
             .unwrap_err()
             .1
             .contains("subcells"));
         f.edge.vms.lock().unwrap().push(Vm {
             vm_name: "duplicate".into(),
-            ..vm("project-dev")
+            ..vm("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
         });
         assert!(f
-            .preview("project-dev")
+            .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
             .await
             .unwrap_err()
             .1
@@ -1121,7 +1144,7 @@ mod tests {
             .tags
             .push("cell-someone-else".into());
         assert!(f
-            .preview("project-dev")
+            .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
             .await
             .unwrap_err()
             .1
@@ -1129,7 +1152,7 @@ mod tests {
         f.edge.vms.lock().unwrap()[1].tags.pop();
         f.edge.vms.lock().unwrap()[1].created_at = None;
         assert!(f
-            .preview("project-dev")
+            .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
             .await
             .unwrap_err()
             .1
@@ -1145,37 +1168,43 @@ mod tests {
             "pin",
             "connection",
             "new-attachment",
-            "child",
+            "e3e321ad-3f5e-5221-9ec8-ccc87947084b",
         ] {
             let f = Fixture::new();
-            let job = f.preview("project-dev").await.unwrap();
+            let job = f
+                .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+                .await
+                .unwrap();
             match change {
                 "vm" => f.edge.vms.lock().unwrap()[1].created_at = Some("replacement".into()),
                 "declaration" => {
                     fs::rename(
-                        f.dir.join("tree/project/project-dev.json"),
-                        f.dir.join("tree/project-dev.json"),
+                        f.dir.join("tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819/e95cc7f0-21bb-5212-8fa9-abbfde3f6b21.json"),
+                        f.dir.join("tree/e95cc7f0-21bb-5212-8fa9-abbfde3f6b21.json"),
                     )
                     .unwrap();
                 }
-                "pin" => {
-                    fs::write(f.dir.join("tree/.pins/project-dev.pub"), "replacement-pin").unwrap()
-                }
+                "pin" => fs::write(
+                    f.dir
+                        .join("tree/.pins/e95cc7f0-21bb-5212-8fa9-abbfde3f6b21.pub"),
+                    "replacement-pin",
+                )
+                .unwrap(),
                 "connection" => {
                     f.edge.integrations.lock().unwrap()[0].config =
-                        json!({"repositories":["other/private"]})
+                        json!({"repositories":["70ee78ad-5e3a-510a-af20-6f485ecb6f16/private"]})
                 }
                 "new-attachment" => f.edge.integrations.lock().unwrap().push(Integration {
                     name: "new-grant".into(),
                     kind: "github".into(),
-                    attachments: vec!["tag:cell-project-dev".into()],
+                    attachments: vec!["tag:cell-e95cc7f0-21bb-5212-8fa9-abbfde3f6b21".into()],
                     config: json!({}),
                 }),
-                "child" => {
-                    fs::create_dir_all(f.dir.join("tree/project/project-dev")).unwrap();
+                "e3e321ad-3f5e-5221-9ec8-ccc87947084b" => {
+                    fs::create_dir_all(f.dir.join("tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819/e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")).unwrap();
                     fs::write(
-                        f.dir.join("tree/project/project-dev/nested.json"),
-                        br#"{"name":"nested","grants":[]}"#,
+                        f.dir.join("tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819/e95cc7f0-21bb-5212-8fa9-abbfde3f6b21/nested.json"),
+                        br#"{"id":"36224229-3ce0-542f-8f98-1b371e7efc3a","name":"nested","grants":[]}"#,
                     )
                     .unwrap();
                 }
@@ -1190,7 +1219,7 @@ mod tests {
                         ..
                     }
                 ),
-                "must require a fresh review after {change}"
+                "must require 904254dc-1b8f-5e80-9755-e5afc5b195c5 fresh review after {change}"
             );
             assert!(
                 f.edge.calls.lock().unwrap().is_empty(),
@@ -1209,13 +1238,16 @@ mod tests {
         f.edge.integrations.lock().unwrap()[1]
             .attachments
             .push("vm:unrelated".into());
-        let job = f.preview("project-dev").await.unwrap();
+        let job = f
+            .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+            .await
+            .unwrap();
         let _ = f.start(&job).await.unwrap();
         assert_eq!(f.settled(job.id).await.phase, DeletionPhase::Deleted);
         let integrations = f.edge.integrations.lock().unwrap();
         let door = integrations
             .iter()
-            .find(|i| i.name == "door-project-dev")
+            .find(|i| i.name == "door-e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
             .unwrap();
         assert_eq!(door.attachments, vec!["vm:unrelated"]);
     }
@@ -1227,10 +1259,13 @@ mod tests {
             .vms
             .lock()
             .unwrap()
-            .retain(|v| v.vm_name != "project-dev");
+            .retain(|v| v.vm_name != "e95cc7f0-21bb-5212-8fa9-abbfde3f6b21");
         // A VM-specific attachment can survive outside our target's tag; with
         // no bound VM identity it is deliberately left alone.
-        let job = f.preview("project-dev").await.unwrap();
+        let job = f
+            .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+            .await
+            .unwrap();
         assert!(job.target.vm.is_none());
         let _ = f.start(&job).await.unwrap();
         assert_eq!(f.settled(job.id).await.phase, DeletionPhase::Deleted);

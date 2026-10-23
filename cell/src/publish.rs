@@ -74,7 +74,7 @@ pub struct PublicationReceipt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Cell, Grant, Tree, TreeError};
+    use crate::{Grant, Tree, TreeError};
 
     fn ns(seed: &str) -> NamespaceId {
         NamespaceId(Hash::of(seed.as_bytes()))
@@ -128,16 +128,21 @@ mod tests {
     #[test]
     fn tree_enforces_delegation_without_transferring_ownership() {
         let owned_site = site("parent-namespace", "news");
-        let parent = Cell::new(
-            "parent".parse().unwrap(),
+        let parent = crate::fixtures::cell(
+            "7721fe29-1976-53fa-8250-32afa9e9bb35".parse().unwrap(),
             [grant(PublishScope::Namespace(ns("parent-namespace")))],
         );
-        let child = |scope| Cell::new("child".parse().unwrap(), [grant(scope)]);
+        let child = |scope| {
+            crate::fixtures::cell(
+                "e3e321ad-3f5e-5221-9ec8-ccc87947084b".parse().unwrap(),
+                [grant(scope)],
+            )
+        };
         assert!(Tree::new([
             (parent.clone(), None),
             (
                 child(PublishScope::Site(owned_site.clone())),
-                Some(parent.name.clone())
+                Some(parent.id.clone())
             ),
         ])
         .is_ok());
@@ -148,18 +153,19 @@ mod tests {
                 (parent.clone(), None),
                 (
                     child(PublishScope::Namespace(ns("unapproved-child"))),
-                    Some(parent.name.clone())
+                    Some(parent.id.clone())
                 ),
             ]),
             Err(TreeError::Wider { .. })
         ));
-        let limited = Cell::new(parent.name.clone(), [grant(PublishScope::Site(owned_site))]);
+        let limited =
+            crate::fixtures::cell(parent.id.clone(), [grant(PublishScope::Site(owned_site))]);
         assert!(matches!(
             Tree::new([
                 (limited, None),
                 (
                     child(PublishScope::Namespace(ns("parent-namespace"))),
-                    Some(parent.name)
+                    Some(parent.id)
                 ),
             ]),
             Err(TreeError::Wider { .. })

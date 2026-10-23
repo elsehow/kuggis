@@ -40,7 +40,7 @@ fn coordinates(callback: &Callback) -> Option<(SocketAddr, String, String)> {
     ))
 }
 
-async fn flow(op: &Operator, cell: &Name, path: &str) -> Result<AuthFlow> {
+async fn flow(op: &Operator, cell: &CellId, path: &str) -> Result<AuthFlow> {
     let response = op
         .forward(
             cell,
@@ -58,7 +58,7 @@ async fn flow(op: &Operator, cell: &Name, path: &str) -> Result<AuthFlow> {
 
 struct Attempt {
     op: Arc<Operator>,
-    cell: Name,
+    cell: CellId,
     path: String,
     callback: Callback,
     callback_path: String,
@@ -192,13 +192,13 @@ async fn receive_callback(attempt: Arc<Attempt>, request: Request) -> Response {
 }
 
 /// Called before a flow (and therefore its browser link) reaches React.
-pub(super) async fn prepare(op: &Arc<Operator>, cell: &Name, path: &str, view: &mut AuthFlow) {
+pub(super) async fn prepare(op: &Arc<Operator>, cell: &CellId, path: &str, view: &mut AuthFlow) {
     prepare_with_lifetime(op, cell, path, view, Duration::from_secs(600)).await;
 }
 
 async fn prepare_with_lifetime(
     op: &Arc<Operator>,
-    cell: &Name,
+    cell: &CellId,
     path: &str,
     view: &mut AuthFlow,
     lifetime: Duration,
@@ -303,7 +303,7 @@ mod tests {
         ] {
             assert!(coordinates(&Callback {
                 address: address.into(),
-                state: "fixture".into()
+                state: "ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef".into()
             })
             .is_some());
         }
@@ -317,7 +317,7 @@ mod tests {
         ] {
             assert!(coordinates(&Callback {
                 address: address.into(),
-                state: "fixture".into()
+                state: "ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef".into()
             })
             .is_none());
         }
@@ -333,7 +333,7 @@ mod integration_tests {
     // No provider network, user credentials or model request is used.
     struct Fixture {
         op: Arc<Operator>,
-        cell: Name,
+        cell: CellId,
         path: String,
         view: Arc<Mutex<Value>>,
         replies: Arc<AtomicUsize>,
@@ -346,11 +346,15 @@ mod integration_tests {
                 std::env::temp_dir().join(format!("callback-test-{}", RequestId::generate()));
             fs::create_dir_all(directory.join("tree")).unwrap();
             fs::create_dir_all(directory.join("state")).unwrap();
-            let cell: Name = "fixture".parse().unwrap();
+            let cell: CellId = "ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef".parse().unwrap();
             let declaration: Cell =
-                serde_json::from_value(json!({"name":"fixture","grants":[{"provider":provider}]}))
+                serde_json::from_value(json!({"id":"ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef","name":"ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef","grants":[{"provider":provider}]}))
                     .unwrap();
-            fs::write(directory.join("tree/fixture.json"), declaration.canonical()).unwrap();
+            fs::write(
+                directory.join("tree/ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef.json"),
+                declaration.canonical(),
+            )
+            .unwrap();
             let id = RequestId::generate();
             let path = format!("/api/settings/providers/{provider}/login/{id}");
             let view = Arc::new(Mutex::new(
@@ -360,7 +364,10 @@ mod integration_tests {
                 "prompt":{"id":"isolated-prompt","kind":"input","message":"Redirect URL","placeholder":null,"secret":false}}),
             ));
             let replies = Arc::new(AtomicUsize::new(0));
-            let listener = tokio::net::UnixListener::bind(directory.join("fixture.sock")).unwrap();
+            let listener = tokio::net::UnixListener::bind(
+                directory.join("ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef.sock"),
+            )
+            .unwrap();
             let remote_view = view.clone();
             let remote_replies = replies.clone();
             let remote_path = path.clone();
@@ -503,11 +510,17 @@ mod integration_tests {
         let port = free_port().await;
         let mut f = Fixture::new("openai", port).await;
         let config = f.directory.join("access.json");
-        fs::write(&config, br#"{"origin":"https://supervisor.example","users":["usr_fixture"]}"#).unwrap();
+        fs::write(
+            &config,
+            br#"{"origin":"https://supervisor.example","users":["usr_fixture"]}"#,
+        )
+        .unwrap();
         Arc::get_mut(&mut f.op).unwrap().config.access = Access::exe_proxy(&config).unwrap();
         assert!(matches!(f.prepare().await.relay, RelayState::Manual));
         assert!(f.op.relays.lock().await.is_empty());
-        let _listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await.unwrap();
+        let _listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
         assert_eq!(f.replies.load(Ordering::SeqCst), 0);
     }
 
@@ -518,7 +531,7 @@ mod integration_tests {
             let f = Fixture::new(provider, port).await;
             assert!(matches!(f.prepare().await.relay, RelayState::Ready));
             for path in [
-                "/other?state=isolated-state&code=fixture-code",
+                "/70ee78ad-5e3a-510a-af20-6f485ecb6f16?state=isolated-state&code=fixture-code",
                 "/callback?state=wrong&code=fixture-code",
                 "/callback?state=isolated-state&state=wrong&code=fixture-code",
             ] {
@@ -532,7 +545,7 @@ mod integration_tests {
             .await;
             assert_eq!(accepted.status(), StatusCode::SEE_OTHER);
             let location = accepted.headers()[header::LOCATION].to_str().unwrap();
-            assert!(location.contains("cell=fixture"));
+            assert!(location.contains("cell=ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef"));
             assert!(!location.contains("code="));
             assert!(!location.contains("state="));
             assert!(matches!(

@@ -2,7 +2,7 @@
 //! appended under one lock by the two writers that can read the key,
 //! root's wall check and the shipper, so no two statements take one number.
 
-use crate::prim::Name;
+use crate::prim::CellId;
 use crate::said::{Said, Secret, Statement};
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -32,7 +32,7 @@ pub fn next_number(dir: &Path) -> io::Result<u64> {
 
 /// Sign `said` as the cell's next statement and write it, world-readable,
 /// holding the log's lock from numbering to rename.
-pub fn append(dir: &Path, secret: &Secret, cell: Name, said: Said) -> io::Result<Statement> {
+pub fn append(dir: &Path, secret: &Secret, cell: CellId, said: Said) -> io::Result<Statement> {
     let lock = lock(dir)?;
     lock.lock()?;
     let seq = next_number(dir)?;
@@ -77,7 +77,7 @@ mod tests {
     fn two_writers_never_take_one_number() {
         let dir = Arc::new(dir());
         let secret = Arc::new(Secret::generate());
-        let name: Name = "a".parse().unwrap();
+        let name: CellId = "904254dc-1b8f-5e80-9755-e5afc5b195c5".parse().unwrap();
         let writers: Vec<_> = (0..4)
             .map(|_| {
                 let (dir, secret, name) = (Arc::clone(&dir), Arc::clone(&secret), name.clone());

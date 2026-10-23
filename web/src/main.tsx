@@ -26,7 +26,7 @@ import "./style.css";
 
 import { api, explain } from "./api";
 
-function label(cell: CellInfo) { return cell.parent && cell.name.startsWith(cell.parent + "-") ? cell.name.slice(cell.parent.length + 1) : cell.name; }
+function label(cell: CellInfo) { return cell.name; }
 
 // Image attachments wrapped in a size guard: providers reject image blocks over
 // 5 MiB (see attachment-limits.mjs for the derivation), and a clear client-side
@@ -56,7 +56,7 @@ function App() {
   const [canDelete, setCanDelete] = useState(false);
   const [deleting, setDeleting] = useState(new URLSearchParams(location.search).has("deletion"));
   const [deletionId, setDeletionId] = useState(new URLSearchParams(location.search).get("deletion"));
-  const [deleteName, setDeleteName] = useState<string | null>(null);
+  const [deleteCellId, setDeleteCellId] = useState<string | null>(null);
   const [creating, setCreating] = useState(new URLSearchParams(location.search).has("creation"));
   const [creationId, setCreationId] = useState(new URLSearchParams(location.search).get("creation"));
   const [newParent, setNewParent] = useState<string | null>(null);
@@ -69,8 +69,8 @@ function App() {
       setCells(result.cells); setMode(result.mode); setCanApply(result.canApply); setCanCreate(result.canCreate); setCanDelete(result.canDelete); setError("");
     } catch {
       try {
-        const info = await api<{cell: string; workspace: string}>("/api/info");
-        setCells([{ name: info.cell, parent: null, grants: [], vm: null, lifecycle: { state: "available" }, creation: null, deletion: null }]); setMode("standalone");
+        const info = await api<{cell: string; name: string; workspace: string}>("/api/info");
+        setCells([{ id: info.cell, name: info.name, parent: null, grants: [], vm: null, lifecycle: { state: "available" }, creation: null, deletion: null }]); setMode("standalone");
       } catch (e) { setError(explain(e)); }
     } finally { setLoaded(true); }
   };
@@ -84,34 +84,34 @@ function App() {
   const setDeletion = (id: string | null) => {
     const url = new URL(location.href); if (id) url.searchParams.set("deletion", id); else url.searchParams.delete("deletion"); history.replaceState(null, "", url); setDeletionId(id);
   };
-  const openDeletion = (name: string, id: string | null = null) => { setCreating(false); setCreation(null); setDeleteName(name); setDeletion(id); setDeleting(true); };
-  const choose = (name: string | null, chat?: string, setup = false) => {
-    const target = cells.find((c) => c.name === name);
-    if (name && target?.lifecycle.state === "deleting" && target.deletion) { openDeletion(name, target.deletion.id); return; }
-    if (name && target?.lifecycle.state === "provisioning" && target.creation) { openCreation(target.creation.parent, target.creation.id); return; }
-    if (name && target?.lifecycle.state === "blocked") {
-      if (target.deletion) { openDeletion(name, target.deletion.id); return; }
+  const openDeletion = (cellId: string, id: string | null = null) => { setCreating(false); setCreation(null); setDeleteCellId(cellId); setDeletion(id); setDeleting(true); };
+  const choose = (cellId: string | null, chat?: string, setup = false) => {
+    const target = cells.find((c) => c.id === cellId);
+    if (cellId && target?.lifecycle.state === "deleting" && target.deletion) { openDeletion(cellId, target.deletion.id); return; }
+    if (cellId && target?.lifecycle.state === "provisioning" && target.creation) { openCreation(target.creation.parent, target.creation.id); return; }
+    if (cellId && target?.lifecycle.state === "blocked") {
+      if (target.deletion) { openDeletion(cellId, target.deletion.id); return; }
       if (target.creation) { openCreation(target.creation.parent, target.creation.id); return; }
     }
-    if (name && target?.lifecycle.state !== "available") return;
-    const url = new URL(location.href); url.search = ""; if (name) url.searchParams.set("cell", name);
+    if (cellId && target?.lifecycle.state !== "available") return;
+    const url = new URL(location.href); url.search = ""; if (cellId) url.searchParams.set("cell", cellId);
     if (chat) url.searchParams.set("chat", chat); if (setup) url.searchParams.set("setup", "1");
-    history.pushState(null, "", url); setSelected(name); setResources(false);
+    history.pushState(null, "", url); setSelected(cellId); setResources(false);
   };
-  const cell = cells.find((c) => c.name === selected);
+  const cell = cells.find((c) => c.id === selected);
   // Without a homepage, a missing or stale selection falls through to the first
   // available cell in tree order. Other query parameters (creation/deletion) survive.
-  const order = (parent: string | null): CellInfo[] => cells.filter((c) => c.parent === parent).flatMap((c) => [c, ...order(c.name)]);
+  const order = (parent: string | null): CellInfo[] => cells.filter((c) => c.parent === parent).flatMap((c) => [c, ...order(c.id)]);
   const fallback = order(null).find((c) => c.lifecycle.state === "available");
   useEffect(() => {
     if (!loaded || cell || !fallback) return;
-    const url = new URL(location.href); url.searchParams.set("cell", fallback.name); url.searchParams.delete("chat"); url.searchParams.delete("setup");
-    history.replaceState(null, "", url); setSelected(fallback.name);
-  }, [loaded, cell, fallback?.name]);
+    const url = new URL(location.href); url.searchParams.set("cell", fallback.id); url.searchParams.delete("chat"); url.searchParams.delete("setup");
+    history.replaceState(null, "", url); setSelected(fallback.id);
+  }, [loaded, cell, fallback?.id]);
   const status = (c: CellInfo) => c.lifecycle.state === "blocked" ? "Needs attention" : c.lifecycle.state === "provisioning" && c.creation ? creationLabel(c.creation) : c.lifecycle.state === "deleting" && c.deletion ? deletionLabel(c.deletion) : "Not running";
-  const branch = (parent: string | null): React.ReactNode => <ul>{cells.filter((c) => c.parent === parent).map((c) => <li key={c.name}><div className="cell-row" data-active={c.name === cell?.name}><button className="cell-link" aria-current={c.name === cell?.name ? "page" : undefined} onClick={() => choose(c.name)}><span>{label(c)}</span>{c.lifecycle.state !== "available" && <small>{status(c)}</small>}</button>{canCreate && c.lifecycle.state === "available" && <button className="add-subcell" aria-label={`Add subcell to ${c.name}`} title="Add subcell" onClick={() => openCreation(c.name)}>＋</button>}</div>{branch(c.name)}</li>)}</ul>;
-  const creation = creating && <CreateCell cells={cells} parent={newParent} id={creationId} onId={setCreation} onClose={() => { setCreating(false); setCreation(null); void load(); }} onStarted={load} onDelete={canDelete ? openDeletion : undefined} onReady={async (job) => { await load(); setCreating(false); setCreation(null); choose(job.cell.name, job.phase.session.id, true); }} />;
-  const deletion = deleting && <DeleteCell name={deleteName} id={deletionId} onId={setDeletion} onClose={() => { setDeleting(false); setDeletion(null); void load(); }} onChanged={load} onDeleted={async () => { await load(); setDeleting(false); setDeletion(null); choose(null); }} />;
+  const branch = (parent: string | null): React.ReactNode => <ul>{cells.filter((c) => c.parent === parent).map((c) => <li key={c.id}><div className="cell-row" data-active={c.id === cell?.id}><button className="cell-link" aria-current={c.id === cell?.id ? "page" : undefined} onClick={() => choose(c.id)}><span>{label(c)}</span>{c.lifecycle.state !== "available" && <small>{status(c)}</small>}</button>{canCreate && c.lifecycle.state === "available" && <button className="add-subcell" aria-label={`Add subcell to ${c.name}`} title="Add subcell" onClick={() => openCreation(c.id)}>＋</button>}</div>{branch(c.id)}</li>)}</ul>;
+  const creation = creating && <CreateCell cells={cells} parent={newParent} id={creationId} onId={setCreation} onClose={() => { setCreating(false); setCreation(null); void load(); }} onStarted={load} onDelete={canDelete ? openDeletion : undefined} onReady={async (job) => { await load(); setCreating(false); setCreation(null); choose(job.cell.id, job.phase.session.id, true); }} />;
+  const deletion = deleting && <DeleteCell cellId={deleteCellId} id={deletionId} onId={setDeletion} onClose={() => { setDeleting(false); setDeletion(null); void load(); }} onChanged={load} onDeleted={async () => { await load(); setDeleting(false); setDeletion(null); choose(null); }} />;
   const standalone = mode === "standalone";
   const cellsPane = !standalone && !cellsHidden && <aside className="cells-pane" aria-label="Cells">
     <div className="pane-title">Cells</div>
@@ -121,7 +121,7 @@ function App() {
     <nav className="cell-tree">{!loaded ? <p className="pane-note">Loading…</p> : cells.length === 0 ? <p className="pane-note">No cells yet.</p> : branch(null)}</nav>
   </aside>;
   const content = resources && !standalone ? <Resources /> : cell
-    ? <CellWorkspace key={cell.name} cell={cell} standalone={standalone} local={mode !== "cells"} canApply={canApply} reload={load} onDelete={canDelete ? () => openDeletion(cell.name, cell.deletion?.id) : undefined} />
+    ? <CellWorkspace key={cell.id} cell={cell} standalone={standalone} local={mode !== "cells"} canApply={canApply} reload={load} onDelete={canDelete ? () => openDeletion(cell.id, cell.deletion?.id) : undefined} />
     : <main className="empty-main">{!loaded ? "" : cells.length === 0 ? (canCreate ? "No cells yet. Create one with ＋ Cell." : "No cells are declared.") : "No cell is available. Choose one from the list to see its status."}</main>;
   return <><div className={standalone || cellsHidden ? "shell standalone" : "shell"}>{cellsPane}{content}{!standalone && <button className="cell-menu" aria-label={cellsHidden ? "Show cells" : "Hide cells"} aria-expanded={!cellsHidden} onClick={() => setCellsHidden(!cellsHidden)}>☰</button>}</div>{creation}{deletion}</>;
 }
@@ -133,7 +133,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
   const [changingModel, setChangingModel] = useState(false);
   const [archived, setArchived] = useState(false);
   const [settings, setSettings] = useState(new URLSearchParams(location.search).get("setup") === "1");
-  const base = standalone ? "/api" : `/api/cells/${cell.name}`;
+  const base = standalone ? "/api" : `/api/cells/${cell.id}`;
   const client = useMemo(() => {
     const transport = createPiHttpClient({ baseUrl: `${base}/pi`, fetchImpl(input, init) {
     const headers = new Headers(init?.headers);
@@ -205,7 +205,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
         <Chat onError={setError} />
       </main>
     </div>
-    {settings && <Settings cell={cell} base={base} canApply={canApply} onClose={() => { setSettings(false); const url = new URL(location.href); url.searchParams.delete("setup"); history.replaceState(null, "", url); void loadModels(); }} onApplied={reload} onDelete={onDelete ? () => { setSettings(false); onDelete(); } : undefined} />}
+    {settings && <Settings cell={cell} base={base} canApply={canApply} canRename={!standalone} onClose={() => { setSettings(false); const url = new URL(location.href); url.searchParams.delete("setup"); history.replaceState(null, "", url); void loadModels(); }} onApplied={reload} onDelete={onDelete ? () => { setSettings(false); onDelete(); } : undefined} />}
   </ChatMetadata.Provider></AssistantRuntimeProvider>;
 }
 

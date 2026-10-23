@@ -55,7 +55,10 @@ mod tests {
     fn adds_only_granted_provider_preserving_existing_configuration() {
         let dir =
             std::env::temp_dir().join(format!("cell-models-{}", crate::RequestId::generate()));
-        let mut cell: Cell = serde_json::from_value(json!({"name":"test", "grants":[]})).unwrap();
+        let mut cell: Cell = serde_json::from_value(
+            json!({"id":"b4bbe201-acbf-5487-b110-783340bb3fd1","name":"test", "grants":[]}),
+        )
+        .unwrap();
         configure(&dir, &cell).unwrap();
         assert!(!dir.exists());
         fs::create_dir(&dir).unwrap();

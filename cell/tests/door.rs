@@ -1,5 +1,5 @@
-//! The door over real sockets: the log served, knocks filed, and every
-//! wrong knock refused.
+// The door over real sockets: the log served, knocks filed, and every
+// wrong knock refused.
 
 use cell::door::{Door, Knock, Limits};
 use cell::{Cell, Said, Secret, Statement};
@@ -21,7 +21,7 @@ fn tmp(name: &str) -> PathBuf {
 
 fn start(dir: &Path) -> SocketAddr {
     let cell: Cell =
-        serde_json::from_str(r#"{"name":"child","grants":[{"provider":"anthropic"}]}"#).unwrap();
+        serde_json::from_str(r#"{"id":"e3e321ad-3f5e-5221-9ec8-ccc87947084b","name":"e3e321ad-3f5e-5221-9ec8-ccc87947084b","grants":[{"provider":"anthropic"}]}"#).unwrap();
     let door = Arc::new(
         Door::new(&cell, dir.join("said"), dir.join("inbox")).with_limits(Limits {
             header_bytes: 2048,
@@ -73,7 +73,7 @@ fn the_log_is_served_from_where_you_left_off() {
     for n in 1..=3u64 {
         let s = Statement::sign(
             &k,
-            "child".parse().unwrap(),
+            "e3e321ad-3f5e-5221-9ec8-ccc87947084b".parse().unwrap(),
             n,
             Said::Fetch {
                 url: format!("https://example.com/{n}").parse().unwrap(),
@@ -107,62 +107,81 @@ fn the_log_is_served_from_where_you_left_off() {
 fn a_vouched_brief_or_reply_is_filed_and_nothing_else_is() {
     let d = tmp("knock");
     let addr = start(&d);
-    let brief = r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"child","id":"00000000000000000000000000000001"},"text":"fix the tests"}}"#;
+    let brief = r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"e3e321ad-3f5e-5221-9ec8-ccc87947084b","id":"00000000000000000000000000000001"},"text":"fix the tests"}}"#;
 
     let (status, _) = post(addr, None, brief);
     assert_eq!(
         status, "HTTP/1.1 401 Unauthorized",
         "no platform header, no knock"
     );
-    let (status, _) = post(addr, Some("Not A Name"), brief);
+    let (status, _) = post(addr, Some("Not A CellId"), brief);
     assert_eq!(
         status, "HTTP/1.1 401 Unauthorized",
-        "a header that is not a name"
+        "a malformed source VM header"
     );
     assert!(fs::read_dir(d.join("inbox")).unwrap().next().is_none());
 
-    let (status, _) = post(addr, Some("parent"), brief);
+    let (status, _) = post(
+        addr,
+        Some("cell-7721fe29-1976-53fa-8250-32afa9e9bb35"),
+        brief,
+    );
     assert_eq!(status, "HTTP/1.1 202 Accepted");
     let filed: Knock =
         serde_json::from_str(&fs::read_to_string(d.join("inbox/1.json")).unwrap()).unwrap();
-    assert_eq!(filed.from.unwrap().as_str(), "parent");
+    assert_eq!(
+        filed.from.unwrap().as_str(),
+        "cell-7721fe29-1976-53fa-8250-32afa9e9bb35"
+    );
     assert_eq!(filed.said, serde_json::from_str::<Said>(brief).unwrap());
 
     let reply = format!(
         r#"{{"reply":{{"of":"{}","body":{{"Ok":"yes"}}}}}}"#,
         "ab".repeat(32)
     );
-    let (status, _) = post(addr, Some("parent"), &reply);
+    let (status, _) = post(
+        addr,
+        Some("cell-7721fe29-1976-53fa-8250-32afa9e9bb35"),
+        &reply,
+    );
     assert_eq!(status, "HTTP/1.1 202 Accepted");
     assert!(d.join("inbox/2.json").exists());
 
     // a brief for someone else, and things that only go upward
     for wrong in [
-        r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"other","id":"00000000000000000000000000000001"},"text":"hi"}}"#,
+        r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"70ee78ad-5e3a-510a-af20-6f485ecb6f16","id":"00000000000000000000000000000001"},"text":"hi"}}"#,
         r#"{"verdict":{"repo":"o/r","head":"0123456789abcdef0123456789abcdef01234567","pass":true}}"#,
-        r#"{"session":{"session":{"cell":"child","id":"00000000000000000000000000000001"},"state":"idle"}}"#,
+        r#"{"session":{"session":{"cell":"e3e321ad-3f5e-5221-9ec8-ccc87947084b","id":"00000000000000000000000000000001"},"state":"idle"}}"#,
         r#"{"fetch":{"url":"https://example.com/"}}"#,
         &format!(
             r#"{{"checked":{{"cell":"{}","ok":true,"report":""}}}}"#,
             "00".repeat(32)
         ),
     ] {
-        let (status, _) = post(addr, Some("parent"), wrong);
+        let (status, _) = post(
+            addr,
+            Some("cell-7721fe29-1976-53fa-8250-32afa9e9bb35"),
+            wrong,
+        );
         assert_eq!(status, "HTTP/1.1 422 Unprocessable Content", "{wrong}");
     }
     for bad in [
         "not json",
-        r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"child","id":"00000000000000000000000000000001"},"text":"x","extra":1}}"#,
-        r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"child","id":"plan"},"text":"a command word"}}"#,
+        r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"e3e321ad-3f5e-5221-9ec8-ccc87947084b","id":"00000000000000000000000000000001"},"text":"x","extra":1}}"#,
+        r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"e3e321ad-3f5e-5221-9ec8-ccc87947084b","id":"plan"},"text":"904254dc-1b8f-5e80-9755-e5afc5b195c5 command word"}}"#,
     ] {
-        let (status, _) = post(addr, Some("parent"), bad);
+        let (status, _) = post(addr, Some("cell-7721fe29-1976-53fa-8250-32afa9e9bb35"), bad);
         assert_eq!(status, "HTTP/1.1 400 Bad Request", "{bad}");
     }
     let big = format!(
-        r#"{{"brief":{{"request":"00000000000000000000000000000002","session":{{"cell":"child","id":"00000000000000000000000000000001"}},"text":"{}"}}}}"#,
+        r#"{{"brief":{{"request":"00000000000000000000000000000002","session":{{"cell":"e3e321ad-3f5e-5221-9ec8-ccc87947084b","id":"00000000000000000000000000000001"}},"text":"{}"}}}}"#,
         "x".repeat(5000)
     );
-    let (status, _) = post(addr, Some("parent"), &big);
+    let (status, _) = post(
+        addr,
+        Some("cell-7721fe29-1976-53fa-8250-32afa9e9bb35"),
+        &big,
+    );
     assert_eq!(status, "HTTP/1.1 413 Content Too Large");
     assert_eq!(
         fs::read_dir(d.join("inbox")).unwrap().count(),
@@ -177,7 +196,10 @@ fn a_vouched_brief_or_reply_is_filed_and_nothing_else_is() {
     let (status, _) = exchange(addr, b"GET /said HTTP/2\r\n\r\n");
     assert_eq!(status, "HTTP/1.1 400 Bad Request");
     let (status, _) = exchange(addr, b"GET /said HTTP/1.1\r\nHost: door\r\n");
-    assert_eq!(status, "HTTP/1.1 408 Request Timeout", "a head that stalls");
+    assert_eq!(
+        status, "HTTP/1.1 408 Request Timeout",
+        "904254dc-1b8f-5e80-9755-e5afc5b195c5 head that stalls"
+    );
     let mut s = TcpStream::connect(addr).unwrap();
     s.write_all(b"GET /said HTTP/1.1\r\nHost: door\r\n")
         .unwrap();
@@ -186,13 +208,13 @@ fn a_vouched_brief_or_reply_is_filed_and_nothing_else_is() {
     let _ = s.read_to_string(&mut out);
     assert!(
         out.starts_with("HTTP/1.1 400 Bad Request"),
-        "a head cut short: {out}"
+        "904254dc-1b8f-5e80-9755-e5afc5b195c5 head cut short: {out}"
     );
     let (status, _) = exchange(addr, &[b'a'; 3000]);
     assert_eq!(status, "HTTP/1.1 413 Content Too Large");
-    let (status, _) = exchange(addr, b"POST /say HTTP/1.1\r\nX-Exedev-Source-Vm: parent\r\nContent-Length: 50\r\n\r\n{\"brief\":");
+    let (status, _) = exchange(addr, b"POST /say HTTP/1.1\r\nX-Exedev-Source-Vm: 7721fe29-1976-53fa-8250-32afa9e9bb35\r\nContent-Length: 50\r\n\r\n{\"brief\":");
     assert_eq!(
         status, "HTTP/1.1 408 Request Timeout",
-        "a body that never comes"
+        "904254dc-1b8f-5e80-9755-e5afc5b195c5 body that never comes"
     );
 }

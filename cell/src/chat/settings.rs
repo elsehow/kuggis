@@ -76,7 +76,7 @@ pub(super) async fn stop_idle(store: &Store) -> ApiResult<()> {
 
 #[derive(Serialize, ts_rs::TS)]
 pub(crate) struct SettingsView {
-    cell: crate::Name,
+    cell: crate::CellId,
     providers: Vec<ProviderConnection>,
     connections: Vec<ConnectionConfig>,
 }

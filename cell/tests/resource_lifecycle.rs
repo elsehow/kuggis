@@ -1,3 +1,5 @@
+#[path = "fixtures/common.rs"]
+mod fixtures;
 use cell::publish::{
     artifact::{Artifact, Entry},
     registry::{Registry, SiteAction},
@@ -5,7 +7,7 @@ use cell::publish::{
     NamespaceId, PublishScope, SiteId,
 };
 use cell::resource::*;
-use cell::{Cell, Grant, RequestId, Secret, Tree};
+use cell::{Grant, RequestId, Secret, Tree};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 struct Fixture {
     root: PathBuf,
@@ -45,10 +47,19 @@ impl Fixture {
     fn approve(&self) {
         let grant = Grant::Publish(PublishScope::Namespace(self.ns.clone()));
         let tree = Tree::new([
-            (Cell::new("owner".parse().unwrap(), [grant.clone()]), None),
             (
-                Cell::new("delegate".parse().unwrap(), [grant]),
-                Some("owner".parse().unwrap()),
+                fixtures::cell(
+                    "0153ed41-b34f-506b-837e-1610aeac2bce".parse().unwrap(),
+                    [grant.clone()],
+                ),
+                None,
+            ),
+            (
+                fixtures::cell(
+                    "6a5df658-0bab-5ba3-8c19-5da94a43ed2a".parse().unwrap(),
+                    [grant],
+                ),
+                Some("0153ed41-b34f-506b-837e-1610aeac2bce".parse().unwrap()),
             ),
         ])
         .unwrap();
@@ -56,8 +67,14 @@ impl Fixture {
             .approve_tree(
                 &tree,
                 &[
-                    ("owner".parse().unwrap(), self.owner.public()),
-                    ("delegate".parse().unwrap(), self.delegate.public()),
+                    (
+                        "0153ed41-b34f-506b-837e-1610aeac2bce".parse().unwrap(),
+                        self.owner.public(),
+                    ),
+                    (
+                        "6a5df658-0bab-5ba3-8c19-5da94a43ed2a".parse().unwrap(),
+                        self.delegate.public(),
+                    ),
                 ]
                 .into(),
             )
@@ -342,18 +359,18 @@ fn creating_another_site_does_not_restore_a_cleared_explicit_delegate() {
     let f = Fixture::new();
     let tree = Tree::new([
         (
-            Cell::new(
-                "owner".parse().unwrap(),
+            fixtures::cell(
+                "0153ed41-b34f-506b-837e-1610aeac2bce".parse().unwrap(),
                 [Grant::Publish(PublishScope::Namespace(f.ns.clone()))],
             ),
             None,
         ),
         (
-            Cell::new(
-                "delegate".parse().unwrap(),
+            fixtures::cell(
+                "6a5df658-0bab-5ba3-8c19-5da94a43ed2a".parse().unwrap(),
                 [Grant::Publish(PublishScope::Site(f.site.clone()))],
             ),
-            Some("owner".parse().unwrap()),
+            Some("0153ed41-b34f-506b-837e-1610aeac2bce".parse().unwrap()),
         ),
     ])
     .unwrap();
@@ -361,8 +378,14 @@ fn creating_another_site_does_not_restore_a_cleared_explicit_delegate() {
         .approve_tree(
             &tree,
             &[
-                ("owner".parse().unwrap(), f.owner.public()),
-                ("delegate".parse().unwrap(), f.delegate.public()),
+                (
+                    "0153ed41-b34f-506b-837e-1610aeac2bce".parse().unwrap(),
+                    f.owner.public(),
+                ),
+                (
+                    "6a5df658-0bab-5ba3-8c19-5da94a43ed2a".parse().unwrap(),
+                    f.delegate.public(),
+                ),
             ]
             .into(),
         )
@@ -385,7 +408,7 @@ fn creating_another_site_does_not_restore_a_cleared_explicit_delegate() {
             f.owner.public(),
             &SiteId {
                 namespace: f.ns.clone(),
-                name: "other".parse().unwrap(),
+                name: "70ee78ad-5e3a-510a-af20-6f485ecb6f16".parse().unwrap(),
             },
         )
         .unwrap();

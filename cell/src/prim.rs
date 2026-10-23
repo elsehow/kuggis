@@ -27,9 +27,35 @@ impl std::error::Error for Invalid {}
 /// Words the `cell` binary uses as subcommands. A cell may not
 /// take one of these as its name.
 pub const RESERVED: &[&str] = &[
-    "cell", "key", "say", "open", "allow", "tree", "plan", "observe", "proxy", "setup", "check",
-    "probe", "door", "help", "apply", "adopt", "ship", "knock", "brief", "pull", "run", "login",
-    "chat", "session", "ui", "prepare", "relay", "publisher", "publish",
+    "cell",
+    "key",
+    "say",
+    "open",
+    "allow",
+    "tree",
+    "plan",
+    "observe",
+    "proxy",
+    "setup",
+    "check",
+    "probe",
+    "door",
+    "help",
+    "apply",
+    "adopt",
+    "ship",
+    "knock",
+    "brief",
+    "pull",
+    "run",
+    "login",
+    "chat",
+    "session",
+    "ui",
+    "prepare",
+    "relay",
+    "publisher",
+    "publish",
 ];
 
 macro_rules! text {
@@ -90,6 +116,44 @@ text!(
     /// most 63 bytes, not a command word. Doubles as a DNS label.
     Name, "name", name
 );
+text!(
+    /// Immutable cell identity: a canonical lowercase UUID, independent of its label.
+    CellId, "cell id", cell_id
+);
+
+fn cell_id(s: &str) -> Result<String, &'static str> {
+    if s.len() != 36
+        || !s.bytes().enumerate().all(|(i, c)| {
+            if [8, 13, 18, 23].contains(&i) {
+                c == b'-'
+            } else {
+                c.is_ascii_digit() || (b'a'..=b'f').contains(&c)
+            }
+        })
+    {
+        return Err("expected a lowercase UUID");
+    }
+    Ok(s.to_owned())
+}
+
+impl CellId {
+    pub fn generate() -> Self {
+        let mut bytes = [0; 16];
+        getrandom::getrandom(&mut bytes).expect("OS random source");
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        let h = hex_string(&bytes);
+        Self(format!(
+            "{}-{}-{}-{}-{}",
+            &h[..8],
+            &h[8..12],
+            &h[12..16],
+            &h[16..20],
+            &h[20..]
+        ))
+    }
+}
+
 text!(
     /// A hostname the proxy may tunnel to: lowercase DNS labels, no port, no
     /// path, no trailing dot, never an address.

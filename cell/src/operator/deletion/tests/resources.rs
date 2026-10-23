@@ -11,14 +11,14 @@ impl Fixture {
     fn site(&self, backend: &str) -> (Registry, SiteId) {
         let registry = Registry::create(&self.dir.join(backend)).unwrap();
         let ns = registry.allocate_namespace(self.secret.public()).unwrap();
-        let cell = Cell::new(
-            "project-dev".parse().unwrap(),
+        let cell = crate::fixtures::cell(
+            "e95cc7f0-21bb-5212-8fa9-abbfde3f6b21".parse().unwrap(),
             [crate::Grant::Publish(PublishScope::Namespace(ns.clone()))],
         );
         registry
             .approve_tree(
                 &Tree::new([(cell.clone(), None)]).unwrap(),
-                &[(cell.name, self.secret.public())].into(),
+                &[(cell.id, self.secret.public())].into(),
             )
             .unwrap();
         registry
@@ -75,7 +75,10 @@ async fn sites_are_fenced_unpublished_and_retained_before_any_vm_action() {
     let f = Fixture::new();
     let (registry, site) = f.site("sites");
     f.assert_cleanup_before_commands("sites", &site);
-    let job = f.preview("project-dev").await.unwrap();
+    let job = f
+        .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+        .await
+        .unwrap();
     assert_eq!(job.view().resources.len(), 1);
     let _ = f.start(&job).await.unwrap();
     let done = f.settled(job.id).await;
@@ -99,7 +102,10 @@ async fn drift_offline_missing_backend_and_legacy_approvals_cannot_delete_vm() {
     for case in ["drift", "offline", "missing", "legacy"] {
         let f = Fixture::new();
         let (registry, site) = f.site("sites");
-        let mut job = f.preview("project-dev").await.unwrap();
+        let mut job = f
+            .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+            .await
+            .unwrap();
         match case {
             "drift" => f.publish(&registry, &site),
             "offline" => fs::rename(f.dir.join("sites"), f.dir.join("offline")).unwrap(),
@@ -118,12 +124,18 @@ async fn drift_offline_missing_backend_and_legacy_approvals_cannot_delete_vm() {
             "{case}"
         );
         assert!(f.edge.calls.lock().unwrap().is_empty(), "{case}");
-        assert!(f.dir.join("tree/project/project-dev.json").exists());
+        assert!(f.dir.join("tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819/e95cc7f0-21bb-5212-8fa9-abbfde3f6b21.json").exists());
         if case == "missing" {
-            assert!(f.preview("project-dev").await.is_err());
+            assert!(f
+                .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+                .await
+                .is_err());
         }
         if case == "legacy" {
-            let updated = f.preview("project-dev").await.unwrap();
+            let updated = f
+                .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+                .await
+                .unwrap();
             assert!(updated.target.resources.is_some());
             assert!(f.start(&job).await.is_err());
         }
@@ -135,10 +147,16 @@ async fn publishing_grants_require_inventory_coverage_even_without_configuration
     let (_, site) = f.site("sites");
     fs::remove_file(f.dir.join("tree/.resources.json")).unwrap();
     for (name, path) in [
-        ("project", "tree/project.json"),
-        ("project-dev", "tree/project/project-dev.json"),
+        (
+            "44fc36e4-5adc-51aa-a6e3-3db15ade9819",
+            "tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819.json",
+        ),
+        (
+            "e95cc7f0-21bb-5212-8fa9-abbfde3f6b21",
+            "tree/44fc36e4-5adc-51aa-a6e3-3db15ade9819/e95cc7f0-21bb-5212-8fa9-abbfde3f6b21.json",
+        ),
     ] {
-        let cell = Cell::new(
+        let cell = crate::fixtures::cell(
             name.parse().unwrap(),
             [crate::Grant::Publish(PublishScope::Namespace(
                 site.namespace.clone(),
@@ -146,7 +164,10 @@ async fn publishing_grants_require_inventory_coverage_even_without_configuration
         );
         fs::write(f.dir.join(path), cell.canonical()).unwrap();
     }
-    assert!(f.preview("project-dev").await.is_err());
+    assert!(f
+        .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+        .await
+        .is_err());
     assert!(f.edge.calls.lock().unwrap().is_empty());
 }
 #[tokio::test]
@@ -156,7 +177,7 @@ async fn keep_live_is_an_explicit_revision_bound_choice() {
     let id = registry.resources().unwrap().resources[0].id;
     let view = preview_with(
         f.op.clone(),
-        "project-dev".parse().unwrap(),
+        "e95cc7f0-21bb-5212-8fa9-abbfde3f6b21".parse().unwrap(),
         Options {
             choices: [(id, ResourceOwner::Operator)].into(),
         },
@@ -179,7 +200,10 @@ async fn partial_cleanup_and_lost_receipt_are_carried_into_new_review() {
         let f = Fixture::new();
         let (first, _) = f.site("first");
         let (second, site) = f.site("second");
-        let mut job = f.preview("project-dev").await.unwrap();
+        let mut job = f
+            .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+            .await
+            .unwrap();
         let binding = job.target.resources.as_ref().unwrap().bindings[0].clone();
         let receipt = resource_cleanup::perform(&f.op, &binding, false).unwrap();
         job.begun = true;
@@ -199,7 +223,10 @@ async fn partial_cleanup_and_lost_receipt_are_carried_into_new_review() {
         ));
         assert!(failed.active());
         assert!(f.edge.calls.lock().unwrap().is_empty());
-        let new = f.preview("project-dev").await.unwrap();
+        let new = f
+            .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+            .await
+            .unwrap();
         assert_ne!(new.id, job.id);
         assert_eq!(new.resources_done.len(), 1);
         assert!(new.active());
@@ -220,7 +247,10 @@ async fn completed_resource_cleanup_survives_restart_and_an_offline_backend() {
     let (_, site) = f.site("sites");
     f.assert_cleanup_before_commands("sites", &site);
     f.edge.lose_delete_reply.store(true, Ordering::SeqCst);
-    let job = f.preview("project-dev").await.unwrap();
+    let job = f
+        .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+        .await
+        .unwrap();
     let _ = f.start(&job).await.unwrap();
     let failed = f.settled(job.id).await;
     assert!(matches!(
@@ -256,7 +286,10 @@ async fn browser_resource_aware_deletion() {
     let mut f = Fixture::new();
     let (registry, site) = f.site("sites");
     f.assert_cleanup_before_commands("sites", &site);
-    let job = f.preview("project-dev").await.unwrap();
+    let job = f
+        .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+        .await
+        .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let op = Arc::get_mut(&mut f.op).unwrap();
@@ -272,7 +305,7 @@ async fn browser_resource_aware_deletion() {
 const {chromium}=require(process.argv[1]);
 (async()=>{const browser=await chromium.launch({headless:true});try{
  const page=await browser.newPage();await page.goto(process.argv[2]);
- await page.getByRole('heading',{name:'Delete project-dev?'}).waitFor();
+ await page.getByRole('heading',{name:'Delete e95cc7f0-21bb-5212-8fa9-abbfde3f6b21?'}).waitFor();
  await page.getByRole('heading',{name:'Resource cleanup',exact:true}).waitFor();
  await page.getByText('Public access will stop.').waitFor();
  const select=page.getByRole('combobox',{name:/Cleanup /});
@@ -282,9 +315,9 @@ const {chromium}=require(process.argv[1]);
  await page.getByText('Public access will stop.').waitFor({state:'hidden'});
  await select.selectOption('default');await page.getByRole('button',{name:'Review updated cleanup choices'}).click();
  await page.getByText('Public access will stop.').waitFor();await page.reload();
- await page.getByRole('textbox',{name:'Cell name to delete'}).fill('project-dev');
+ await page.getByRole('textbox',{name:'Cell name to delete'}).fill('e95cc7f0-21bb-5212-8fa9-abbfde3f6b21');
  await page.getByRole('button',{name:'Delete cell',exact:true}).click();
- await page.getByRole('heading',{name:'Delete project-dev?'}).waitFor({state:'hidden'});
+ await page.getByRole('heading',{name:'Delete e95cc7f0-21bb-5212-8fa9-abbfde3f6b21?'}).waitFor({state:'hidden'});
  await page.getByRole('button',{name:'Resources',exact:true}).click();
  await page.getByText('Unpublished; data retained').waitFor();await page.getByRole('definition').filter({hasText:/^Operator$/}).waitFor();
  console.log('PASS: real HTTP/browser deletion review, changed choices, approval invalidation, reload, cleanup and retained resources');
@@ -319,11 +352,16 @@ async fn stale_transfer_target_pin_invalidates_deletion_before_cleanup() {
     let f = Fixture::new();
     let (registry, _) = f.site("sites");
     let key = crate::Secret::generate().public();
-    fs::write(f.dir.join("tree/.pins/project.pub"), key.to_string()).unwrap();
+    fs::write(
+        f.dir
+            .join("tree/.pins/44fc36e4-5adc-51aa-a6e3-3db15ade9819.pub"),
+        key.to_string(),
+    )
+    .unwrap();
     let id = registry.resources().unwrap().resources[0].id;
     let view = preview_with(
         f.op.clone(),
-        "project-dev".parse().unwrap(),
+        "e95cc7f0-21bb-5212-8fa9-abbfde3f6b21".parse().unwrap(),
         Options {
             choices: [(id, ResourceOwner::Cell(CellIdentity(key)))].into(),
         },
@@ -333,7 +371,8 @@ async fn stale_transfer_target_pin_invalidates_deletion_before_cleanup() {
     .0;
     let job = Deletion::load(&f.op.config.state, view.id).unwrap();
     fs::write(
-        f.dir.join("tree/.pins/project.pub"),
+        f.dir
+            .join("tree/.pins/44fc36e4-5adc-51aa-a6e3-3db15ade9819.pub"),
         crate::Secret::generate().public().to_string(),
     )
     .unwrap();
@@ -359,14 +398,20 @@ async fn deleting_a_delegate_only_removes_its_access() {
     let owner = crate::Secret::generate();
     let ns = registry.allocate_namespace(owner.public()).unwrap();
     let grant = crate::Grant::Publish(PublishScope::Namespace(ns.clone()));
-    let owned = Cell::new("owner".parse().unwrap(), [grant.clone()]);
-    let delegated = Cell::new("project-dev".parse().unwrap(), [grant]);
+    let owned = crate::fixtures::cell(
+        "0153ed41-b34f-506b-837e-1610aeac2bce".parse().unwrap(),
+        [grant.clone()],
+    );
+    let delegated = crate::fixtures::cell(
+        "e95cc7f0-21bb-5212-8fa9-abbfde3f6b21".parse().unwrap(),
+        [grant],
+    );
     registry
         .approve_tree(
             &Tree::new([(owned.clone(), None), (delegated.clone(), None)]).unwrap(),
             &[
-                (owned.name, owner.public()),
-                (delegated.name, f.secret.public()),
+                (owned.id, owner.public()),
+                (delegated.id, f.secret.public()),
             ]
             .into(),
         )
@@ -396,7 +441,10 @@ async fn deleting_a_delegate_only_removes_its_access() {
     );
     registry.execute_upload(&request, &artifact).unwrap();
     fs::write(f.dir.join("tree/.resources.json"),json!({"backends":[{"name":"sites","provider":registry.audience().unwrap(),"location":{"kind":"local","registry":f.dir.join("sites")}}]}).to_string()).unwrap();
-    let job = f.preview("project-dev").await.unwrap();
+    let job = f
+        .preview("e95cc7f0-21bb-5212-8fa9-abbfde3f6b21")
+        .await
+        .unwrap();
     let _ = f.start(&job).await.unwrap();
     assert_eq!(f.settled(job.id).await.phase, DeletionPhase::Deleted);
     let inventory = registry.resources().unwrap();

@@ -13,8 +13,9 @@
 //! the inbox, and touches nothing else.
 
 use crate::cell::Cell;
+use crate::exe::VmName;
 use crate::log::next_number;
-use crate::prim::Name;
+use crate::prim::CellId;
 use crate::said::Said;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -29,13 +30,13 @@ use std::time::Duration;
 pub const SOURCE_HEADER: &str = "x-exedev-source-vm";
 
 /// What the inbox holds: who knocked, and what they said. A knock through
-/// the door names the parent cell the platform vouched for; one without a
-/// name came from root over ssh, which is to say from you.
+/// the door records the source VM the platform vouched for (not a display label
+/// or inferred cell UUID). A missing source means root over SSH.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Knock {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from: Option<Name>,
+    pub from: Option<VmName>,
     pub said: Said,
 }
 
@@ -104,7 +105,7 @@ pub enum Outcome {
 }
 
 pub struct Door {
-    cell: Name,
+    cell: CellId,
     said: PathBuf,
     inbox: PathBuf,
     limits: Limits,
@@ -113,7 +114,7 @@ pub struct Door {
 impl Door {
     pub fn new(cell: &Cell, said: impl Into<PathBuf>, inbox: impl Into<PathBuf>) -> Door {
         Door {
-            cell: cell.name.clone(),
+            cell: cell.id.clone(),
             said: said.into(),
             inbox: inbox.into(),
             limits: Limits::default(),
@@ -171,7 +172,7 @@ impl Door {
             let k = k.trim().to_ascii_lowercase();
             let v = v.trim();
             if k == SOURCE_HEADER {
-                from = v.parse::<Name>().ok();
+                from = VmName::parse(v).ok();
             } else if k == "content-length" {
                 let Ok(n) = v.parse::<usize>() else {
                     return refuse(client, Refusal::Malformed, "-");

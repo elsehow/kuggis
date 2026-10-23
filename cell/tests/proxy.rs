@@ -83,7 +83,9 @@ fn split(out: &[u8]) -> (String, Vec<u8>) {
 }
 
 fn allowed_policy() -> Policy {
-    let c = cell(r#"{"name":"t","grants":[{"provider":"anthropic"},{"host":"pypi.org"}]}"#);
+    let c = cell(
+        r#"{"id":"b4bbe201-acbf-5487-b110-783340bb3fd1","name":"t","grants":[{"provider":"anthropic"},{"host":"pypi.org"}]}"#,
+    );
     let mut p = Policy::for_cell(&c);
     p.private_ok = true; // the target lives on loopback
     p
@@ -175,7 +177,7 @@ fn refuses_an_allowed_name_that_resolves_somewhere_private() {
 #[test]
 fn edge_hosts_must_sit_at_the_gateway_and_ordinary_hosts_must_not() {
     let c = cell(
-        r#"{"name":"t","grants":[{"provider":"anthropic"},{"provider":"openai"},{"edge":"codex"},{"code":{"repo":"o/r","write":true}},{"host":"pypi.org"}]}"#,
+        r#"{"id":"b4bbe201-acbf-5487-b110-783340bb3fd1","name":"t","grants":[{"provider":"anthropic"},{"provider":"openai"},{"edge":"codex"},{"code":{"repo":"o/r","write":true}},{"host":"pypi.org"}]}"#,
     );
     let policy = Policy::for_cell(&c);
     assert_eq!(
@@ -356,7 +358,9 @@ fn an_unresolvable_or_unreachable_host_is_a_gateway_error_not_a_hang() {
 #[test]
 fn an_empty_cell_tunnels_nothing() {
     let t = target();
-    let mut policy = Policy::for_cell(&cell(r#"{"name":"t"}"#));
+    let mut policy = Policy::for_cell(&cell(
+        r#"{"id":"b4bbe201-acbf-5487-b110-783340bb3fd1","name":"t"}"#,
+    ));
     policy.private_ok = true;
     assert!(policy.hosts.is_empty());
     let px = proxy(policy, resolver(vec![("api.anthropic.com", t)]), limits());
@@ -397,7 +401,9 @@ fn many_clients_at_once() {
 #[test]
 fn doors_pass_without_a_grant_but_only_at_the_gateway() {
     // the cell file names no door; the tree and the gateway decide
-    let policy = Policy::for_cell(&cell(r#"{"name":"t","grants":[{"provider":"anthropic"}]}"#));
+    let policy = Policy::for_cell(&cell(
+        r#"{"id":"b4bbe201-acbf-5487-b110-783340bb3fd1","name":"t","grants":[{"provider":"anthropic"}]}"#,
+    ));
     assert!(policy
         .hosts
         .iter()
@@ -411,21 +417,36 @@ fn doors_pass_without_a_grant_but_only_at_the_gateway() {
     let px = proxy(
         policy,
         resolver(vec![
-            ("door-child.int.exe.xyz", gateway), // a door, where doors live
-            ("door-other.int.exe.xyz", public),  // a door name, rebound off the gateway
-            ("doorchild.int.exe.xyz", gateway),  // not a door: no dash
-            ("door-plan.int.exe.xyz", gateway),  // not a door: a command word is not a Name
-            ("door-child.exe.xyz", gateway),     // not the edge
-            ("door-child.int.exe.xyz.evil.example", gateway),
+            (
+                "door-e3e321ad-3f5e-5221-9ec8-ccc87947084b.int.exe.xyz",
+                gateway,
+            ), // a door, where doors live
+            (
+                "door-70ee78ad-5e3a-510a-af20-6f485ecb6f16.int.exe.xyz",
+                public,
+            ), // a door name, rebound off the gateway
+            ("doorchild.int.exe.xyz", gateway), // not a door: no dash
+            ("door-plan.int.exe.xyz", gateway), // not a door: a command word is not a Name
+            ("door-e3e321ad-3f5e-5221-9ec8-ccc87947084b.exe.xyz", gateway), // not the edge
+            (
+                "door-e3e321ad-3f5e-5221-9ec8-ccc87947084b.int.exe.xyz.evil.example",
+                gateway,
+            ),
         ]),
         fast,
     );
-    let (status, _) = exchange(px, b"CONNECT door-child.int.exe.xyz:443 HTTP/1.1\r\n\r\n");
+    let (status, _) = exchange(
+        px,
+        b"CONNECT door-e3e321ad-3f5e-5221-9ec8-ccc87947084b.int.exe.xyz:443 HTTP/1.1\r\n\r\n",
+    );
     assert!(
         status.starts_with("HTTP/1.1 502"),
         "a door at the gateway passes the host and address rules; off-VM the connect then fails: {status}"
     );
-    let (status, _) = exchange(px, b"CONNECT door-other.int.exe.xyz:443 HTTP/1.1\r\n\r\n");
+    let (status, _) = exchange(
+        px,
+        b"CONNECT door-70ee78ad-5e3a-510a-af20-6f485ecb6f16.int.exe.xyz:443 HTTP/1.1\r\n\r\n",
+    );
     assert!(
         status.starts_with("HTTP/1.1 403"),
         "a door name away from the gateway: {status}"
@@ -433,15 +454,18 @@ fn doors_pass_without_a_grant_but_only_at_the_gateway() {
     for not in [
         "doorchild.int.exe.xyz",
         "door-plan.int.exe.xyz",
-        "door-child.exe.xyz",
-        "door-child.int.exe.xyz.evil.example",
+        "door-e3e321ad-3f5e-5221-9ec8-ccc87947084b.exe.xyz",
+        "door-e3e321ad-3f5e-5221-9ec8-ccc87947084b.int.exe.xyz.evil.example",
         "DOOR-CHILD.INT.EXE.XYZ.evil.example",
     ] {
         let line = format!("CONNECT {not}:443 HTTP/1.1\r\n\r\n");
         let (status, _) = exchange(px, line.as_bytes());
         assert!(status.starts_with("HTTP/1.1 403"), "{not}: {status}");
     }
-    let (status, _) = exchange(px, b"CONNECT door-child.int.exe.xyz:80 HTTP/1.1\r\n\r\n");
+    let (status, _) = exchange(
+        px,
+        b"CONNECT door-e3e321ad-3f5e-5221-9ec8-ccc87947084b.int.exe.xyz:80 HTTP/1.1\r\n\r\n",
+    );
     assert!(
         status.starts_with("HTTP/1.1 403"),
         "a door on a port off the list: {status}"
@@ -450,7 +474,9 @@ fn doors_pass_without_a_grant_but_only_at_the_gateway() {
 
 #[test]
 fn policy_for_a_cell_is_443_and_8443_and_never_private() {
-    let p = Policy::for_cell(&cell(r#"{"name":"t","grants":[{"provider":"openai"}]}"#));
+    let p = Policy::for_cell(&cell(
+        r#"{"id":"b4bbe201-acbf-5487-b110-783340bb3fd1","name":"t","grants":[{"provider":"openai"}]}"#,
+    ));
     assert_eq!(p.ports, BTreeSet::from([443, 8443]));
     assert!(!p.private_ok);
     assert_eq!(

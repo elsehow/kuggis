@@ -1,6 +1,6 @@
-//! The binary, driven as a separate process: keys minted in one place,
-//! statements signed in another, opened in a third, a tree read from a
-//! directory, and a plan drawn from a cell file against an edge listing.
+// The binary, driven as a separate process: keys minted in one place,
+// statements signed in another, opened in a third, a tree read from a
+// directory, and a plan drawn from a cell file against an edge listing.
 
 use std::fs;
 use std::io::Write;
@@ -51,7 +51,7 @@ fn write(dir: &Path, name: &str, body: &str) -> String {
 #[test]
 fn keys_statements_and_replies_across_processes() {
     let d = tmp("keys");
-    let secret = d.join("widget.key");
+    let secret = d.join("839960b4-330d-5e73-80ff-6de714463468.key");
     let minted = run(&["key", "new", secret.to_str().unwrap()], "");
     assert!(minted.status.success(), "{}", err(&minted));
     let public = out(&minted);
@@ -65,23 +65,34 @@ fn keys_statements_and_replies_across_processes() {
         );
     }
     let again = run(&["key", "new", secret.to_str().unwrap()], "");
-    assert!(!again.status.success(), "a secret is never overwritten");
+    assert!(
+        !again.status.success(),
+        "904254dc-1b8f-5e80-9755-e5afc5b195c5 secret is never overwritten"
+    );
     assert_eq!(
         out(&run(&["key", "pub", secret.to_str().unwrap()], "")),
         public
     );
 
     let said = r#"{"verdict":{"repo":"example/widget","head":"0123456789abcdef0123456789abcdef01234567","pass":true}}"#;
-    let signed = run(&["say", "widget", "1", secret.to_str().unwrap()], said);
+    let signed = run(
+        &[
+            "say",
+            "839960b4-330d-5e73-80ff-6de714463468",
+            "1",
+            secret.to_str().unwrap(),
+        ],
+        said,
+    );
     assert!(signed.status.success(), "{}", err(&signed));
     let statement = out(&signed);
-    assert!(statement.contains("\"cell\":\"widget\""));
+    assert!(statement.contains("\"cell\":\"839960b4-330d-5e73-80ff-6de714463468\""));
 
     let opened = run(&["open", &public], &statement);
     assert!(opened.status.success(), "{}", err(&opened));
     assert_eq!(out(&opened), said);
 
-    let other = d.join("other.key");
+    let other = d.join("70ee78ad-5e3a-510a-af20-6f485ecb6f16.key");
     let other_pub = out(&run(&["key", "new", other.to_str().unwrap()], ""));
     let opened = run(&["open", &other_pub], &statement);
     assert!(!opened.status.success());
@@ -91,26 +102,45 @@ fn keys_statements_and_replies_across_processes() {
     assert_ne!(tampered, statement);
     assert!(!run(&["open", &public], &tampered).status.success());
 
-    let forged_cell = statement.replace("\"cell\":\"widget\"", "\"cell\":\"coordinator\"");
+    let forged_cell = statement.replace(
+        "\"cell\":\"839960b4-330d-5e73-80ff-6de714463468\"",
+        "\"cell\":\"coordinator\"",
+    );
     assert!(!run(&["open", &public], &forged_cell).status.success());
 
     // a cell name that is a command word, a sequence that is not a number, a bad said
     assert!(!run(&["say", "plan", "1", secret.to_str().unwrap()], said)
         .status
         .success());
-    assert!(
-        !run(&["say", "widget", "one", secret.to_str().unwrap()], said)
-            .status
-            .success()
-    );
     assert!(!run(
-        &["say", "widget", "1", secret.to_str().unwrap()],
+        &[
+            "say",
+            "839960b4-330d-5e73-80ff-6de714463468",
+            "one",
+            secret.to_str().unwrap()
+        ],
+        said
+    )
+    .status
+    .success());
+    assert!(!run(
+        &[
+            "say",
+            "839960b4-330d-5e73-80ff-6de714463468",
+            "1",
+            secret.to_str().unwrap()
+        ],
         r#"{"verdict":{"repo":"example/widget","head":"short","pass":true}}"#
     )
     .status
     .success());
     assert!(!run(
-        &["say", "widget", "1", secret.to_str().unwrap()],
+        &[
+            "say",
+            "839960b4-330d-5e73-80ff-6de714463468",
+            "1",
+            secret.to_str().unwrap()
+        ],
         r#"{"fetch":{"url":"http://x.com"}}"#
     )
     .status
@@ -122,22 +152,25 @@ fn keys_statements_and_replies_across_processes() {
 fn tree_allow_plan_and_observe() {
     let d = tmp("tree");
     let cells = d.join("cells");
-    fs::create_dir_all(cells.join("coordinator")).unwrap();
+    fs::create_dir_all(cells.join("17e2081f-027e-5c4d-baeb-59faca4d38be")).unwrap();
     let coordinator = write(
         &cells,
-        "coordinator.json",
-        r#"{"name":"coordinator","grants":[{"provider":"anthropic"},{"provider":"openai"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":false}},{"host":"pypi.org"},{"host":"files.pythonhosted.org"}]}"#,
+        "17e2081f-027e-5c4d-baeb-59faca4d38be.json",
+        r#"{"id":"17e2081f-027e-5c4d-baeb-59faca4d38be","name":"coordinator","grants":[{"provider":"anthropic"},{"provider":"openai"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":false}},{"host":"pypi.org"},{"host":"files.pythonhosted.org"}]}"#,
     );
     let widget = write(
-        &cells.join("coordinator"),
-        "widget.json",
-        r#"{"name":"widget","grants":[{"provider":"anthropic"},{"provider":"openai"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":false}},{"host":"pypi.org"},{"host":"files.pythonhosted.org"}]}"#,
+        &cells.join("17e2081f-027e-5c4d-baeb-59faca4d38be"),
+        "839960b4-330d-5e73-80ff-6de714463468.json",
+        r#"{"id":"839960b4-330d-5e73-80ff-6de714463468","name":"839960b4-330d-5e73-80ff-6de714463468","grants":[{"provider":"anthropic"},{"provider":"openai"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":false}},{"host":"pypi.org"},{"host":"files.pythonhosted.org"}]}"#,
     );
-    fs::create_dir_all(cells.join("coordinator/widget")).unwrap();
+    fs::create_dir_all(
+        cells.join("17e2081f-027e-5c4d-baeb-59faca4d38be/839960b4-330d-5e73-80ff-6de714463468"),
+    )
+    .unwrap();
     let scratch = write(
-        &cells.join("coordinator/widget"),
-        "widget-scratch.json",
-        r#"{"name":"widget-scratch","grants":[{"provider":"anthropic"},{"code":{"repo":"example/widget","write":false}}]}"#,
+        &cells.join("17e2081f-027e-5c4d-baeb-59faca4d38be/839960b4-330d-5e73-80ff-6de714463468"),
+        "e6f81d9d-ae32-518a-a2e5-092a580ce15a.json",
+        r#"{"id":"e6f81d9d-ae32-518a-a2e5-092a580ce15a","name":"e6f81d9d-ae32-518a-a2e5-092a580ce15a","grants":[{"provider":"anthropic"},{"code":{"repo":"example/widget","write":false}}]}"#,
     );
     write(&cells, "README.md", "not a cell");
 
@@ -149,15 +182,15 @@ fn tree_allow_plan_and_observe() {
         "the path gives the edge; other files are skipped:\n{}",
         out(&t)
     );
+    assert!(out(&t).lines().any(|l| l.starts_with(
+        "e6f81d9d-ae32-518a-a2e5-092a580ce15a\t839960b4-330d-5e73-80ff-6de714463468\t2 grants"
+    )));
+    assert!(out(&t).lines().any(|l| l.starts_with(
+        "839960b4-330d-5e73-80ff-6de714463468\t17e2081f-027e-5c4d-baeb-59faca4d38be\t6 grants"
+    )));
     assert!(out(&t)
         .lines()
-        .any(|l| l.starts_with("widget-scratch\twidget\t2 grants")));
-    assert!(out(&t)
-        .lines()
-        .any(|l| l.starts_with("widget\tcoordinator\t6 grants")));
-    assert!(out(&t)
-        .lines()
-        .any(|l| l.starts_with("coordinator\t-\t6 grants")));
+        .any(|l| l.starts_with("17e2081f-027e-5c4d-baeb-59faca4d38be\t-\t6 grants")));
 
     // re-parenting is mv: a subtree moved to the top keeps its hashes
     let hash_of = |listing: &str, name: &str| -> String {
@@ -170,24 +203,45 @@ fn tree_allow_plan_and_observe() {
             .unwrap()
             .to_string()
     };
-    let before = hash_of(&out(&t), "widget");
-    fs::rename(&widget, cells.join("widget.json")).unwrap();
-    fs::rename(cells.join("coordinator/widget"), cells.join("widget")).unwrap();
+    let before = hash_of(&out(&t), "839960b4-330d-5e73-80ff-6de714463468");
+    fs::rename(
+        &widget,
+        cells.join("839960b4-330d-5e73-80ff-6de714463468.json"),
+    )
+    .unwrap();
+    fs::rename(
+        cells.join("17e2081f-027e-5c4d-baeb-59faca4d38be/839960b4-330d-5e73-80ff-6de714463468"),
+        cells.join("839960b4-330d-5e73-80ff-6de714463468"),
+    )
+    .unwrap();
     let t = run(&["tree", cells.to_str().unwrap()], "");
     assert!(t.status.success(), "{}", err(&t));
-    assert!(out(&t).lines().any(|l| l.starts_with("widget\t-\t")));
     assert!(out(&t)
         .lines()
-        .any(|l| l.starts_with("widget-scratch\twidget\t")));
-    assert_eq!(hash_of(&out(&t), "widget"), before);
-    fs::rename(cells.join("widget.json"), &widget).unwrap();
-    fs::rename(cells.join("widget"), cells.join("coordinator/widget")).unwrap();
+        .any(|l| l.starts_with("839960b4-330d-5e73-80ff-6de714463468\t-\t")));
+    assert!(out(&t).lines().any(|l| l.starts_with(
+        "e6f81d9d-ae32-518a-a2e5-092a580ce15a\t839960b4-330d-5e73-80ff-6de714463468\t"
+    )));
+    assert_eq!(
+        hash_of(&out(&t), "839960b4-330d-5e73-80ff-6de714463468"),
+        before
+    );
+    fs::rename(
+        cells.join("839960b4-330d-5e73-80ff-6de714463468.json"),
+        &widget,
+    )
+    .unwrap();
+    fs::rename(
+        cells.join("839960b4-330d-5e73-80ff-6de714463468"),
+        cells.join("17e2081f-027e-5c4d-baeb-59faca4d38be/839960b4-330d-5e73-80ff-6de714463468"),
+    )
+    .unwrap();
 
     // a child wider than its parent
     let wide = write(
-        &cells.join("coordinator"),
-        "wide.json",
-        r#"{"name":"wide","grants":[{"host":"evil.example"}]}"#,
+        &cells.join("17e2081f-027e-5c4d-baeb-59faca4d38be"),
+        "883a08e6-5ec3-5051-9e4b-e7adf75c3de6.json",
+        r#"{"id":"883a08e6-5ec3-5051-9e4b-e7adf75c3de6","name":"wide","grants":[{"host":"evil.example"}]}"#,
     );
     let t = run(&["tree", cells.to_str().unwrap()], "");
     assert!(!t.status.success());
@@ -195,11 +249,15 @@ fn tree_allow_plan_and_observe() {
     fs::remove_file(&wide).unwrap();
 
     // a file that lies about its name
-    let liar = write(&cells, "liar.json", r#"{"name":"coordinator","grants":[]}"#);
+    let liar = write(
+        &cells,
+        "f2202e8e-5826-5376-9ba6-90c57944e318.json",
+        r#"{"id":"17e2081f-027e-5c4d-baeb-59faca4d38be","name":"coordinator","grants":[]}"#,
+    );
     let t = run(&["tree", cells.to_str().unwrap()], "");
     assert!(!t.status.success());
     assert!(
-        err(&t).contains("liar.json: holds cell coordinator"),
+        err(&t).contains("f2202e8e-5826-5376-9ba6-90c57944e318.json: holds cell 17e2081f-027e-5c4d-baeb-59faca4d38be"),
         "{}",
         err(&t)
     );
@@ -208,8 +266,8 @@ fn tree_allow_plan_and_observe() {
     // a cell file carrying its own edge
     let smuggler = write(
         &cells,
-        "smuggler.json",
-        r#"{"name":"smuggler","parent":"coordinator","grants":[]}"#,
+        "789d11c7-c9b5-590d-b011-593f88870781.json",
+        r#"{"id":"789d11c7-c9b5-590d-b011-593f88870781","name":"smuggler","parent":"coordinator","grants":[]}"#,
     );
     let t = run(&["tree", cells.to_str().unwrap()], "");
     assert!(!t.status.success());
@@ -217,23 +275,27 @@ fn tree_allow_plan_and_observe() {
     fs::remove_file(&smuggler).unwrap();
 
     // a directory with no cell of its own
-    fs::create_dir_all(cells.join("nobody")).unwrap();
-    write(&cells.join("nobody"), "orphan.json", r#"{"name":"orphan"}"#);
+    fs::create_dir_all(cells.join("ba870819-a991-56ad-bd1f-b99b25513bc8")).unwrap();
+    write(
+        &cells.join("ba870819-a991-56ad-bd1f-b99b25513bc8"),
+        "21dca0b1-5876-5d16-b7b6-8c72f85ca880.json",
+        r#"{"id":"21dca0b1-5876-5d16-b7b6-8c72f85ca880","name":"orphan"}"#,
+    );
     let t = run(&["tree", cells.to_str().unwrap()], "");
     assert!(!t.status.success());
     assert!(
-        err(&t).contains("orphan: parent nobody does not exist"),
+        err(&t).contains("21dca0b1-5876-5d16-b7b6-8c72f85ca880: parent ba870819-a991-56ad-bd1f-b99b25513bc8 does not exist"),
         "{}",
         err(&t)
     );
-    fs::remove_dir_all(cells.join("nobody")).unwrap();
+    fs::remove_dir_all(cells.join("ba870819-a991-56ad-bd1f-b99b25513bc8")).unwrap();
 
-    let bad = d.join("bad");
+    let bad = d.join("55869806-ec9a-56de-a1ff-e9acb802e4cd");
     fs::create_dir_all(&bad).unwrap();
     write(
         &bad,
-        "bad.json",
-        r#"{"name":"bad","grants":[{"host":"169.254.169.254"}]}"#,
+        "55869806-ec9a-56de-a1ff-e9acb802e4cd.json",
+        r#"{"id":"55869806-ec9a-56de-a1ff-e9acb802e4cd","name":"bad","grants":[{"host":"169.254.169.254"}]}"#,
     );
     let t = run(&["tree", bad.to_str().unwrap()], "");
     assert!(!t.status.success());
@@ -262,17 +324,17 @@ fn tree_allow_plan_and_observe() {
     assert!(o.status.success(), "{}", err(&o));
     let observed: serde_json::Value = serde_json::from_str(&out(&o)).unwrap();
     assert_eq!(
-        observed["cells"]["widget"]["grants"]
+        observed["cells"]["839960b4-330d-5e73-80ff-6de714463468"]["grants"]
             .as_array()
             .unwrap()
             .len(),
         3,
         "a door is not a grant: {}",
-        observed["cells"]["widget"]
+        observed["cells"]["839960b4-330d-5e73-80ff-6de714463468"]
     );
     assert_eq!(
         observed["doors"],
-        serde_json::json!({"widget": ["widget-scratch"]})
+        serde_json::json!({"839960b4-330d-5e73-80ff-6de714463468": ["e6f81d9d-ae32-518a-a2e5-092a580ce15a"]})
     );
     assert!(
         observed["cells"].get("svc-1").is_none() && observed["cells"].get("toolbox-dev").is_none(),
@@ -283,11 +345,20 @@ fn tree_allow_plan_and_observe() {
     let have = write(&d, "have.json", &observed.to_string());
 
     let dir = cells.to_str().unwrap();
-    let p = run(&["plan", dir, "widget", "--have", &have], "");
+    let p = run(
+        &[
+            "plan",
+            dir,
+            "839960b4-330d-5e73-80ff-6de714463468",
+            "--have",
+            &have,
+        ],
+        "",
+    );
     assert!(p.status.success(), "{}", err(&p));
     let plan: serde_json::Value = serde_json::from_str(&out(&p)).unwrap();
     assert_eq!(
-        plan["widget"]["actions"],
+        plan["839960b4-330d-5e73-80ff-6de714463468"]["actions"],
         serde_json::json!([{"detach":{"edge":"codex"}}, "setup"]),
         "replace the legacy Codex edge with cell-local Pi sign-in: {plan}"
     );
@@ -296,12 +367,21 @@ fn tree_allow_plan_and_observe() {
 
     // the tree decides the door: drop the child and the plan closes it
     fs::remove_file(&scratch).unwrap();
-    let p = run(&["plan", dir, "widget", "--have", &have], "");
+    let p = run(
+        &[
+            "plan",
+            dir,
+            "839960b4-330d-5e73-80ff-6de714463468",
+            "--have",
+            &have,
+        ],
+        "",
+    );
     assert!(p.status.success(), "{}", err(&p));
     let plan: serde_json::Value = serde_json::from_str(&out(&p)).unwrap();
     assert_eq!(
-        plan["widget"]["actions"],
-        serde_json::json!([{"detach":{"edge":"codex"}}, {"close": "widget-scratch"}, "setup"]),
+        plan["839960b4-330d-5e73-80ff-6de714463468"]["actions"],
+        serde_json::json!([{"detach":{"edge":"codex"}}, {"close": "e6f81d9d-ae32-518a-a2e5-092a580ce15a"}, "setup"]),
         "{plan}"
     );
     assert_ne!(err(&p).rsplit(' ').next().unwrap(), approval);
@@ -310,10 +390,12 @@ fn tree_allow_plan_and_observe() {
     let p = run(&["plan", dir, "coordinator", "--have", &have], "");
     assert!(p.status.success(), "{}", err(&p));
     let plan: serde_json::Value = serde_json::from_str(&out(&p)).unwrap();
-    let actions = plan["coordinator"]["actions"].as_array().unwrap();
+    let actions = plan["17e2081f-027e-5c4d-baeb-59faca4d38be"]["actions"]
+        .as_array()
+        .unwrap();
     assert_eq!(actions[0], "create");
     assert!(
-        actions.contains(&serde_json::json!({"open": "widget"})),
+        actions.contains(&serde_json::json!({"open": "839960b4-330d-5e73-80ff-6de714463468"})),
         "{plan}"
     );
     assert_eq!(actions.last().unwrap(), "setup");
@@ -323,10 +405,13 @@ fn tree_allow_plan_and_observe() {
     assert!(p.status.success(), "{}", err(&p));
     let plan: serde_json::Value = serde_json::from_str(&out(&p)).unwrap();
     assert_eq!(plan.as_object().unwrap().len(), 2, "{plan}");
-    assert_eq!(plan["coordinator"]["actions"][0], "create");
     assert_eq!(
-        plan["widget"]["actions"],
-        serde_json::json!([{"detach":{"edge":"codex"}}, {"close": "widget-scratch"}, "setup"])
+        plan["17e2081f-027e-5c4d-baeb-59faca4d38be"]["actions"][0],
+        "create"
+    );
+    assert_eq!(
+        plan["839960b4-330d-5e73-80ff-6de714463468"]["actions"],
+        serde_json::json!([{"detach":{"edge":"codex"}}, {"close": "e6f81d9d-ae32-518a-a2e5-092a580ce15a"}, "setup"])
     );
 
     let p = run(&["apply", dir, "--approve", "00"], "");
@@ -347,7 +432,7 @@ fn the_agent_speaks_through_the_outbox() {
     let cell = write(
         &d,
         "cell.json",
-        r#"{"name":"a","grants":[{"provider":"anthropic"}]}"#,
+        r#"{"id":"904254dc-1b8f-5e80-9755-e5afc5b195c5","name":"904254dc-1b8f-5e80-9755-e5afc5b195c5","grants":[{"provider":"anthropic"}]}"#,
     );
     let secret = d.join("secret");
     let k = run(&["key", "new", secret.to_str().unwrap()], "");
@@ -355,7 +440,7 @@ fn the_agent_speaks_through_the_outbox() {
     write(
         &outbox,
         "q.json",
-        r#"{"session":{"session":{"cell":"a","id":"00000000000000000000000000000001"},"state":"question","text":"merge?"}}"#,
+        r#"{"session":{"session":{"cell":"904254dc-1b8f-5e80-9755-e5afc5b195c5","id":"00000000000000000000000000000001"},"state":"question","text":"merge?"}}"#,
     );
     write(
         &outbox,
@@ -403,7 +488,7 @@ fn a_knock_from_root_has_no_name() {
     fs::create_dir_all(&inbox).unwrap();
     let k = run(
         &["knock", "--inbox", inbox.to_str().unwrap()],
-        r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"a","id":"00000000000000000000000000000001"},"text":"go"}}"#,
+        r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"904254dc-1b8f-5e80-9755-e5afc5b195c5","id":"00000000000000000000000000000001"},"text":"go"}}"#,
     );
     assert!(k.status.success(), "{}", err(&k));
     assert_eq!(out(&k).trim(), "1");
@@ -423,9 +508,19 @@ fn a_session_id_is_generated_before_submitting_a_brief() {
     assert!(out(&first).parse::<cell::SessionId>().is_ok());
     assert_ne!(out(&first), out(&second));
     let directory = tmp("session-id");
-    write(&directory, "dev.json", r#"{"name":"dev","grants":[]}"#);
+    write(
+        &directory,
+        "b48244b7-ed96-57fa-a3a2-e7629b8c921e.json",
+        r#"{"id":"b48244b7-ed96-57fa-a3a2-e7629b8c921e","name":"b48244b7-ed96-57fa-a3a2-e7629b8c921e","grants":[]}"#,
+    );
     let invalid = run(
-        &["brief", directory.to_str().unwrap(), "dev", "cleanup", "Go"],
+        &[
+            "brief",
+            directory.to_str().unwrap(),
+            "b48244b7-ed96-57fa-a3a2-e7629b8c921e",
+            "cleanup",
+            "Go",
+        ],
         "",
     );
     assert!(!invalid.status.success(), "session titles are not IDs");
@@ -451,7 +546,7 @@ fn publisher_policy_approval_and_trusted_signer_across_processes() {
     let initialized = run(&["publisher", "init", registry_arg], "");
     assert!(initialized.status.success(), "{}", err(&initialized));
     let audience = out(&initialized);
-    let keyfile = d.join("parent.key");
+    let keyfile = d.join("7721fe29-1976-53fa-8250-32afa9e9bb35.key");
     let minted = run(&["key", "new", keyfile.to_str().unwrap()], "");
     assert!(minted.status.success(), "{}", err(&minted));
     let public = out(&minted);
@@ -460,10 +555,17 @@ fn publisher_policy_approval_and_trusted_signer_across_processes() {
     let namespace = out(&allocated);
     let tree = d.join("tree");
     fs::create_dir_all(tree.join(".pins")).unwrap();
-    let declaration =
-        serde_json::json!({"name":"parent", "grants":[{"publish":{"namespace":namespace}}]});
-    fs::write(tree.join("parent.json"), declaration.to_string()).unwrap();
-    fs::write(tree.join(".pins/parent.pub"), &public).unwrap();
+    let declaration = serde_json::json!({"id":"7721fe29-1976-53fa-8250-32afa9e9bb35","name":"7721fe29-1976-53fa-8250-32afa9e9bb35", "grants":[{"publish":{"namespace":namespace}}]});
+    fs::write(
+        tree.join("7721fe29-1976-53fa-8250-32afa9e9bb35.json"),
+        declaration.to_string(),
+    )
+    .unwrap();
+    fs::write(
+        tree.join(".pins/7721fe29-1976-53fa-8250-32afa9e9bb35.pub"),
+        &public,
+    )
+    .unwrap();
     let tree_arg = tree.to_str().unwrap();
     let plan = run(&["publisher", "plan", registry_arg, tree_arg], "");
     assert!(plan.status.success(), "{}", err(&plan));
@@ -540,7 +642,7 @@ fn publisher_policy_approval_and_trusted_signer_across_processes() {
         .unwrap()
         .to_string();
     fs::write(
-        tree.join(".pins/parent.pub"),
+        tree.join(".pins/7721fe29-1976-53fa-8250-32afa9e9bb35.pub"),
         cell::Secret::generate().public().to_string(),
     )
     .unwrap();

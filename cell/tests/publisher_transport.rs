@@ -1,10 +1,12 @@
+#[path = "fixtures/common.rs"]
+mod fixtures;
 use cell::publish::{
     operator,
     registry::{Registry, RegistryError, SiteAction},
     transport::{self, Command, Reply, SignedRequest},
     NamespaceId, PublishScope, SiteId,
 };
-use cell::{Cell, Grant, Key, Name, RequestId, Secret, Tree};
+use cell::{CellId, Grant, Key, RequestId, Secret, Tree};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 struct Fixture {
@@ -29,13 +31,17 @@ impl Fixture {
         f.registry.approve_tree(&f.tree(), &f.pins()).unwrap();
         f
     }
-    fn pins(&self) -> BTreeMap<Name, Key> {
-        [("parent".parse().unwrap(), self.secret.public())].into()
+    fn pins(&self) -> BTreeMap<CellId, Key> {
+        [(
+            "7721fe29-1976-53fa-8250-32afa9e9bb35".parse().unwrap(),
+            self.secret.public(),
+        )]
+        .into()
     }
     fn tree(&self) -> Tree {
         Tree::new([(
-            Cell::new(
-                "parent".parse().unwrap(),
+            fixtures::cell(
+                "7721fe29-1976-53fa-8250-32afa9e9bb35".parse().unwrap(),
                 [Grant::Publish(PublishScope::Namespace(
                     self.namespace.clone(),
                 ))],
@@ -97,7 +103,8 @@ fn signed_commands_are_bound_to_all_fields_and_cannot_borrow_a_signature() {
         mutations.push(changed);
     }
     let mut changed = value.clone();
-    changed["body"]["command"]["reserve_site"]["site"]["name"] = serde_json::json!("other");
+    changed["body"]["command"]["reserve_site"]["site"]["name"] =
+        serde_json::json!("70ee78ad-5e3a-510a-af20-6f485ecb6f16");
     mutations.push(changed);
     let mut changed = value.clone();
     changed["signature"] = serde_json::json!("00".repeat(64));
@@ -233,7 +240,11 @@ fn operator_approval_binds_pins_topology_grants_audience_and_previous_policy() {
     let f = Fixture::new();
     let plan = f.registry.plan_policy(&f.tree(), &f.pins()).unwrap();
     let different_key = Secret::generate().public();
-    let other_pins = [("parent".parse().unwrap(), different_key)].into();
+    let other_pins = [(
+        "7721fe29-1976-53fa-8250-32afa9e9bb35".parse().unwrap(),
+        different_key,
+    )]
+    .into();
     assert!(f
         .registry
         .apply_policy(&f.tree(), &other_pins, &plan.hash())
@@ -256,12 +267,12 @@ fn operator_approval_binds_pins_topology_grants_audience_and_previous_policy() {
         .unwrap();
 
     let parent = f.tree().iter().next().unwrap().clone();
-    let child = Cell::new("child".parse().unwrap(), []);
+    let child = fixtures::cell("e3e321ad-3f5e-5221-9ec8-ccc87947084b".parse().unwrap(), []);
     let mut pins = f.pins();
-    pins.insert(child.name.clone(), different_key);
+    pins.insert(child.id.clone(), different_key);
     let nested = Tree::new([
         (parent.clone(), None),
-        (child.clone(), Some(parent.name.clone())),
+        (child.clone(), Some(parent.id.clone())),
     ])
     .unwrap();
     let roots = Tree::new([(parent, None), (child, None)]).unwrap();
@@ -287,12 +298,12 @@ fn policy_loader_requires_existing_regular_pins_and_a_valid_tree() {
     fs::create_dir_all(&pins_dir).unwrap();
     let cell = f.tree().iter().next().unwrap().clone();
     fs::write(
-        tree_dir.join("parent.json"),
+        tree_dir.join("7721fe29-1976-53fa-8250-32afa9e9bb35.json"),
         serde_json::to_vec(&cell).unwrap(),
     )
     .unwrap();
     assert!(operator::load(&tree_dir, &pins_dir).is_err());
-    let pin = pins_dir.join("parent.pub");
+    let pin = pins_dir.join("7721fe29-1976-53fa-8250-32afa9e9bb35.pub");
     fs::write(&pin, f.secret.public().to_string()).unwrap();
     let (tree, pins) = operator::load(&tree_dir, &pins_dir).unwrap();
     assert_eq!(tree, f.tree());
@@ -342,7 +353,7 @@ async fn real_http_endpoint_requires_signatures_limits_bodies_and_has_no_admin_r
         address,
         "/v1/requests",
         forged.to_string(),
-        "X-Exedev-Source-Vm: parent\r\n"
+        "X-Exedev-Source-Vm: 7721fe29-1976-53fa-8250-32afa9e9bb35\r\n"
     )
     .await
     .starts_with("HTTP/1.1 401"));
@@ -380,7 +391,9 @@ fn pre_transport_registry_upgrade_preserves_ownership_grants_and_reservations() 
     let path = f.path.join("state.json");
     let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     old["format"] = serde_json::json!(1);
-    for field in ["resources", "resource_operations", "frozen", "cleanups"] { old.as_object_mut().unwrap().remove(field); }
+    for field in ["resources", "resource_operations", "frozen", "cleanups"] {
+        old.as_object_mut().unwrap().remove(field);
+    }
     old.as_object_mut().unwrap().remove("public_base");
     old.as_object_mut().unwrap().remove("publications");
     old.as_object_mut().unwrap().remove("audience");

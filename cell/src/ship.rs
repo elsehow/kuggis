@@ -38,9 +38,9 @@ pub fn admit(cell: &Cell, bytes: &[u8]) -> Result<Said, String> {
     };
     match &said {
         Said::Checked { .. } => Err("only the wall check says checked".into()),
-        Said::Session { session, .. } if &session.cell != &cell.name => Err(format!(
+        Said::Session { session, .. } if &session.cell != &cell.id => Err(format!(
             "session belongs to {}, not {}",
-            session.cell, cell.name
+            session.cell, cell.id
         )),
         Said::Verdict { repo, .. } if !holds(repo) => Err(format!("no grant on {repo}")),
         _ => Ok(said),
@@ -90,7 +90,7 @@ pub fn ship(
         let stem = name.strip_suffix(".json").expect("filtered");
         let outcome = match read_regular(&path).and_then(|b| admit(cell, &b)) {
             Ok(s) => {
-                let statement = log::append(said, secret, cell.name.clone(), s)?;
+                let statement = log::append(said, secret, cell.id.clone(), s)?;
                 fs::rename(&path, outbox.join(format!("{stem}.{}", statement.seq)))?;
                 Ok(statement.seq)
             }
@@ -143,7 +143,7 @@ mod tests {
     use crate::said::Statement;
     use std::path::PathBuf;
 
-    const CELL: &str = r#"{"name":"a","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true}}]}"#;
+    const CELL: &str = r#"{"id":"904254dc-1b8f-5e80-9755-e5afc5b195c5","name":"904254dc-1b8f-5e80-9755-e5afc5b195c5","grants":[{"provider":"anthropic"},{"code":{"repo":"example/x","write":true}}]}"#;
 
     fn cell() -> Cell {
         serde_json::from_str(CELL).unwrap()
@@ -163,10 +163,10 @@ mod tests {
         let ok = |s: &str| admit(&c, s.as_bytes()).unwrap();
         let no = |s: &str| admit(&c, s.as_bytes()).unwrap_err();
         ok(
-            r#"{"session":{"session":{"cell":"a","id":"00000000000000000000000000000001"},"state":"question","text":"which?"}}"#,
+            r#"{"session":{"session":{"cell":"904254dc-1b8f-5e80-9755-e5afc5b195c5","id":"00000000000000000000000000000001"},"state":"question","text":"which?"}}"#,
         );
         ok(
-            r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"b","id":"00000000000000000000000000000001"},"text":"go"}}"#,
+            r#"{"brief":{"request":"00000000000000000000000000000002","session":{"cell":"46b16f13-11ac-5315-b431-845f196f907e","id":"00000000000000000000000000000001"},"text":"go"}}"#,
         );
         ok(r#"{"fetch":{"url":"https://docs.example/"}}"#);
         ok(&format!(
@@ -179,8 +179,8 @@ mod tests {
         ));
         assert!(no(r#"{"checked":{"cell":"0000000000000000000000000000000000000000000000000000000000000000","ok":true,"report":""}}"#).contains("wall check"));
         assert!(
-            no(r#"{"session":{"session":{"cell":"other","id":"00000000000000000000000000000001"},"state":"working"}}"#)
-                .contains("session belongs to other, not a")
+            no(r#"{"session":{"session":{"cell":"70ee78ad-5e3a-510a-af20-6f485ecb6f16","id":"00000000000000000000000000000001"},"state":"working"}}"#)
+                .contains("session belongs to 70ee78ad-5e3a-510a-af20-6f485ecb6f16, not 904254dc-1b8f-5e80-9755-e5afc5b195c5")
         );
         assert!(no(&format!(
             r#"{{"verdict":{{"repo":"o/y","head":"{}","pass":true}}}}"#,
@@ -204,7 +204,7 @@ mod tests {
         let drop = |name: &str, body: &str| fs::write(outbox.join(name), body).unwrap();
         drop(
             "a.json",
-            r#"{"session":{"session":{"cell":"a","id":"00000000000000000000000000000001"},"state":"working"}}"#,
+            r#"{"session":{"session":{"cell":"904254dc-1b8f-5e80-9755-e5afc5b195c5","id":"00000000000000000000000000000001"},"state":"working"}}"#,
         );
         drop(
             "b.json",
@@ -249,7 +249,7 @@ mod tests {
         let checked = log::append(
             &said,
             &secret,
-            c.name.clone(),
+            c.id.clone(),
             Said::Checked {
                 cell: c.hash(),
                 ok: true,
@@ -273,7 +273,7 @@ mod tests {
                     .unwrap();
             assert_eq!(
                 s.cell.as_str(),
-                "a",
+                "904254dc-1b8f-5e80-9755-e5afc5b195c5",
                 "signed as the cell, whatever the agent wrote"
             );
             assert!(s.follows(last));

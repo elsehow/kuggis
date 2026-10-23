@@ -5,7 +5,7 @@
 use crate::apply::{Edge, Fallible};
 use crate::cell::{Cell, TAG_PREFIX};
 use crate::grant::{Grant, EDGE_SUFFIX};
-use crate::prim::{Hash, Host, Name};
+use crate::prim::{CellId, Hash, Host};
 use crate::said::{Key, Said, Statement};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -58,29 +58,9 @@ impl From<VmName> for String {
     }
 }
 
-/// New VMs use a stricter namespace than logical cell names (and some older
-/// VMs). Preserve already-valid names; otherwise produce a stable provider name.
-pub fn provision_name(name: &Name) -> String {
-    let raw = name.as_str();
-    if (5..=52).contains(&raw.len())
-        && raw.as_bytes()[0].is_ascii_lowercase()
-        && !raw.contains("--")
-    {
-        return raw.into();
-    }
-    let slug = raw
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
-    let candidate = format!("cell-{slug}");
-    if candidate.len() <= 52 && !raw.contains("--") {
-        return candidate;
-    }
-    // Truncation and normalization can lose information. Retain a digest to
-    // distinguish names that would otherwise collapse to the same slug.
-    let prefix = candidate[..candidate.len().min(39)].trim_end_matches('-');
-    format!("{prefix}-{}", &Hash::of(raw.as_bytes()).to_string()[..12])
+/// Provider names are stable across label changes and always DNS-safe.
+pub fn provision_name(id: &CellId) -> String {
+    format!("cell-{id}")
 }
 
 /// Parsed exe.dev attachment syntax. Unrecognized external forms remain
@@ -146,19 +126,19 @@ impl<'a> IntegrationKind<'a> {
 pub const DOOR_PREFIX: &str = "door-";
 
 /// The integration's name.
-pub fn door_name(child: &Name) -> String {
+pub fn door_name(child: &CellId) -> String {
     format!("{DOOR_PREFIX}{child}")
 }
 
 /// The hostname the parent knocks on.
-pub fn door_host(child: &Name) -> Host {
+pub fn door_host(child: &CellId) -> Host {
     format!("{}{EDGE_SUFFIX}", door_name(child))
         .parse()
         .expect("a name between fixed labels is a host")
 }
 
 /// The child behind a door hostname, if it is one.
-pub fn door_of_host(host: &Host) -> Option<Name> {
+pub fn door_of_host(host: &Host) -> Option<CellId> {
     host.as_str()
         .strip_suffix(EDGE_SUFFIX)?
         .strip_prefix(DOOR_PREFIX)?
@@ -202,7 +182,7 @@ pub struct Integration {
 impl Vm {
     /// The cell this VM is the root of, by its `cell-` tag. A VM without
     /// the tag is not a cell, whatever its name: `cell adopt` adds the tag.
-    pub fn cell_name(&self) -> Option<Name> {
+    pub fn cell_id(&self) -> Option<CellId> {
         self.tags
             .iter()
             .find_map(|t| t.strip_prefix(TAG_PREFIX))
@@ -211,14 +191,14 @@ impl Vm {
 }
 
 /// The VM that is this cell's root.
-pub fn vm_of<'a>(vms: &'a [Vm], cell: &Name) -> Option<&'a Vm> {
-    vms.iter().find(|v| v.cell_name().as_ref() == Some(cell))
+pub fn vm_of<'a>(vms: &'a [Vm], cell: &CellId) -> Option<&'a Vm> {
+    vms.iter().find(|v| v.cell_id().as_ref() == Some(cell))
 }
 
 /// Resolve a cell's root VM only when its ownership tag is unique and the VM
 /// carries no competing cell tag. Callers that may act on a VM use this rather
 /// than treating the first matching tag as authority.
-pub fn cell_vm<'a>(vms: &'a [Vm], cell: &Name) -> Result<Option<&'a Vm>, String> {
+pub fn cell_vm<'a>(vms: &'a [Vm], cell: &CellId) -> Result<Option<&'a Vm>, String> {
     let tag = format!("{TAG_PREFIX}{cell}");
     let matches: Vec<_> = vms.iter().filter(|vm| vm.tags.contains(&tag)).collect();
     if matches.len() > 1 {
@@ -243,7 +223,7 @@ pub fn cell_vm<'a>(vms: &'a [Vm], cell: &Name) -> Result<Option<&'a Vm>, String>
 
 /// Validate all declared cell ownership before a reconciliation or route map
 /// is built. An ambiguous listing cannot be partially interpreted.
-pub fn cell_vms(vms: &[Vm]) -> Result<BTreeMap<Name, &Vm>, String> {
+pub fn cell_vms(vms: &[Vm]) -> Result<BTreeMap<CellId, &Vm>, String> {
     let mut result = BTreeMap::new();
     for vm in vms {
         let tags: Vec<_> = vm
@@ -260,7 +240,7 @@ pub fn cell_vms(vms: &[Vm]) -> Result<BTreeMap<Name, &Vm>, String> {
             return Err(format!("VM {} carries tags for multiple cells", vm.vm_name));
         }
         let raw = tags[0].strip_prefix(TAG_PREFIX).unwrap();
-        let cell: Name = raw
+        let cell: CellId = raw
             .parse()
             .map_err(|_| format!("VM {} carries an invalid cell tag", vm.vm_name))?;
         if result.insert(cell.clone(), vm).is_some() {
@@ -287,7 +267,7 @@ impl Integration {
     }
 
     /// The child this integration is a door to, by its name.
-    pub fn door(&self) -> Option<Name> {
+    pub fn door(&self) -> Option<CellId> {
         self.name.strip_prefix(DOOR_PREFIX)?.parse().ok()
     }
 
@@ -325,16 +305,16 @@ impl Integration {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Observed {
-    pub cells: BTreeMap<Name, Cell>,
+    pub cells: BTreeMap<CellId, Cell>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub doors: BTreeMap<Name, BTreeSet<Name>>,
+    pub doors: BTreeMap<CellId, BTreeSet<CellId>>,
 }
 
-static NO_DOORS: BTreeSet<Name> = BTreeSet::new();
+static NO_DOORS: BTreeSet<CellId> = BTreeSet::new();
 
 impl Observed {
     /// A cell and the doors it holds, if the edge has it.
-    pub fn of(&self, name: &Name) -> Option<(&Cell, &BTreeSet<Name>)> {
+    pub fn of(&self, name: &CellId) -> Option<(&Cell, &BTreeSet<CellId>)> {
         let cell = self.cells.get(name)?;
         Some((cell, self.doors.get(name).unwrap_or(&NO_DOORS)))
     }
@@ -442,7 +422,7 @@ impl Edge for Ssh {
             .as_deref()
             .ok_or("setup needs the Linux build: cell apply ... --bin PATH")?;
         let file =
-            std::env::temp_dir().join(format!("cell-{}-{}.json", cell.name, std::process::id()));
+            std::env::temp_dir().join(format!("cell-{}-{}.json", cell.id, std::process::id()));
         std::fs::write(&file, cell.canonical())?;
         Ssh::put(vm, bin, "/tmp/cell")?;
         let sent = Ssh::put(vm, &file, "/tmp/cell.json");
@@ -493,14 +473,23 @@ fn control_output(args: &[&str], out: Output) -> Fallible<String> {
 pub fn observe(vms: &[Vm], ints: &[Integration]) -> Observed {
     let mut out = Observed::default();
     for vm in vms {
-        let Some(name) = vm.cell_name() else { continue };
+        let Some(name) = vm.cell_id() else { continue };
         let attached = || ints.iter().filter(|i| i.attached_to(vm));
         let grants = attached().flat_map(Integration::grants);
-        let doors: BTreeSet<Name> = attached().filter_map(Integration::door).collect();
+        let doors: BTreeSet<CellId> = attached().filter_map(Integration::door).collect();
         if !doors.is_empty() {
             out.doors.insert(name.clone(), doors);
         }
-        out.cells.insert(name.clone(), Cell::new(name, grants));
+        // The edge carries identity and grants, not the operator-owned label.
+        // Use the ID as a diagnostic label; configuration hashing excludes it.
+        out.cells.insert(
+            name.clone(),
+            Cell {
+                id: name.clone(),
+                name: name.to_string().parse().expect("UUID is a valid label"),
+                grants: grants.collect(),
+            },
+        );
     }
     out
 }
@@ -526,33 +515,12 @@ mod tests {
     use crate::said::Secret;
 
     #[test]
-    fn provisioning_accepts_every_cell_name_shape_without_changing_identity() {
-        assert_eq!(provision_name(&"project".parse().unwrap()), "project");
-        assert_eq!(provision_name(&"app".parse().unwrap()), "cell-app");
-        for raw in [
-            "a".to_string(),
-            "12345".into(),
-            "a--b".into(),
-            "a".repeat(63),
-            format!("{}b", "a".repeat(62)),
-        ] {
-            let name = provision_name(&raw.parse().unwrap());
-            assert!((5..=52).contains(&name.len()), "{name}");
-            assert!(name.as_bytes()[0].is_ascii_lowercase());
-            assert!(!name.contains("--") && !name.ends_with('-'));
-            assert!(VmName::parse(name).is_ok());
-        }
-        assert_ne!(
-            provision_name(&"a--b".parse().unwrap()),
-            provision_name(&"a-b".parse().unwrap())
-        );
-        assert_ne!(
-            provision_name(&"a".repeat(63).parse().unwrap()),
-            provision_name(&format!("{}b", "a".repeat(62)).parse().unwrap())
-        );
+    fn provisioning_uses_stable_uuid_identity() {
+        let id = CellId::generate();
+        assert_eq!(provision_name(&id), format!("cell-{id}"));
+        assert!(VmName::parse(provision_name(&id)).is_ok());
     }
 
-    #[cfg(unix)]
     #[test]
     fn provider_validation_errors_on_stdout_are_visible() {
         use std::os::unix::process::ExitStatusExt;
@@ -569,34 +537,73 @@ mod tests {
 
     #[test]
     fn ownership_lookup_refuses_ambiguous_vm_tags() {
-        let name: Name = "dev".parse().unwrap();
+        let name: CellId = "b48244b7-ed96-57fa-a3a2-e7629b8c921e".parse().unwrap();
         let vm = |vm_name: &str, tags: &[&str]| Vm {
             vm_name: vm_name.into(),
-            created_at: Some("fixture".into()),
+            created_at: Some("ed7ed6fb-d4e5-52bc-bf5a-cec3e60ce5ef".into()),
             tags: tags.iter().map(|tag| (*tag).into()).collect(),
             status: "running".into(),
         };
         assert_eq!(
-            cell_vm(&[vm("dev", &["cell-dev"])], &name)
-                .unwrap()
-                .unwrap()
-                .vm_name,
-            "dev"
+            cell_vm(
+                &[vm(
+                    "b48244b7-ed96-57fa-a3a2-e7629b8c921e",
+                    &["cell-b48244b7-ed96-57fa-a3a2-e7629b8c921e"]
+                )],
+                &name
+            )
+            .unwrap()
+            .unwrap()
+            .vm_name,
+            "b48244b7-ed96-57fa-a3a2-e7629b8c921e"
         );
-        assert!(cell_vm(&[vm("a", &["cell-dev"]), vm("b", &["cell-dev"])], &name).is_err());
-        assert!(cell_vm(&[vm("a", &["cell-dev", "cell-other"])], &name).is_err());
-        assert!(cell_vms(&[vm("a", &["cell-dev"]), vm("b", &["cell-dev"])]).is_err());
+        assert!(cell_vm(
+            &[
+                vm(
+                    "904254dc-1b8f-5e80-9755-e5afc5b195c5",
+                    &["cell-b48244b7-ed96-57fa-a3a2-e7629b8c921e"]
+                ),
+                vm(
+                    "46b16f13-11ac-5315-b431-845f196f907e",
+                    &["cell-b48244b7-ed96-57fa-a3a2-e7629b8c921e"]
+                )
+            ],
+            &name
+        )
+        .is_err());
+        assert!(cell_vm(
+            &[vm(
+                "904254dc-1b8f-5e80-9755-e5afc5b195c5",
+                &[
+                    "cell-b48244b7-ed96-57fa-a3a2-e7629b8c921e",
+                    "cell-70ee78ad-5e3a-510a-af20-6f485ecb6f16"
+                ]
+            )],
+            &name
+        )
+        .is_err());
+        assert!(cell_vms(&[
+            vm(
+                "904254dc-1b8f-5e80-9755-e5afc5b195c5",
+                &["cell-b48244b7-ed96-57fa-a3a2-e7629b8c921e"]
+            ),
+            vm(
+                "46b16f13-11ac-5315-b431-845f196f907e",
+                &["cell-b48244b7-ed96-57fa-a3a2-e7629b8c921e"]
+            )
+        ])
+        .is_err());
     }
 
     #[test]
     fn attachment_parser_keeps_targets_typed_and_unknown_targets_inert() {
         assert_eq!(
-            AttachmentTarget::parse("vm:dev"),
-            AttachmentTarget::Vm(VmName::parse("dev").unwrap())
+            AttachmentTarget::parse("vm:b48244b7-ed96-57fa-a3a2-e7629b8c921e"),
+            AttachmentTarget::Vm(VmName::parse("b48244b7-ed96-57fa-a3a2-e7629b8c921e").unwrap())
         );
         assert_eq!(
-            AttachmentTarget::parse("tag:cell-dev"),
-            AttachmentTarget::Tag("cell-dev".into())
+            AttachmentTarget::parse("tag:cell-b48244b7-ed96-57fa-a3a2-e7629b8c921e"),
+            AttachmentTarget::Tag("cell-b48244b7-ed96-57fa-a3a2-e7629b8c921e".into())
         );
         assert_eq!(
             AttachmentTarget::parse("auto:all"),
@@ -611,13 +618,16 @@ mod tests {
             AttachmentTarget::Unknown("future:selector".into())
         );
         assert!(serde_json::from_str::<VmName>("\"-unsafe\"").is_err());
-        assert!(serde_json::from_str::<VmName>("\"dev;echo-pwned\"").is_err());
+        assert!(serde_json::from_str::<VmName>(
+            "\"b48244b7-ed96-57fa-a3a2-e7629b8c921e;echo-pwned\""
+        )
+        .is_err());
     }
 
     #[test]
     fn a_log_in_name_order_is_put_in_sequence() {
         let secret = Secret::generate();
-        let name: Name = "a".parse().unwrap();
+        let name: CellId = "904254dc-1b8f-5e80-9755-e5afc5b195c5".parse().unwrap();
         let said = Said::Session {
             session: crate::SessionRef {
                 cell: name.clone(),
@@ -640,21 +650,21 @@ mod tests {
     }
 
     const VMS: &str = r#"{"vms":[
-      {"vm_name":"widget-dev","tags":["box","cell-widget"],"status":"running"},
-      {"vm_name":"scratch","tags":["cell-scratch"],"status":"running"},
-      {"vm_name":"plain","tags":["box"],"status":"running"},
-      {"vm_name":"odd","tags":["cell-Bad Name"],"status":"running"}
+      {"vm_name":"widget-dev","tags":["box","cell-839960b4-330d-5e73-80ff-6de714463468"],"status":"running"},
+      {"vm_name":"c8e41d40-c640-580b-959a-0f0e164697ea","tags":["cell-c8e41d40-c640-580b-959a-0f0e164697ea"],"status":"running"},
+      {"vm_name":"37eecef2-0cc6-5af0-b6f2-bb02894a95c0","tags":["box"],"status":"running"},
+      {"vm_name":"odd","tags":["cell-Bad CellId"],"status":"running"}
     ]}"#;
     const INTS: &str = r#"[
       {"name":"gh-widget-dev","type":"github","attachments":["vm:widget-dev"],"config":{"repositories":["example/widget","upstream/WIDGET"],"installation_id":1}},
-      {"name":"gh-ro","type":"github","attachments":["tag:cell-widget"],"config":{"repositories":["o/r"],"readonly":true}},
+      {"name":"gh-ro","type":"github","attachments":["tag:cell-839960b4-330d-5e73-80ff-6de714463468"],"config":{"repositories":["o/r"],"readonly":true}},
       {"name":"gh-loose","type":"github","attachments":null,"config":{"repositories":["o/loose"]}},
-      {"name":"codex","type":"llm","attachments":["tag:cell-widget"],"config":{"providers":{"openai":{"enabled":true,"source":"chatgpt"}}}},
+      {"name":"codex","type":"llm","attachments":["tag:cell-839960b4-330d-5e73-80ff-6de714463468"],"config":{"providers":{"openai":{"enabled":true,"source":"chatgpt"}}}},
       {"name":"llm","type":"llm","attachments":["auto:all"],"config":{"providers":{"openai":{"enabled":true,"source":"managed"}}}},
-      {"name":"brave","type":"brave","attachments":["vm:scratch"],"config":{}},
-      {"name":"Odd Name","type":"exa","attachments":["vm:scratch"],"config":{}},
-      {"name":"door-scratch","type":"http-proxy","attachments":["tag:cell-widget"],"config":{"target":"https://scratch.exe.xyz/","peer":true}},
-      {"name":"door-Nope","type":"http-proxy","attachments":["vm:scratch"],"config":{}}
+      {"name":"brave","type":"brave","attachments":["vm:c8e41d40-c640-580b-959a-0f0e164697ea"],"config":{}},
+      {"name":"Odd CellId","type":"exa","attachments":["vm:c8e41d40-c640-580b-959a-0f0e164697ea"],"config":{}},
+      {"name":"door-c8e41d40-c640-580b-959a-0f0e164697ea","type":"http-proxy","attachments":["tag:cell-839960b4-330d-5e73-80ff-6de714463468"],"config":{"target":"https://c8e41d40-c640-580b-959a-0f0e164697ea.exe.xyz/","peer":true}},
+      {"name":"door-Nope","type":"http-proxy","attachments":["vm:c8e41d40-c640-580b-959a-0f0e164697ea"],"config":{}}
     ]"#;
 
     #[test]
@@ -668,23 +678,32 @@ mod tests {
             "a VM without a cell tag is not a cell, nor one whose tag is not a name"
         );
         assert_eq!(
-            vm_of(&vms.vms, &"widget".parse().unwrap()).unwrap().vm_name,
+            vm_of(
+                &vms.vms,
+                &"839960b4-330d-5e73-80ff-6de714463468".parse().unwrap()
+            )
+            .unwrap()
+            .vm_name,
             "widget-dev",
-            "the root may be a VM of another name, adopted by tag"
+            "the 298c6221-06bd-5a66-b98f-f7943edcf0ed may be a VM of another name, adopted by tag"
         );
-        assert!(vm_of(&vms.vms, &"plain".parse().unwrap()).is_none());
-        let widget: Name = "widget".parse().unwrap();
+        assert!(vm_of(
+            &vms.vms,
+            &"37eecef2-0cc6-5af0-b6f2-bb02894a95c0".parse().unwrap()
+        )
+        .is_none());
+        let widget: CellId = "839960b4-330d-5e73-80ff-6de714463468".parse().unwrap();
         let want: Cell = serde_json::from_str(
-            r#"{"name":"widget","grants":[{"edge":"codex"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":true}},{"code":{"repo":"o/r","write":false}}]}"#,
+            r#"{"id":"839960b4-330d-5e73-80ff-6de714463468","name":"839960b4-330d-5e73-80ff-6de714463468","grants":[{"edge":"codex"},{"code":{"repo":"example/widget","write":true}},{"code":{"repo":"upstream/widget","write":true}},{"code":{"repo":"o/r","write":false}}]}"#,
         )
         .unwrap();
         let (cell, doors) = seen.of(&widget).unwrap();
         assert_eq!(cell, &want, "a door is not a grant");
         assert_eq!(
             doors.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            ["scratch"]
+            ["c8e41d40-c640-580b-959a-0f0e164697ea"]
         );
-        let scratch: Name = "scratch".parse().unwrap();
+        let scratch: CellId = "c8e41d40-c640-580b-959a-0f0e164697ea".parse().unwrap();
         let (cell, doors) = seen.of(&scratch).unwrap();
         assert_eq!(
             cell.grants.len(),
@@ -694,20 +713,23 @@ mod tests {
         assert!(cell.grants.contains(&Grant::Edge("brave".parse().unwrap())));
         assert!(doors.is_empty(), "door-Nope is not a door to anyone");
         let json = serde_json::to_string(&seen).unwrap();
-        assert!(json.contains(r#""doors":{"widget":["scratch"]}"#), "{json}");
+        assert!(json.contains(r#""doors":{"839960b4-330d-5e73-80ff-6de714463468":["c8e41d40-c640-580b-959a-0f0e164697ea"]}"#), "{json}");
         assert_eq!(serde_json::from_str::<Observed>(&json).unwrap(), seen);
     }
 
     #[test]
     fn door_hosts() {
-        let scratch: Name = "scratch".parse().unwrap();
+        let scratch: CellId = "c8e41d40-c640-580b-959a-0f0e164697ea".parse().unwrap();
         let h = door_host(&scratch);
-        assert_eq!(h.as_str(), "door-scratch.int.exe.xyz");
+        assert_eq!(
+            h.as_str(),
+            "door-c8e41d40-c640-580b-959a-0f0e164697ea.int.exe.xyz"
+        );
         assert_eq!(door_of_host(&h), Some(scratch));
         for not in [
-            "door-scratch.exe.xyz",
+            "door-c8e41d40-c640-580b-959a-0f0e164697ea.exe.xyz",
             "doorscratch.int.exe.xyz",
-            "door-scratch.int.exe.xyz.evil.example",
+            "door-c8e41d40-c640-580b-959a-0f0e164697ea.int.exe.xyz.evil.example",
             "github.int.exe.xyz",
             "door-plan.int.exe.xyz",
         ] {

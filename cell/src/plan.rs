@@ -7,7 +7,7 @@
 use crate::canon;
 use crate::cell::Cell;
 use crate::grant::Grant;
-use crate::prim::{Hash, Name};
+use crate::prim::{CellId, Hash};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -15,7 +15,7 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase", deny_unknown_fields)]
 pub enum Action {
-    /// Make the VM and tag it with the cell's name.
+    /// Make the VM and tag it with the cell's immutable ID.
     Create,
     /// Attach an edge grant: an exe.dev integration, by the cell's tag.
     Attach(Grant),
@@ -23,9 +23,9 @@ pub enum Action {
     Detach(Grant),
     /// Open a door to a child: a peer integration targeting the child's VM,
     /// attached to this cell's tag. The edge is the tree's, not the cell's.
-    Open(Name),
+    Open(CellId),
     /// Close one.
-    Close(Name),
+    Close(CellId),
     /// Push the cell file and the plumbing, run the bootstrap as root, and
     /// run the wall check. Reconciles every grant the edge cannot see.
     Setup,
@@ -55,9 +55,9 @@ pub enum PlanError {
     /// The approval does not match these plans.
     Stale { approved: Hash, current: Hash },
     /// A cell's declaration is not the one approved, or it was never approved.
-    Changed(Name),
+    Changed(CellId),
     /// A fresh plan asks for something the approved one did not.
-    Beyond { cell: Name, action: Action },
+    Beyond { cell: CellId, action: Action },
 }
 
 impl fmt::Display for PlanError {
@@ -88,8 +88,8 @@ impl Plan {
     /// binary setup would ship; given, a box running another needs setup.
     pub fn new(
         want: &Cell,
-        children: &BTreeSet<Name>,
-        have: Option<(&Cell, &BTreeSet<Name>)>,
+        children: &BTreeSet<CellId>,
+        have: Option<(&Cell, &BTreeSet<CellId>)>,
         on_box: Option<(Hash, Hash)>,
         bin: Option<Hash>,
     ) -> Plan {
@@ -139,15 +139,15 @@ impl Plan {
 /// Every cell's plan, approved as one. It is the only thing apply takes,
 /// so an unapproved plan cannot be applied by construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Approved(BTreeMap<Name, Plan>);
+pub struct Approved(BTreeMap<CellId, Plan>);
 
 impl Approved {
     /// What the operator reads and repeats back: one hash over every plan.
-    pub fn hash(plans: &BTreeMap<Name, Plan>) -> Hash {
+    pub fn hash(plans: &BTreeMap<CellId, Plan>) -> Hash {
         Hash::of(&canon::bytes(plans))
     }
 
-    pub fn new(plans: BTreeMap<Name, Plan>, approval: &Hash) -> Result<Approved, PlanError> {
+    pub fn new(plans: BTreeMap<CellId, Plan>, approval: &Hash) -> Result<Approved, PlanError> {
         let current = Approved::hash(&plans);
         if *approval == current {
             Ok(Approved(plans))
@@ -159,14 +159,14 @@ impl Approved {
         }
     }
 
-    pub fn plans(&self) -> &BTreeMap<Name, Plan> {
+    pub fn plans(&self) -> &BTreeMap<CellId, Plan> {
         &self.0
     }
 
     /// The subset rule. A plan recomputed after some actions ran may ask
     /// only for actions the approved one asked for, toward the same
     /// declaration, shipping the same binary.
-    pub fn permits(&self, cell: &Name, fresh: &Plan) -> Result<(), PlanError> {
+    pub fn permits(&self, cell: &CellId, fresh: &Plan) -> Result<(), PlanError> {
         let approved = self
             .0
             .get(cell)
@@ -192,16 +192,22 @@ mod tests {
         serde_json::from_str(json).unwrap()
     }
 
-    fn names(list: &[&str]) -> BTreeSet<Name> {
+    fn names(list: &[&str]) -> BTreeSet<CellId> {
         list.iter().map(|n| n.parse().unwrap()).collect()
     }
 
-    const WANT: &str = r#"{"name":"widget","grants":[{"provider":"anthropic"},{"provider":"openai"},{"code":{"repo":"example/widget","write":true}},{"host":"pypi.org"}]}"#;
+    const WANT: &str = r#"{"id":"839960b4-330d-5e73-80ff-6de714463468","name":"839960b4-330d-5e73-80ff-6de714463468","grants":[{"provider":"anthropic"},{"provider":"openai"},{"code":{"repo":"example/widget","write":true}},{"host":"pypi.org"}]}"#;
 
     #[test]
     fn a_new_cell() {
         let want = cell(WANT);
-        let p = Plan::new(&want, &names(&["scratch"]), None, None, None);
+        let p = Plan::new(
+            &want,
+            &names(&["c8e41d40-c640-580b-959a-0f0e164697ea"]),
+            None,
+            None,
+            None,
+        );
         assert_eq!(p.have, Hash::ZERO);
         assert_eq!(
             p.actions,
@@ -212,24 +218,27 @@ mod tests {
                     write: true,
                     via: None
                 }),
-                Action::Open("scratch".parse().unwrap()),
+                Action::Open("c8e41d40-c640-580b-959a-0f0e164697ea".parse().unwrap()),
                 Action::Setup,
             ]
         );
         assert_eq!(
             serde_json::to_value(&p.actions[2]).unwrap(),
-            serde_json::json!({"open": "scratch"})
+            serde_json::json!({"open": "c8e41d40-c640-580b-959a-0f0e164697ea"})
         );
-        assert_eq!(p.actions[2].to_string(), r#"{"open":"scratch"}"#);
+        assert_eq!(
+            p.actions[2].to_string(),
+            r#"{"open":"c8e41d40-c640-580b-959a-0f0e164697ea"}"#
+        );
     }
 
     #[test]
     fn a_settled_cell_plans_nothing() {
         let want = cell(WANT);
         let have = cell(
-            r#"{"name":"widget","grants":[{"provider":"openai"},{"code":{"repo":"example/widget","write":true}}]}"#,
+            r#"{"id":"839960b4-330d-5e73-80ff-6de714463468","name":"839960b4-330d-5e73-80ff-6de714463468","grants":[{"provider":"openai"},{"code":{"repo":"example/widget","write":true}}]}"#,
         );
-        let doors = names(&["scratch"]);
+        let doors = names(&["c8e41d40-c640-580b-959a-0f0e164697ea"]);
         let p = Plan::new(
             &want,
             &doors,
@@ -244,13 +253,22 @@ mod tests {
     fn drift_at_the_edge_and_on_the_box() {
         let want = cell(WANT);
         let have = cell(
-            r#"{"name":"widget","grants":[{"code":{"repo":"example/widget","write":false}},{"edge":"brave"}]}"#,
+            r#"{"id":"839960b4-330d-5e73-80ff-6de714463468","name":"839960b4-330d-5e73-80ff-6de714463468","grants":[{"code":{"repo":"example/widget","write":false}},{"edge":"brave"}]}"#,
         );
         let stale = Hash::of(b"older cell");
         let p = Plan::new(
             &want,
-            &names(&["scratch", "new"]),
-            Some((&have, &names(&["scratch", "old"]))),
+            &names(&[
+                "c8e41d40-c640-580b-959a-0f0e164697ea",
+                "1578f823-4238-542a-b5b9-54dbd66a304c",
+            ]),
+            Some((
+                &have,
+                &names(&[
+                    "c8e41d40-c640-580b-959a-0f0e164697ea",
+                    "e0dea71c-89a1-5e1c-8398-50f318b5e0ed",
+                ]),
+            )),
             Some((stale, Hash::ZERO)),
             None,
         );
@@ -268,8 +286,8 @@ mod tests {
                     via: None
                 }),
                 Action::Detach(Grant::Edge("brave".parse().unwrap())),
-                Action::Open("new".parse().unwrap()),
-                Action::Close("old".parse().unwrap()),
+                Action::Open("1578f823-4238-542a-b5b9-54dbd66a304c".parse().unwrap()),
+                Action::Close("e0dea71c-89a1-5e1c-8398-50f318b5e0ed".parse().unwrap()),
                 Action::Setup,
             ]
         );
@@ -277,32 +295,46 @@ mod tests {
 
     #[test]
     fn a_door_is_edge_work_and_leaves_the_box_alone() {
-        let want = cell(r#"{"name":"a","grants":[{"provider":"anthropic"}]}"#);
+        let want = cell(
+            r#"{"id":"904254dc-1b8f-5e80-9755-e5afc5b195c5","name":"904254dc-1b8f-5e80-9755-e5afc5b195c5","grants":[{"provider":"anthropic"}]}"#,
+        );
         let none = BTreeSet::new();
         let p = Plan::new(
             &want,
-            &names(&["b"]),
+            &names(&["46b16f13-11ac-5315-b431-845f196f907e"]),
             Some((&want, &none)),
             Some((want.hash(), Hash::ZERO)),
             None,
         );
-        assert_eq!(p.actions, vec![Action::Open("b".parse().unwrap())]);
+        assert_eq!(
+            p.actions,
+            vec![Action::Open(
+                "46b16f13-11ac-5315-b431-845f196f907e".parse().unwrap()
+            )]
+        );
         let p = Plan::new(
             &want,
             &none,
-            Some((&want, &names(&["b"]))),
+            Some((&want, &names(&["46b16f13-11ac-5315-b431-845f196f907e"]))),
             Some((want.hash(), Hash::ZERO)),
             None,
         );
-        assert_eq!(p.actions, vec![Action::Close("b".parse().unwrap())]);
+        assert_eq!(
+            p.actions,
+            vec![Action::Close(
+                "46b16f13-11ac-5315-b431-845f196f907e".parse().unwrap()
+            )]
+        );
     }
 
     #[test]
     fn box_side_grants_only_need_setup() {
         let want = cell(
-            r#"{"name":"a","grants":[{"provider":"anthropic"},{"provider":"openai"},{"host":"pypi.org"}]}"#,
+            r#"{"id":"904254dc-1b8f-5e80-9755-e5afc5b195c5","name":"904254dc-1b8f-5e80-9755-e5afc5b195c5","grants":[{"provider":"anthropic"},{"provider":"openai"},{"host":"pypi.org"}]}"#,
         );
-        let have = cell(r#"{"name":"a"}"#);
+        let have = cell(
+            r#"{"id":"904254dc-1b8f-5e80-9755-e5afc5b195c5","name":"904254dc-1b8f-5e80-9755-e5afc5b195c5"}"#,
+        );
         let none = BTreeSet::new();
         let p = Plan::new(&want, &none, Some((&have, &none)), None, None);
         assert_eq!(p.actions, vec![Action::Setup]);
@@ -313,7 +345,9 @@ mod tests {
 
     #[test]
     fn a_new_binary_needs_setup_and_the_approval_binds_it() {
-        let want = cell(r#"{"name":"a","grants":[{"provider":"anthropic"}]}"#);
+        let want = cell(
+            r#"{"id":"904254dc-1b8f-5e80-9755-e5afc5b195c5","name":"904254dc-1b8f-5e80-9755-e5afc5b195c5","grants":[{"provider":"anthropic"}]}"#,
+        );
         let none = BTreeSet::new();
         let (old, new) = (Hash::of(b"v1"), Hash::of(b"v2"));
         let have = Some((&want, &none));
@@ -328,12 +362,12 @@ mod tests {
         let p = Plan::new(&want, &none, have, silent, Some(new));
         assert_eq!(p.actions, vec![Action::Setup]);
 
-        let plans = BTreeMap::from([(want.name.clone(), p.clone())]);
+        let plans = BTreeMap::from([(want.id.clone(), p.clone())]);
         let approved = Approved::new(plans.clone(), &Approved::hash(&plans)).unwrap();
-        assert!(approved.permits(&want.name, &p).is_ok());
+        assert!(approved.permits(&want.id, &p).is_ok());
         let other = Plan::new(&want, &none, have, runs, Some(Hash::of(b"v3")));
         assert!(matches!(
-            approved.permits(&want.name, &other),
+            approved.permits(&want.id, &other),
             Err(PlanError::Changed(_))
         ));
     }
@@ -343,7 +377,7 @@ mod tests {
         let want = cell(WANT);
         let none = BTreeSet::new();
         let p = Plan::new(&want, &none, None, None, None);
-        let plans = BTreeMap::from([(want.name.clone(), p.clone())]);
+        let plans = BTreeMap::from([(want.id.clone(), p.clone())]);
         let ok = Approved::hash(&plans);
         assert!(matches!(
             Approved::new(plans.clone(), &Hash::ZERO),
@@ -354,11 +388,13 @@ mod tests {
 
         let mut less = p.clone();
         less.actions.remove(0);
-        assert!(approved.permits(&want.name, &less).is_ok());
+        assert!(approved.permits(&want.id, &less).is_ok());
         let mut more = p.clone();
-        more.actions.push(Action::Open("b".parse().unwrap()));
+        more.actions.push(Action::Open(
+            "46b16f13-11ac-5315-b431-845f196f907e".parse().unwrap(),
+        ));
         assert!(matches!(
-            approved.permits(&want.name, &more),
+            approved.permits(&want.id, &more),
             Err(PlanError::Beyond { .. })
         ));
 
@@ -368,14 +404,22 @@ mod tests {
             .insert(Grant::Host("evil.example".parse().unwrap()));
         let p2 = Plan::new(&widened, &none, None, None, None);
         assert!(matches!(
-            approved.permits(&want.name, &p2),
+            approved.permits(&want.id, &p2),
             Err(PlanError::Changed(_))
         ));
-        assert!(approved.permits(&"b".parse().unwrap(), &p).is_err());
+        assert!(approved
+            .permits(&"46b16f13-11ac-5315-b431-845f196f907e".parse().unwrap(), &p)
+            .is_err());
 
-        let p3 = Plan::new(&want, &names(&["b"]), None, None, None);
+        let p3 = Plan::new(
+            &want,
+            &names(&["46b16f13-11ac-5315-b431-845f196f907e"]),
+            None,
+            None,
+            None,
+        );
         assert_ne!(
-            Approved::hash(&BTreeMap::from([(want.name.clone(), p3)])),
+            Approved::hash(&BTreeMap::from([(want.id.clone(), p3)])),
             ok,
             "a door changes the plan"
         );

@@ -37,7 +37,9 @@ Open **http://127.0.0.1:8080**. The sidebar has two panes: the cell tree, then
 the selected cell's chats. The first available cell opens by default. The chat
 pane supports archive/restore; click a chat title to rename it. While the agent
 is working, a spinner appears at the bottom of the transcript.
-The gear beside the cell name opens provider sign-in, Git scopes, and BigBrain/Portal MCP connections.
+The gear beside the cell name opens rename, provider sign-in, Git scopes, and BigBrain/Portal MCP connections.
+Renaming a cell or subcell preserves its VM, chats, credentials, grants, and children;
+it does not restart running work. Cell names are unique within the tree.
 Configuration changes are previewed and applied through the existing plan and
 approval mechanism, including parent/child grant containment.
 
@@ -89,16 +91,20 @@ for every outgoing commit when installed as a Git hook. Review content before
 publishing reports or fixtures; the check enforces paths, not arbitrary secrets.
 
 [examples/tree/](examples/tree/README.md) contains synthetic declarations for
-learning the format. A cell file is `<name>.json`; its children live in the
-`<name>/` directory beside it. Development happens in a cell's own workspace;
+learning the format. Every cell has an immutable UUID `id` and a mutable `name`. A cell file is
+`<id>.json`; its children live in the `<id>/` directory beside it. Development happens in a cell's own workspace;
 optional subcells provide separate environments for delegated work.
 
 After creating a cell named `project` in the UI:
 
 ```sh
 cell tree .kuggis/tree
-cell allow .kuggis/tree/project.json
+cell allow .kuggis/tree/CELL_ID.json  # substitute the ID printed above
 ```
+
+The tree listing includes IDs and labels. Tree-scoped CLI commands accept either
+the UUID or the current name; API URLs and durable references always use UUIDs.
+See [cell identity](docs/cell-identity.md) for the format and compatibility boundary.
 
 Provisioning uses the operator's SSH access to exe.dev. Build a Linux
 binary to ship to the VMs; cross-compiling from macOS requires
