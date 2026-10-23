@@ -56,6 +56,9 @@ test("a pre-dispatch permission failure remains known after restart", { timeout:
   t.after(async () => { await ui.stop(); await cell.stop(); await rm(dir, { recursive: true, force: true }); });
   const url = ui.log().match(/Kuggis UI: (http:\/\/\S+)/)[1];
   const base = `${url}/api/cells/denied`;
+  assert.equal((await (await fetch(`${base}/health`)).json()).state, "ready");
+  assert.equal((await fetch(`${url}/api/cells/missing/health`)).status, 404);
+  assert.equal((await request(`${base}/recovery`, "POST", { action: "start" })).status, 409);
   const created = await (await request(`${base}/pi/threads`, "POST", {})).json();
   const id = created.metadata.id;
   const body = { request: "a".repeat(32), session: { cell: "denied", id }, action: { prompt: { content: "must not dispatch" } } };
@@ -66,6 +69,11 @@ test("a pre-dispatch permission failure remains known after restart", { timeout:
     if (!attempt) { await cell.stop(); cell = await launch(args, /Kuggis cell/); }
   }
   assert.equal((await (await fetch(`${base}/pi/threads/${id}`)).json()).messages.length, 0);
+  await cell.stop();
+  const health = await (await fetch(`${base}/health`)).json();
+  assert.equal(health.state, "unreachable");
+  assert.equal(health.recovery, null);
+  assert.match(health.message, /Start this local chat service/);
 });
 
 test("cell tree, isolated sessions, credentials, connections and gateway restart", { timeout: 45000 }, async (t) => {
