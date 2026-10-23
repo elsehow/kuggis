@@ -13,6 +13,9 @@ pub const MAX_RPC_BYTES: usize = 4 * 1024 * 1024;
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Inventory,
+    PlanExternal {
+        registration: ExternalRegistration,
+    },
     OperationReceipt {
         operation: RequestId,
     },
@@ -24,6 +27,8 @@ pub enum Command {
         operation: RequestId,
         plan: ResourcePlan,
         approval: Hash,
+        #[serde(default)]
+        acknowledge_manual: bool,
     },
     PlanCleanup {
         cell: CellIdentity,
@@ -57,6 +62,9 @@ pub fn execute(
 ) -> Result<Reply, crate::publish::registry::RegistryError> {
     Ok(match command {
         Command::Inventory => Reply::Inventory(registry.resources()?),
+        Command::PlanExternal { registration } => {
+            Reply::Plan(registry.plan_external(registration)?)
+        }
         Command::OperationReceipt { operation } => {
             Reply::OperationReceipt(registry.resource_operation(operation)?)
         }
@@ -67,7 +75,13 @@ pub fn execute(
             operation,
             plan,
             approval,
-        } => Reply::Applied(registry.apply_resource(operation, &plan, approval)?),
+            acknowledge_manual,
+        } => Reply::Applied(registry.apply_resource_acknowledged(
+            operation,
+            &plan,
+            approval,
+            acknowledge_manual,
+        )?),
         Command::PlanCleanup { cell, choices } => {
             Reply::CleanupPlan(registry.plan_cleanup(cell, &choices)?)
         }

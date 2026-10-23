@@ -247,3 +247,93 @@ fn unavailable_or_redirected_backends_never_become_empty_success() {
     );
     assert_ne!(call(&ui,"/api/resources/plan",Some(serde_json::json!({"backend":"sites","resource":resource,"intent":"unpublish","location":{"kind":"local","registry":"/tmp/attacker"}}))).0,200);
 }
+
+#[test]
+fn external_registration_attachment_and_manual_ack_are_enforced_over_http() {
+    let f = Fixture::new();
+    let ui = f.ui();
+    let (_, view) = call(&ui, "/api/resources", None);
+    let cell = view["cells"][0]["identity"].clone();
+    let body = serde_json::json!({"backend":"sites","registration":{"account":{"provider":"runpod","account":"account-a"},"kind":"compute","external_id":"pod-existing"}});
+    let mut injected = body.clone();
+    injected["registration"]["credential_value"] =
+        serde_json::json!("not-an-accepted-secret-field");
+    assert_ne!(
+        call(&ui, "/api/resources/register-plan", Some(injected)).0,
+        200
+    );
+    let (status, plan) = call(&ui, "/api/resources/register-plan", Some(body.clone()));
+    assert_eq!(status, 200, "{plan}");
+    let resource = plan["plan"]["resource"]["id"].clone();
+    let path = format!(
+        "/api/resources/actions/{}/apply",
+        plan["id"].as_str().unwrap()
+    );
+    assert_ne!(
+        call(
+            &ui,
+            &path,
+            Some(serde_json::json!({"approval":plan["approval"]}))
+        )
+        .0,
+        200
+    );
+    let approved = serde_json::json!({"approval":plan["approval"],"acknowledge_manual":true});
+    assert_eq!(call(&ui, &path, Some(approved.clone())).0, 200);
+    assert_eq!(call(&ui, &path, Some(approved)).0, 200);
+    assert_ne!(call(&ui, "/api/resources/register-plan", Some(body)).0, 200);
+    let attach = serde_json::json!({"backend":"sites","resource":resource,"intent":{"attach":{"cell":cell,"scope":"use","credential":null}}});
+    let (status, plan) = call(&ui, "/api/resources/plan", Some(attach.clone()));
+    assert_eq!(status, 200, "{plan}");
+    let path = format!(
+        "/api/resources/actions/{}/apply",
+        plan["id"].as_str().unwrap()
+    );
+    let pin = f.root.join("tree/.pins/author.pub");
+    let original = fs::read(&pin).unwrap();
+    fs::write(&pin, Secret::generate().public().to_string()).unwrap();
+    let approved = serde_json::json!({"approval":plan["approval"],"acknowledge_manual":true});
+    assert_ne!(call(&ui, &path, Some(approved.clone())).0, 200);
+    fs::write(pin, original).unwrap();
+    assert_eq!(call(&ui, &path, Some(approved)).0, 200);
+    let (_, view) = call(&ui, "/api/resources", None);
+    let record = view["backends"][0]["inventory"]["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == resource)
+        .unwrap();
+    assert_eq!(record["owner"], "operator");
+    assert_eq!(record["state"], "unknown");
+    assert_eq!(record["attachments"].as_array().unwrap().len(), 1);
+    let (status, plan) = call(
+        &ui,
+        "/api/resources/plan",
+        Some(
+            serde_json::json!({"backend":"sites","resource":resource,"intent":{"detach":{"cell":cell}}}),
+        ),
+    );
+    assert_eq!(status, 200);
+    let path = format!(
+        "/api/resources/actions/{}/apply",
+        plan["id"].as_str().unwrap()
+    );
+    assert_ne!(
+        call(
+            &ui,
+            &path,
+            Some(serde_json::json!({"approval":plan["approval"]}))
+        )
+        .0,
+        200
+    );
+    assert_eq!(
+        call(
+            &ui,
+            &path,
+            Some(serde_json::json!({"approval":plan["approval"],"acknowledge_manual":true}))
+        )
+        .0,
+        200
+    );
+}
