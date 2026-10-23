@@ -528,3 +528,35 @@ registry, but a fake VM edge (it does not delete an exe.dev VM):
 PUBLISH_SMOKE_PLAYWRIGHT=/path/to/node_modules/playwright cargo test \
   --manifest-path cell/Cargo.toml --lib browser_resource_aware_deletion -- --ignored
 ```
+
+### Externally created resources
+
+In **Resources**, expand **Register an external resource** on a configured
+backend. Enter exact, stable provider/account identifiers, provider-assigned
+resource ID, and kind. Verify these in the provider console before approving.
+Registration records operator-owned external inventory only: it neither
+provisions a resource nor adopts control of one. Provider/account identity is
+part of the resource ID, so equal resource names in different accounts remain
+distinct. Keep a resource in one authoritative registry; cross-registry duplicate
+registration and aliases for the same provider account are not auto-discovered.
+
+Use **Review use attachment** to associate a pinned cell independently of
+ownership. The optional credential reference is an opaque 32-hex-character
+trusted-store reference, **not a credential value**. This release records the
+reference but does not resolve it, deliver credentials, issue a network/runtime
+grant, or verify provider access. Arrange provider access separately through the
+operator's existing mechanisms. Never enter API tokens/passwords in metadata.
+
+Registration, attachment, local detachment and custody changes all require a
+reviewed plan. External changes require explicit acceptance of manual provider
+access/revocation and continuing billing obligations. Deletion detaches the
+specified cell without deleting the external resource or other cells' access;
+owner deletion retains it for the operator by default. Completed local metadata
+operations do **not** mean provider access was revoked, billing stopped, or
+remote cleanup completed. The Delete cell dialog keeps that warning visible
+when the VM is gone. No external destroy/stop/unpublish adapter is installed.
+
+External records retain unknown provider state. Metadata admission is bounded
+(1,024 external records, 64 attachments per resource, and a registry metadata
+budget); reducing access and cleanup remain possible at capacity. Existing
+managed site identities, URLs, stored approvals and history are unchanged.

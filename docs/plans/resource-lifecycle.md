@@ -218,5 +218,5 @@ remote revocation. No RunPod/exe.dev API lifecycle implementation is claimed.
 - PR 2: merged in #44 (d6be601); 170 Rust tests and the separate-UID HTTPS/Chromium smoke test passed. Self-review fixed delegate restoration on unrelated site creation.
 - PR 3: merged in #45 (8192ed6); 172 Rust tests plus real HTTP/Chromium Resources coverage passed.
 - Integration fixes #43 (73606a0) and #46 (5708b23) merged after review and combined testing; live deployment evidence is credited to their author.
-- PR 4: resource-aware deletion backend/UI implemented; review/merge tracked in its PR. Coverage includes partial cleanup, lost receipts, stale approvals/targets, unavailable backends, and a real HTTP/browser flow with a fake VM edge.
-- PR 5: not yet implemented.
+- PR 4: merged in #48 (548fb60); 182 Rust tests and real HTTP/browser deletion coverage passed. Includes partial cleanup, lost receipts, stale approvals/targets, unavailable backends, and a fake VM edge rather than live VM deletion.
+- PR 5: external registration/attachments and UI implemented; review/merge tracked in its PR. Provider/account identity, explicit manual acknowledgement, scoped local attachment/detachment, and deletion integration are included. Provider access/credential delivery and remote cleanup remain manual, not implied by metadata success.
