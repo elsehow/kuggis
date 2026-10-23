@@ -413,8 +413,8 @@ fn allow(args: &[String]) -> Fallible {
 fn identity_name(tree: &Path, value: &str) -> Fallible<Name> {
     let route: Name = value.parse()?;
     let registry = cell::identity::Registry::load(tree)?;
-    let name = registry.by_route(&route).or_else(|| registry.cells.iter().find(|c| c.name == route))
-        .map(|c| c.binding.clone()).unwrap_or(route);
+    let cells = cell::tree::load(tree)?.0;
+    let name = registry.resolve_cli(&cells, &route)?;
     registry.check_pin(tree, &name)?;
     Ok(name)
 }

@@ -117,10 +117,9 @@ impl Registry {
             if self.cells.iter().any(|other| {
                 other.id != cell.id
                     && (other.binding.as_str() == cell.id.as_str()
-                        || other.binding == cell.name
                         || other.id.as_str() == cell.name.as_str())
             }) {
-                return Err("cell name or UUID conflicts with a reserved identity alias".into());
+                return Err("cell name or runtime binding conflicts with a reserved UUID".into());
             }
         }
         Ok(())
@@ -132,6 +131,26 @@ impl Registry {
         self.cells
             .iter()
             .find(|c| c.id.as_str() == route.as_str() || &c.binding == route)
+    }
+    /// CLI names may mean a current label or a frozen runtime alias. Never
+    /// silently choose between different cells after a display name is reused.
+    pub fn resolve_cli(&self, tree: &crate::Tree, value: &Name) -> Fallible<Name> {
+        if let Some(cell) = self.cells.iter().find(|c| c.id.as_str() == value.as_str()) {
+            return Ok(cell.binding.clone());
+        }
+        let mut matches = BTreeSet::new();
+        if let Some(cell) = self.by_binding(value) {
+            matches.insert(cell.binding.clone());
+        }
+        for cell in tree.iter() {
+            if &self.label(&cell.name) == value || &cell.name == value {
+                matches.insert(cell.name.clone());
+            }
+        }
+        if matches.len() > 1 {
+            return Err(format!("Cell name '{value}' is ambiguous; use a cell UUID").into());
+        }
+        Ok(matches.into_iter().next().unwrap_or_else(|| value.clone()))
     }
     pub fn route(&self, binding: &Name) -> String {
         self.by_binding(binding)
@@ -205,7 +224,7 @@ impl Registry {
         self.check_pin(tree, &binding)?;
         if active
             .iter()
-            .any(|c| c.name != binding && (self.label(&c.name) == name || c.name == name))
+            .any(|c| c.name != binding && self.label(&c.name) == name)
         {
             return Err("cell name is already in use or reserved".into());
         }
@@ -517,7 +536,7 @@ mod tests {
         assert!(Migration::plan(&f.root, &f.observe()).is_err());
     }
     #[test]
-    fn aliases_and_deleted_identities_cannot_be_reassigned() {
+    fn display_names_are_reusable_but_routes_and_deleted_identities_stay_fixed() {
         let f = Fixture::new();
         let observed = f.observe();
         let plan = Migration::plan(&f.root, &observed).unwrap();
@@ -539,8 +558,54 @@ mod tests {
         registry
             .rename(&f.root, &parent_id, "new-parent".parse().unwrap())
             .unwrap();
-        assert!(registry
+        registry
             .rename(&f.root, &child, "parent".parse().unwrap())
+            .unwrap();
+        let tree = crate::tree::load(&f.root).unwrap().0;
+        registry.check_active(&f.root, &tree).unwrap();
+        assert_eq!(
+            registry.by_route(&"parent".parse().unwrap()).unwrap().id,
+            parent_id
+        );
+        assert_eq!(
+            registry
+                .by_route(&child.to_string().parse().unwrap())
+                .unwrap()
+                .binding
+                .as_str(),
+            "child"
+        );
+        assert!(registry
+            .resolve_cli(&tree, &"parent".parse().unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous; use a cell UUID"));
+        assert_eq!(
+            registry
+                .resolve_cli(&tree, &"new-parent".parse().unwrap())
+                .unwrap()
+                .as_str(),
+            "parent"
+        );
+        assert_eq!(
+            registry
+                .resolve_cli(&tree, &child.to_string().parse().unwrap())
+                .unwrap()
+                .as_str(),
+            "child"
+        );
+        assert_eq!(
+            registry
+                .resolve_cli(&tree, &parent_id.to_string().parse().unwrap())
+                .unwrap()
+                .as_str(),
+            "parent"
+        );
+        assert!(registry
+            .rename(&f.root, &child, parent_id.to_string().parse().unwrap())
+            .is_err());
+        assert!(registry
+            .rename(&f.root, &child, "new-parent".parse().unwrap())
             .is_err());
         fs::remove_file(f.root.join("parent/child.json")).unwrap();
         assert!(registry

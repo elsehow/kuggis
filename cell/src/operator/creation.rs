@@ -194,7 +194,7 @@ pub(super) async fn preview(
     let (before, paths) = op.tree()?;
     input.parent = input.parent.as_ref().map(|p| op.resolve(p)).transpose()?;
     let registry = op.identities()?;
-    if registry.cells.iter().any(|c| c.name == input.name || c.binding == input.name || c.id.as_str() == input.name.as_str()) ||
+    if registry.cells.iter().any(|c| c.name == input.name || c.id.as_str() == input.name.as_str()) ||
         before.iter().any(|c| registry.label(&c.name) == input.name) ||
         list(&op.config.state).map_err(fail)?.iter().any(|j| j.is_current() && j.display_name.as_ref() == Some(&input.name)) {
         return Err(Error(StatusCode::CONFLICT, "Cell name is already in use or reserved".into()));
@@ -972,6 +972,12 @@ mod tests {
         migration.apply(&fixture.dir.join("tree"), &observed, migration.approval).unwrap();
         assert!(start(State(fixture.op.clone()), Path(legacy.id), Json(Apply { approval: legacy.approval })).await.is_err());
         assert_eq!(fixture.edge.creates.load(Ordering::SeqCst), 0);
+        let mut registry = fixture.op.identities().unwrap();
+        let original_id = registry.by_binding(&"project".parse().unwrap()).unwrap().id.clone();
+        registry.rename(&fixture.op.config.tree, &original_id, "dev".parse().unwrap()).unwrap();
+        let reused = fixture.preview("project", None, json!([])).await.unwrap();
+        assert_eq!(reused.display_name.as_ref().unwrap().as_str(), "project");
+        assert_ne!(reused.cell.name.as_str(), "project", "new cells must not reuse runtime bindings");
         let job = fixture.preview("readable-name", None, json!([])).await.unwrap();
         let uuid: crate::CellId = job.cell.name.as_str().parse().unwrap();
         assert_eq!(job.display_name.as_ref().unwrap().as_str(), "readable-name");
