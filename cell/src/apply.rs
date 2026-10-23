@@ -147,6 +147,13 @@ fn plan_one(
     boxes: &mut Boxes,
     name: &Name,
 ) -> Fallible<Plan> {
+    // Recheck even when the signed configuration is cached: a reused VM name
+    // must never inherit an existing identity or a reviewed setup operation.
+    if let Some(root) = pins.parent() {
+        let registry = crate::identity::Registry::load(root)?;
+        registry.check_pin(root, name)?;
+        registry.check_vm(name, vm_of(vms, name))?;
+    }
     let want = tree
         .get(name)
         .ok_or_else(|| format!("{name}: not in the tree"))?;

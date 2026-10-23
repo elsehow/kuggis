@@ -28,6 +28,7 @@ pub(crate) mod health;
 pub(crate) mod creation;
 pub(crate) mod deletion;
 mod oauth;
+mod identity;
 pub(crate) mod resources;
 pub(crate) mod resource_cleanup;
 pub use access::Access;
@@ -41,8 +42,11 @@ enum Mode {
 
 #[derive(Serialize, ts_rs::TS)]
 pub(crate) struct CellView {
+    id: String,
+    binding: Name,
+    can_rename: bool,
     name: Name,
-    parent: Option<Name>,
+    parent: Option<String>,
     grants: std::collections::BTreeSet<crate::Grant>,
     vm: Option<String>,
     lifecycle: Lifecycle,
@@ -119,6 +123,7 @@ pub(crate) struct CellsView {
     can_apply: bool,
     can_create: bool,
     can_delete: bool,
+    can_migrate_identity: bool,
 }
 
 #[derive(Serialize, ts_rs::TS)]
@@ -144,6 +149,7 @@ pub struct Config {
 trait Transport: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Transport for T {}
 struct Change {
+    identity_revision: Option<Hash>,
     before: Tree,
     after: Tree,
     cell: Cell,
@@ -176,10 +182,43 @@ fn fail(e: impl ToString) -> Error {
 }
 
 impl Operator {
+    fn identities(&self) -> Result<crate::identity::Registry> {
+        crate::identity::Registry::load(&self.config.tree).map_err(bad)
+    }
+    fn resolve(&self, route: &Name) -> Result<Name> {
+        let identities = self.identities()?;
+        let binding = identities.by_route(route).map(|c| c.binding.clone()).unwrap_or_else(|| route.clone());
+        if self.tree()?.0.get(&binding).is_none() && (identities.by_route(route).is_some() ||
+            !creation::list(&self.config.state).map_err(fail)?.iter().any(|c| c.cell.name == binding && c.is_current())) {
+            return Err(Error(StatusCode::NOT_FOUND, "Cell not found".into()));
+        }
+        identities.check_pin(&self.config.tree, &binding).map_err(bad)?;
+        Ok(binding)
+    }
+    async fn vm_for(&self, name: &Name) -> Result<String> {
+        let registry = self.identities()?;
+        if let Some(identity) = registry.by_binding(name) {
+            let expected = identity.vm.clone().ok_or_else(|| bad("Local identity cannot target a remote VM"))?;
+            let edge = self.edge.clone(); let binding = name.clone();
+            return tokio::task::spawn_blocking(move || {
+                let (vms, _) = edge.listing().map_err(|e| e.to_string())?;
+                let bindings = crate::exe::cell_vms(&vms).map_err(|e| e.to_string())?;
+                let vm = bindings.get(&binding).ok_or("Cell VM is unavailable")?;
+                if vm.vm_name != expected.name || vm.created_at.as_deref() != Some(&expected.created_at) {
+                    return Err("Cell VM incarnation changed; explicit identity repair is required".to_owned());
+                }
+                Ok(vm.vm_name.clone())
+            }).await.map_err(fail)?.map_err(bad);
+        }
+        self.vms.read().await.get(name).cloned().ok_or_else(|| Error(StatusCode::SERVICE_UNAVAILABLE, "Cell has no VM; apply its declaration first".into()))
+    }
     fn tree(&self) -> Result<(Tree, BTreeMap<Name, PathBuf>)> {
-        crate::tree::load(&self.config.tree).map_err(bad)
+        let loaded = crate::tree::load(&self.config.tree).map_err(bad)?;
+        self.identities()?.check_active(&self.config.tree, &loaded.0).map_err(bad)?;
+        Ok(loaded)
     }
     async fn forward(&self, name: &Name, mut request: Request) -> Result<Response> {
+        self.identities()?.check_pin(&self.config.tree, name).map_err(bad)?;
         deletion::ensure_available(&self.config.state, name)?;
         if self.tree()?.0.get(name).is_none() {
             return Err(Error(StatusCode::NOT_FOUND, "Cell not found".into()));
@@ -192,14 +231,13 @@ impl Operator {
                     .map_err(fail)?,
             )
         } else {
-            let vm = self.vms.read().await.get(name).cloned().ok_or_else(|| {
-                Error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "Cell has no VM; apply its declaration first".into(),
-                )
-            })?;
+            let vm = self.vm_for(name).await?;
             // exe.dev's SSH gateway restricts forwarded Unix socket paths. An
             // operator-owned relay command reaches the socket with OS group checks.
+            let relay = match self.identities()?.by_binding(name) {
+                Some(identity) => format!("test \"$(cat /etc/cell/key.pub)\" = '{}' && /usr/local/bin/cell relay", identity.key),
+                None => "/usr/local/bin/cell relay".into(),
+            };
             let mut process = Command::new("ssh")
                 .args([
                     "-T",
@@ -213,7 +251,7 @@ impl Operator {
                     "ServerAliveCountMax=2",
                 ])
                 .arg(format!("{vm}.exe.xyz"))
-                .arg("/usr/local/bin/cell relay")
+                .arg(relay)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
@@ -278,6 +316,8 @@ impl Operator {
 
 async fn cells(State(op): State<Arc<Operator>>) -> Result<Json<CellsView>> {
     let (tree, _) = op.tree()?;
+    let identities = op.identities()?;
+    for cell in tree.iter() { identities.check_pin(&op.config.tree, &cell.name).map_err(bad)?; }
     let jobs = creation::list(&op.config.state).map_err(fail)?;
     let deletions = deletion::list(&op.config.state).map_err(fail)?;
     let vms = op.vms.read().await;
@@ -297,8 +337,11 @@ async fn cells(State(op): State<Arc<Operator>>) -> Result<Json<CellsView>> {
             vm.is_some() || socket_available,
         );
         CellView {
-            name: cell.name.clone(),
-            parent,
+            id: identities.route(&cell.name),
+            binding: cell.name.clone(),
+            can_rename: identities.by_binding(&cell.name).is_some(),
+            name: identities.by_binding(&cell.name).map(|c| c.name.clone()).or_else(|| creation.and_then(|c| c.display_name.clone())).unwrap_or_else(|| cell.name.clone()),
+            parent: parent.map(|p| identities.route(&p)),
             grants: cell.grants.clone(),
             vm,
             lifecycle,
@@ -326,10 +369,11 @@ async fn cells(State(op): State<Arc<Operator>>) -> Result<Json<CellsView>> {
         cells.push(row(&job.cell, job.parent.clone(), Some(job)));
     }
     for job in deletions.iter().filter(|j| j.active()) {
-        if !cells.iter().any(|c| c.name == job.cell().name) {
+        if !cells.iter().any(|c| c.binding == job.cell().name) {
             cells.push(row(job.cell(), job.parent().clone(), None));
         }
     }
+    let can_migrate_identity = !op.config.tree.join(".identities.json").exists() || tree.iter().any(|c| identities.by_binding(&c.name).is_none());
     Ok(Json(CellsView {
         cells,
         mode: if op.config.sockets.is_some() {
@@ -340,6 +384,7 @@ async fn cells(State(op): State<Arc<Operator>>) -> Result<Json<CellsView>> {
         can_apply: op.config.binary.is_some(),
         can_create: op.config.binary.is_some() && op.config.sockets.is_none(),
         can_delete: op.config.sockets.is_none(),
+        can_migrate_identity,
     }))
 }
 
@@ -348,6 +393,7 @@ async fn proxy(
     Path((name, tail)): Path<(Name, String)>,
     mut request: Request,
 ) -> Result<Response> {
+    let name = op.resolve(&name)?;
     // Only the cell API is reachable. The caller cannot supply a remote path,
     // hostname, SSH command, or arbitrary VM target.
     if !["pi/", "sessions/", "settings", "info"]
@@ -396,6 +442,8 @@ async fn preview(
     Path(name): Path<Name>,
     Json(edit): Json<Edit>,
 ) -> Result<Json<Preview>> {
+    let identity_revision = identity::revision(&op)?;
+    let name = op.resolve(&name)?;
     deletion::ensure_available(&op.config.state, &name)?;
     let (before, paths) = op.tree()?;
     let path = paths
@@ -437,6 +485,7 @@ async fn preview(
     op.changes.lock().await.insert(
         id,
         Change {
+            identity_revision,
             before,
             after,
             cell,
@@ -464,6 +513,7 @@ async fn apply_change(
         .await
         .remove(&id)
         .ok_or_else(|| bad("Preview expired; review the change again"))?;
+    identity::check_revision(&op, change.identity_revision)?;
     deletion::ensure_available(&op.config.state, &change.cell.name)?;
     if op.tree()?.0 != change.before {
         return Err(Error(
@@ -596,6 +646,10 @@ fn router(op: Arc<Operator>) -> Router {
     let assets = op.config.assets.clone();
     Router::new()
         .route("/api/cells", get(cells))
+        .route("/api/identity/plan", post(identity::plan))
+        .route("/api/identity/migrations/:id", get(identity::get))
+        .route("/api/identity/migrations/:id/apply", post(identity::apply))
+        .route("/api/cells/:name/rename", post(identity::rename))
         .route("/api/resources", get(resources::list))
         .route("/api/resources/plan", post(resources::plan))
         .route("/api/resources/register-plan", post(resources::register_plan))

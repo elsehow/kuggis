@@ -5,4 +5,4 @@ import type { Grant } from "./Grant";
 import type { Lifecycle } from "./Lifecycle";
 import type { Name } from "./Name";
 
-export type CellView = { name: Name, parent: Name | null, grants: Array<Grant>, vm: string | null, lifecycle: Lifecycle, creation: Creation | null, deletion: DeletionView | null, };
+export type CellView = { id: string, binding: Name, can_rename: boolean, name: Name, parent: string | null, grants: Array<Grant>, vm: string | null, lifecycle: Lifecycle, creation: Creation | null, deletion: DeletionView | null, };

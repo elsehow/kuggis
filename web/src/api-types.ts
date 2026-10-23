@@ -15,3 +15,8 @@ export type { Lifecycle } from "./generated/Lifecycle";
 export type { Plan } from "./generated/Plan";
 export type { Preview as ChangePreview } from "./generated/Preview";
 export type { SessionRef } from "./generated/SessionRef";
+
+import type { CellView } from "./generated/CellView";
+// Fallback permits cached/mock v1 inventories during a rolling supervisor upgrade.
+export const cellId = (cell: CellView) => cell.id ?? cell.name;
+export const cellBinding = (cell: CellView) => cell.binding ?? cell.name;

@@ -16,6 +16,8 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MAX_IMAGE_BYTES, MAX_MESSAGE_BODY_BYTES, mib, utf8Length } from "./attachment-limits.mjs";
 import { activityTime, baseline, isUnread, loadSeen, saveSeen, type Seen } from "./unread.mjs";
+import { cellId, cellBinding } from "./api-types";
+import { IdentityMigration } from "./identity-migration";
 import { Settings } from "./settings";
 import { Resources } from "./resources";
 import type { CellInfo, CellsView } from "./api-types";
@@ -28,7 +30,7 @@ import "./style.css";
 
 import { api, explain } from "./api";
 
-function label(cell: CellInfo) { return cell.parent && cell.name.startsWith(cell.parent + "-") ? cell.name.slice(cell.parent.length + 1) : cell.name; }
+function label(cell: CellInfo) { return cell.name; }
 
 // Image attachments wrapped in a size guard: providers reject image blocks over
 // 5 MiB (see attachment-limits.mjs for the derivation), and a clear client-side
@@ -57,6 +59,8 @@ function App() {
   const [canApply, setCanApply] = useState(false);
   const [canCreate, setCanCreate] = useState(false);
   const [canDelete, setCanDelete] = useState(false);
+  const [canMigrateIdentity, setCanMigrateIdentity] = useState(false);
+  const [migratingIdentity, setMigratingIdentity] = useState(false);
   const [deleting, setDeleting] = useState(new URLSearchParams(location.search).has("deletion"));
   const [deletionId, setDeletionId] = useState(new URLSearchParams(location.search).get("deletion"));
   const [deleteName, setDeleteName] = useState<string | null>(null);
@@ -69,11 +73,11 @@ function App() {
   const load = async () => {
     try {
       const result = await api<CellsView>("/api/cells");
-      setCells(result.cells); setMode(result.mode); setCanApply(result.canApply); setCanCreate(result.canCreate); setCanDelete(result.canDelete); setError("");
+      setCells(result.cells); setMode(result.mode); setCanApply(result.canApply); setCanCreate(result.canCreate); setCanDelete(result.canDelete); setCanMigrateIdentity(result.canMigrateIdentity); setError("");
     } catch {
       try {
         const info = await api<{cell: string; workspace: string}>("/api/info");
-        setCells([{ name: info.cell, parent: null, grants: [], vm: null, lifecycle: { state: "available" }, creation: null, deletion: null }]); setMode("standalone");
+        setCells([{ id: info.cell, binding: info.cell, can_rename: false, name: info.cell, parent: null, grants: [], vm: null, lifecycle: { state: "available" }, creation: null, deletion: null }]); setMode("standalone");
       } catch (e) { setError(explain(e)); }
     } finally { setLoaded(true); }
   };
@@ -89,7 +93,7 @@ function App() {
   };
   const openDeletion = (name: string, id: string | null = null) => { setCreating(false); setCreation(null); setDeleteName(name); setDeletion(id); setDeleting(true); };
   const choose = (name: string | null, chat?: string, setup = false) => {
-    const target = cells.find((c) => c.name === name);
+    const target = cells.find((c) => cellId(c) === name || cellBinding(c) === name);
     if (name && target?.lifecycle.state === "deleting" && target.deletion) { openDeletion(name, target.deletion.id); return; }
     if (name && target?.lifecycle.state === "provisioning" && target.creation) { openCreation(target.creation.parent, target.creation.id); return; }
     if (name && target?.lifecycle.state === "blocked") {
@@ -101,32 +105,39 @@ function App() {
     if (chat) url.searchParams.set("chat", chat); if (setup) url.searchParams.set("setup", "1");
     history.pushState(null, "", url); setSelected(name); setResources(false);
   };
-  const cell = cells.find((c) => c.name === selected);
+  useEffect(() => {
+    const match = cells.find(c => cellBinding(c) === selected);
+    if (!match || cellId(match) === selected) return;
+    const url = new URL(location.href); url.searchParams.set("cell", cellId(match));
+    history.replaceState(null, "", url); setSelected(cellId(match));
+  }, [cells, selected]);
+  const cell = cells.find((c) => cellId(c) === selected || cellBinding(c) === selected);
   // Without a homepage, a missing or stale selection falls through to the first
   // available cell in tree order. Other query parameters (creation/deletion) survive.
-  const order = (parent: string | null): CellInfo[] => cells.filter((c) => c.parent === parent).flatMap((c) => [c, ...order(c.name)]);
+  const order = (parent: string | null): CellInfo[] => cells.filter((c) => c.parent === parent).flatMap((c) => [c, ...order(cellId(c))]);
   const fallback = order(null).find((c) => c.lifecycle.state === "available");
   useEffect(() => {
     if (!loaded || cell || !fallback) return;
-    const url = new URL(location.href); url.searchParams.set("cell", fallback.name); url.searchParams.delete("chat"); url.searchParams.delete("setup");
-    history.replaceState(null, "", url); setSelected(fallback.name);
+    const url = new URL(location.href); url.searchParams.set("cell", cellId(fallback)); url.searchParams.delete("chat"); url.searchParams.delete("setup");
+    history.replaceState(null, "", url); setSelected(cellId(fallback));
   }, [loaded, cell, fallback?.name]);
   const status = (c: CellInfo) => c.lifecycle.state === "blocked" ? "Needs attention" : c.lifecycle.state === "provisioning" && c.creation ? creationLabel(c.creation) : c.lifecycle.state === "deleting" && c.deletion ? deletionLabel(c.deletion) : "Not running";
-  const branch = (parent: string | null): React.ReactNode => <ul>{cells.filter((c) => c.parent === parent).map((c) => <li key={c.name}><div className="cell-row" data-active={c.name === cell?.name}><button className="cell-link" aria-current={c.name === cell?.name ? "page" : undefined} onClick={() => choose(c.name)}><span>{label(c)}</span>{c.lifecycle.state !== "available" && <small>{status(c)}</small>}</button>{canCreate && c.lifecycle.state === "available" && <button className="add-subcell" aria-label={`Add subcell to ${c.name}`} title="Add subcell" onClick={() => openCreation(c.name)}>＋</button>}</div>{branch(c.name)}</li>)}</ul>;
+  const branch = (parent: string | null): React.ReactNode => <ul>{cells.filter((c) => c.parent === parent).map((c) => <li key={cellId(c)}><div className="cell-row" data-active={c.name === cell?.name}><button className="cell-link" aria-current={c.name === cell?.name ? "page" : undefined} onClick={() => choose(cellId(c))}><span>{label(c)}</span>{c.lifecycle.state !== "available" && <small>{status(c)}</small>}</button>{canCreate && c.lifecycle.state === "available" && <button className="add-subcell" aria-label={`Add subcell to ${c.name}`} title="Add subcell" onClick={() => openCreation(cellId(c))}>＋</button>}</div>{branch(cellId(c))}</li>)}</ul>;
   const creation = creating && <CreateCell cells={cells} parent={newParent} id={creationId} onId={setCreation} onClose={() => { setCreating(false); setCreation(null); void load(); }} onStarted={load} onDelete={canDelete ? openDeletion : undefined} onReady={async (job) => { await load(); setCreating(false); setCreation(null); choose(job.cell.name, job.phase.session.id, true); }} />;
   const deletion = deleting && <DeleteCell name={deleteName} id={deletionId} onId={setDeletion} onClose={() => { setDeleting(false); setDeletion(null); void load(); }} onChanged={load} onDeleted={async () => { await load(); setDeleting(false); setDeletion(null); choose(null); }} />;
   const standalone = mode === "standalone";
   const cellsPane = !standalone && !cellsHidden && <aside className="cells-pane" aria-label="Cells">
     <div className="pane-title">Cells</div>
     <button className="new-cell-button" aria-current={resources ? "page" : undefined} onClick={() => { const url = new URL(location.href); url.searchParams.set("view", "resources"); history.pushState(null, "", url); setResources(true); }}>Resources</button>
+    {canMigrateIdentity && <button className="new-cell-button" onClick={() => setMigratingIdentity(true)}>Enable cell renaming…</button>}
     {canCreate && <button className="new-cell-button" onClick={() => openCreation(null)}>＋ Cell</button>}
     {error && <div role="alert" className="inline-error">{error}<button onClick={() => void load()}>Retry</button></div>}
     <nav className="cell-tree">{!loaded ? <p className="pane-note">Loading…</p> : cells.length === 0 ? <p className="pane-note">No cells yet.</p> : branch(null)}</nav>
   </aside>;
   const content = resources && !standalone ? <Resources /> : cell
-    ? <ChatHealthBoundary key={cell.name} name={cell.name} standalone={standalone}>{onUnavailable => <CellWorkspace onUnavailable={onUnavailable} cell={cell} standalone={standalone} local={mode !== "cells"} canApply={canApply} reload={load} onDelete={canDelete ? () => openDeletion(cell.name, cell.deletion?.id) : undefined} />}</ChatHealthBoundary>
+    ? <ChatHealthBoundary key={cellBinding(cell)} name={cellId(cell)} label={cell.name} standalone={standalone}>{onUnavailable => <CellWorkspace onUnavailable={onUnavailable} cell={cell} standalone={standalone} local={mode !== "cells"} canApply={canApply} reload={load} onDelete={canDelete ? () => openDeletion(cellId(cell), cell.deletion?.id) : undefined} />}</ChatHealthBoundary>
     : <main className="empty-main">{!loaded ? "" : cells.length === 0 ? (canCreate ? "No cells yet. Create one with ＋ Cell." : "No cells are declared.") : "No cell is available. Choose one from the list to see its status."}</main>;
-  return <><div className={standalone || cellsHidden ? "shell standalone" : "shell"}>{cellsPane}{content}{!standalone && <button className="cell-menu" aria-label={cellsHidden ? "Show cells" : "Hide cells"} aria-expanded={!cellsHidden} onClick={() => setCellsHidden(!cellsHidden)}>☰</button>}</div>{creation}{deletion}</>;
+  return <><div className={standalone || cellsHidden ? "shell standalone" : "shell"}>{cellsPane}{content}{!standalone && <button className="cell-menu" aria-label={cellsHidden ? "Show cells" : "Hide cells"} aria-expanded={!cellsHidden} onClick={() => setCellsHidden(!cellsHidden)}>☰</button>}</div>{creation}{deletion}{migratingIdentity && <IdentityMigration onClose={() => setMigratingIdentity(false)} onApplied={load} />}</>;
 }
 
 function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, onUnavailable }: { cell: CellInfo; standalone: boolean; local: boolean; canApply: boolean; reload: () => Promise<void>; onDelete?: () => void; onUnavailable: () => void }) {
@@ -139,7 +150,10 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, on
   const [archived, setArchived] = useState(false);
   const pollNow = useRef(() => {});
   const [settings, setSettings] = useState(new URLSearchParams(location.search).get("setup") === "1");
-  const base = standalone ? "/api" : `/api/cells/${cell.name}`;
+  // Retain a mounted legacy transport during the additive migration. Its alias
+  // remains frozen; future mounts use the UUID. Rename never recreates runtime.
+  const [base] = useState(() => standalone ? "/api" : `/api/cells/${cellId(cell)}`);
+  const preferenceBase = standalone ? "/api" : `/api/cells/${cellBinding(cell)}`;
   const client = useMemo(() => {
     const transport = createPiHttpClient({ baseUrl: `${base}/pi`, async fetchImpl(input, init) {
     const headers = new Headers(init?.headers);
@@ -157,7 +171,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, on
       throw error;
     }
   } });
-    const key = `kuggis:model:${base}`;
+    const key = `kuggis:model:${preferenceBase}`;
     const remember = (model: { provider: string; modelId: string }) => { try { localStorage.setItem(key, JSON.stringify(model)); } catch {} };
     return { ...transport,
       async setModel(id: string, model: { provider: string; modelId: string }) { await transport.setModel(id, model); remember(model); },
@@ -200,7 +214,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, on
     finally { setModelsLoading(false); }
   };
   useEffect(() => { void loadModels(); }, [client]);
-  const seenKey = `kuggis:seen:${base}`;
+  const seenKey = `kuggis:seen:${preferenceBase}`;
   const [seen, setSeen] = useState(() => loadSeen(localStorage, seenKey));
   useEffect(() => { if (seen) saveSeen(localStorage, seenKey, seen); }, [seen, seenKey]);
   const markSeen = useCallback((id: string, time: number) => setSeen((seen) => !seen || (seen[id] ?? 0) >= time ? seen : { ...seen, [id]: time }), []);

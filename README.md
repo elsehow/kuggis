@@ -201,3 +201,8 @@ The operator's SSH relay still uses `/run/cell-chat/api.sock`.
 See [the environment bench](bench/environment/README.md) for architecture and
 production acceptance tests. The shared kernel and nspawn runtime remain part
 of the trusted host boundary.
+
+Cell renaming uses [stable UUIDs with an additive legacy migration](docs/cell-identity.md).
+Enable it from the Cells sidebar after reviewing the existing VM/key bindings.
+Legacy runtime identifiers and signed history stay unchanged; rename changes
+only the label. New operator-created cells then use UUIDs from creation.

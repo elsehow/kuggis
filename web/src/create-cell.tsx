@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { cellId, cellBinding } from "./api-types";
 import { api, explain } from "./api";
 import type { CellInfo, Grant, Creation, CreationStep as Step, CreationPhase as Phase } from "./api-types";
 import type { ProviderId } from "./settings-types";
@@ -31,13 +32,14 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(!!id);
   const delivered = useRef(false);
-  const parentCell = cells.find((c) => c.name === parent);
+  const parentCell = cells.find((c) => cellId(c) === parent || cellBinding(c) === parent);
   const available = cells.filter((c) => c.lifecycle.state === "available");
-  const fullName = parent && !name.startsWith(parent + "-") ? `${parent}-${name}` : name;
+  const parentName = parentCell?.name ?? parent;
+  const fullName = parent && !name.startsWith(parentName + "-") ? `${parentName}-${name}` : name;
   useEffect(() => { dialog.current?.showModal(); nameInput.current?.focus(); }, []);
   const selectParent = (value: string) => {
     setParent(value);
-    const grants = cells.find((c) => c.name === value)?.grants;
+    const grants = cells.find((c) => cellId(c) === value || cellBinding(c) === value)?.grants;
     setProviders(grants ? grants.flatMap((g) => "provider" in g ? [g.provider] : []) : ["anthropic"]);
     setHosts(defaultHosts(grants).join("\n"));
     const code = grants?.find((g) => "code" in g);
@@ -47,7 +49,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
   useEffect(() => { selectParent(initialParent ?? ""); }, []);
   const edit = () => {
     if (!job) return;
-    setName(job.cell.name); setParent(job.parent ?? "");
+    setName(job.display_name ?? job.cell.name); setParent(job.parent ?? "");
     setProviders(job.cell.grants.flatMap((g) => "provider" in g ? [g.provider] : []));
     setHosts(job.cell.grants.flatMap((g) => "host" in g ? [g.host] : []).join("\n"));
     const code = job.cell.grants.find((g) => "code" in g);
@@ -91,10 +93,10 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
     setJob(next); await onStarted();
   });
   return <dialog ref={dialog} className="settings create-cell" aria-labelledby="create-title" onCancel={(e) => { e.preventDefault(); if (!busy) onClose(); }}>
-    <header><h2 id="create-title">{job ? job.cell.name : "New cell"}</h2><button aria-label="Close new cell" disabled={busy} onClick={onClose}>×</button></header>
+    <header><h2 id="create-title">{job ? job.display_name ?? job.cell.name : "New cell"}</h2><button aria-label="Close new cell" disabled={busy} onClick={onClose}>×</button></header>
     {error && <div role="alert" className="inline-error">{error}</div>}
     {loading ? <p role="status">Loading…</p> : job ? <section>
-      <div className="creation-location">Cells{job.parent ? ` / ${job.parent}` : ""} / {job.parent && job.cell.name.startsWith(job.parent + "-") ? job.cell.name.slice(job.parent.length + 1) : job.cell.name}</div>
+      <div className="creation-location">Cells / {job.display_name ?? job.cell.name}</div>
       {job.phase.state === "review" ? <>
         <ul className="creation-grants">{job.cell.grants.map((g, i) => <li key={i}>{describe(g)}</li>)}</ul>
         <footer className="settings-actions"><button disabled={busy} onClick={edit}>Back</button><button className="primary" disabled={busy} onClick={() => void start()}>{busy ? "Starting…" : "Create cell"}</button></footer>
@@ -106,7 +108,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
     </section> : <form onSubmit={(e) => { e.preventDefault(); void preview(); }}>
       <section className="cell-identity">
         <label>Name<input ref={nameInput} aria-label="Cell name" required pattern="[a-z0-9]+(-[a-z0-9]+)*" maxLength={63} placeholder="dev" value={name} onChange={(e) => setName(e.target.value)} /></label>
-        <label>Parent<select aria-label="Parent cell" value={parent} onChange={(e) => selectParent(e.target.value)}><option value="">None</option>{available.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}</select></label>
+        <label>Parent<select aria-label="Parent cell" value={parent} onChange={(e) => selectParent(e.target.value)}><option value="">None</option>{available.map((c) => <option key={cellId(c)} value={cellId(c)}>{c.name}</option>)}</select></label>
       </section>
       <section><h3>Repository</h3><div className="new-cell-repo">
         <input aria-label="Repository" list="parent-repositories" placeholder="owner/repository (optional)" value={repo} onChange={(e) => setRepo(e.target.value)} />

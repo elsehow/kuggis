@@ -5,8 +5,8 @@ import type { ChatRecovery } from "./generated/ChatRecovery";
 
 const recoveryLabels: Record<ChatRecovery, string> = { start: "Start chat", repair: "Repair chat", restart: "Retry starting chat" };
 
-export function ChatHealthBoundary({ name, standalone, children }: {
-  name: string; standalone: boolean;
+export function ChatHealthBoundary({ name, label, standalone, children }: {
+  name: string; label?: string; standalone: boolean;
   children: (onUnavailable: () => void) => ReactNode;
 }) {
   const [health, setHealth] = useState<ChatHealth | null>(null);
@@ -53,7 +53,7 @@ export function ChatHealthBoundary({ name, standalone, children }: {
   }, [standalone, check]);
   if (standalone || health?.state === "ready") return children(onUnavailable);
   return <main className="chat-health">
-    <h1>{name}</h1>
+    <h1>{label ?? name}</h1>
     <section role={health && health.state !== "starting" ? "alert" : "status"}>
       <h2>{!health ? "Checking chat…" : health.state === "starting" ? "Starting chat…" : "Chat service unavailable"}</h2>
       <p>{health?.message ?? "Checking the cell’s chat service."}</p>

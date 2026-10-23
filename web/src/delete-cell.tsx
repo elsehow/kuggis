@@ -56,10 +56,10 @@ export function DeleteCell({ name, id, onId, onClose, onChanged, onDeleted }: {
     void onDeleted().catch((e) => { done.current = false; setError(explain(e)); });
   }, [job?.phase.state, manual]);
   const remove = async () => {
-    if (!job || confirmation !== job.cell.name || choicesDirty || (manual && !manualAck)) return;
+    if (!job || confirmation !== (job.display_name ?? job.cell.name) || choicesDirty || (manual && !manualAck)) return;
     setBusy(true); setError("");
     try {
-      const next = await api<Deletion>(`/api/deletions/${job.id}/apply`, { method: "POST", body: JSON.stringify({ approval: job.approval, name: confirmation, acknowledge_manual: manualAck }) });
+      const next = await api<Deletion>(`/api/deletions/${job.id}/apply`, { method: "POST", body: JSON.stringify({ approval: job.approval, name: job.cell.name, acknowledge_manual: manualAck }) });
       setJob(next); await onChanged();
     } catch (e) { setError(explain(e)); } finally { setBusy(false); }
   };
@@ -80,7 +80,7 @@ export function DeleteCell({ name, id, onId, onClose, onChanged, onDeleted }: {
   };
   const deleting = job?.phase.state === "deleting";
   return <dialog ref={dialog} className="settings delete-cell" aria-labelledby="delete-title" onCancel={(e) => { e.preventDefault(); if (!busy) onClose(); }}>
-    <header><h2 id="delete-title">Delete {job?.cell.name ?? name ?? "cell"}?</h2><button aria-label="Close delete cell" disabled={busy} onClick={onClose}>×</button></header>
+    <header><h2 id="delete-title">Delete {job?.display_name ?? job?.cell.name ?? name ?? "cell"}?</h2><button aria-label="Close delete cell" disabled={busy} onClick={onClose}>×</button></header>
     {error && <div role="alert" className="inline-error">{error}</div>}
     {!job ? <>{busy && <p role="status">Checking cell…</p>}<footer className="settings-actions"><button disabled={busy} onClick={onClose}>Cancel</button></footer></> : deleting ? <p role="status">{job.phase.state === "deleting" && job.phase.step === "cleaning_up_resources" ? "Freezing resource access and completing approved cleanup…" : job.phase.state === "deleting" && job.phase.step === "disconnecting" ? "Disconnecting…" : job.phase.state === "deleting" && job.phase.step === "removing_declaration" ? "Removing from tree…" : "Deleting VM…"}</p>
       : job.phase.state === "deleted" ? <><p role="status">Cell deleted.</p>{manual && <><p>Provider cleanup is still manual; resources or charges may remain. Retained resources are available in Resources.</p><button onClick={() => void onDeleted()}>Done — I’ll handle provider cleanup</button></>}</> : <form onSubmit={(e) => { e.preventDefault(); void remove(); }}>
@@ -109,8 +109,8 @@ export function DeleteCell({ name, id, onId, onClose, onChanged, onDeleted }: {
           {choicesDirty && <button type="button" disabled={busy} onClick={() => void reviewAgain()}>Review updated cleanup choices</button>}
           {manual && <label><input type="checkbox" checked={manualAck} onChange={e => setManualAck(e.target.checked)} /> I accept responsibility for manual provider cleanup/revocation and any continuing charges.</label>}
         </section>
-        <label className="delete-confirm">Type <strong>{job.cell.name}</strong> to confirm.<input aria-label="Cell name to delete" autoComplete="off" value={confirmation} onChange={(e) => setConfirmation(e.target.value)} /></label>
-        <footer className="settings-actions"><button type="button" disabled={busy} onClick={onClose}>Cancel</button>{!job.resources_reviewed || (job.phase.state === "failed" && job.phase.recovery === "review") ? <button type="button" className="primary" disabled={busy} onClick={() => void reviewAgain()}>{busy ? "Checking…" : "Review deletion"}</button> : <button type="submit" className="danger-button" disabled={busy || choicesDirty || (manual && !manualAck) || confirmation !== job.cell.name}>{busy ? "Starting…" : job.phase.state === "failed" ? "Retry deletion" : "Delete cell"}</button>}</footer>
+        <label className="delete-confirm">Type <strong>{job.display_name ?? job.cell.name}</strong> to confirm.<input aria-label="Cell name to delete" autoComplete="off" value={confirmation} onChange={(e) => setConfirmation(e.target.value)} /></label>
+        <footer className="settings-actions"><button type="button" disabled={busy} onClick={onClose}>Cancel</button>{!job.resources_reviewed || (job.phase.state === "failed" && job.phase.recovery === "review") ? <button type="button" className="primary" disabled={busy} onClick={() => void reviewAgain()}>{busy ? "Checking…" : "Review deletion"}</button> : <button type="submit" className="danger-button" disabled={busy || choicesDirty || (manual && !manualAck) || confirmation !== (job.display_name ?? job.cell.name)}>{busy ? "Starting…" : job.phase.state === "failed" ? "Retry deletion" : "Delete cell"}</button>}</footer>
       </form>}
   </dialog>;
 }

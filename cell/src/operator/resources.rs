@@ -228,7 +228,7 @@ fn cell_targets(op: &Operator) -> Result<Vec<ResourceCell>> {
             .join(format!("{}.pub", cell.name));
         match fs::read_to_string(path) {
             Ok(pin) => cells.push(ResourceCell {
-                name: cell.name.clone(),
+                name: op.identities()?.label(&cell.name),
                 identity: CellIdentity(pin.parse().map_err(bad)?),
             }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),

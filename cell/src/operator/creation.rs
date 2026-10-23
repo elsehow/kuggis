@@ -46,6 +46,10 @@ pub(crate) enum CreationStep {
 #[derive(Clone, Debug, Serialize, Deserialize, ts_rs::TS)]
 pub(crate) struct Creation {
     pub id: RequestId,
+    #[serde(default)]
+    pub(super) display_name: Option<Name>,
+    #[serde(default)]
+    identity_revision: Option<Hash>,
     pub cell: Cell,
     pub parent: Option<Name>,
     before: Hash,
@@ -174,7 +178,7 @@ fn destination(
 
 pub(super) async fn preview(
     State(op): State<Arc<Operator>>,
-    Json(input): Json<NewCell>,
+    Json(mut input): Json<NewCell>,
 ) -> Result<Json<Creation>> {
     let _lock = op.applying.try_lock().map_err(|_| {
         Error(
@@ -188,7 +192,16 @@ pub(super) async fn preview(
         ));
     }
     let (before, paths) = op.tree()?;
-    let cell = Cell::new(input.name, input.grants);
+    input.parent = input.parent.as_ref().map(|p| op.resolve(p)).transpose()?;
+    let registry = op.identities()?;
+    if registry.cells.iter().any(|c| c.name == input.name || c.binding == input.name || c.id.as_str() == input.name.as_str()) ||
+        before.iter().any(|c| registry.label(&c.name) == input.name) ||
+        list(&op.config.state).map_err(fail)?.iter().any(|j| j.is_current() && j.display_name.as_ref() == Some(&input.name)) {
+        return Err(Error(StatusCode::CONFLICT, "Cell name is already in use or reserved".into()));
+    }
+    let display_name = op.config.tree.join(".identities.json").exists().then(|| input.name.clone());
+    let binding = if display_name.is_some() { crate::CellId::generate().to_string().parse().map_err(bad)? } else { input.name };
+    let cell = Cell::new(binding, input.grants);
     super::deletion::ensure_available(&op.config.state, &cell.name)?;
     if let Some(parent) = &input.parent {
         super::deletion::ensure_available(&op.config.state, parent)?;
@@ -229,6 +242,8 @@ pub(super) async fn preview(
     }).await.map_err(fail)?.map_err(bad)?;
     let job = Creation {
         id: RequestId::generate(),
+        display_name,
+        identity_revision: super::identity::revision(&op)?,
         cell,
         parent: input.parent,
         before: fingerprint(&before),
@@ -318,6 +333,7 @@ pub(super) async fn start(
         )
     })?;
     let mut job = Creation::load(&op.config.state, id)?;
+    if job.is_review() { super::identity::check_revision(&op, job.identity_revision)?; }
     let (tree, _) = op.tree()?;
     if job.is_review() && fingerprint(&tree) != job.before {
         job.phase = CreationPhase::Failed {
@@ -417,6 +433,7 @@ async fn provision(op: &Arc<Operator>, job: &mut Creation, approved: Approved) -
             created.metadata.id
         }
     };
+    if let Some(label) = &job.display_name { super::identity::enroll(op, &job.cell.name, label).await?; }
     job.phase = CreationPhase::Ready {
         session: SessionRef {
             cell: job.cell.name.clone(),
@@ -940,11 +957,48 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn migrated_creation_allocates_uuid_once_and_rejects_old_reviews() {
+        let fixture = Fixture::new();
+        let legacy = fixture.preview("old-review", None, json!([])).await.unwrap();
+        let key = fixture.edge.log("project").unwrap().unwrap().0;
+        apply::pin(&fixture.dir.join("tree/.pins"), &"project".parse().unwrap(), &key).unwrap();
+        let vms = fixture.edge.listing().unwrap().0;
+        let observed = crate::identity::observe(&fixture.dir.join("tree"), Some(&vms)).unwrap();
+        let migration = crate::identity::Migration::plan(&fixture.dir.join("tree"), &observed).unwrap();
+        migration.apply(&fixture.dir.join("tree"), &observed, migration.approval).unwrap();
+        assert!(start(State(fixture.op.clone()), Path(legacy.id), Json(Apply { approval: legacy.approval })).await.is_err());
+        assert_eq!(fixture.edge.creates.load(Ordering::SeqCst), 0);
+        let job = fixture.preview("readable-name", None, json!([])).await.unwrap();
+        let uuid: crate::CellId = job.cell.name.as_str().parse().unwrap();
+        assert_eq!(job.display_name.as_ref().unwrap().as_str(), "readable-name");
+        assert_eq!(Creation::load(&fixture.op.config.state, job.id).unwrap().cell.name, job.cell.name);
+        declare(&fixture.op, &job).unwrap();
+        let vm = crate::exe::provision_name(&job.cell.name);
+        fixture.edge.vms.lock().unwrap().push(Vm { vm_name: vm.clone(), created_at: Some("native-incarnation".into()), tags: vec![job.cell.tag()], status: "running".into() });
+        fixture.edge.setup(&vm, &job.cell).unwrap();
+        let key = fixture.edge.log(&vm).unwrap().unwrap().0;
+        apply::pin(&fixture.dir.join("tree/.pins"), &job.cell.name, &key).unwrap();
+        super::super::identity::enroll(&fixture.op, &job.cell.name, job.display_name.as_ref().unwrap()).await.unwrap();
+        super::super::identity::enroll(&fixture.op, &job.cell.name, job.display_name.as_ref().unwrap()).await.unwrap();
+        let registry = fixture.op.identities().unwrap();
+        assert_eq!(registry.by_binding(&job.cell.name).unwrap().id, uuid);
+        assert_eq!(registry.label(&job.cell.name).as_str(), "readable-name");
+        assert_eq!(fixture.op.resolve(&uuid.to_string().parse().unwrap()).unwrap(), job.cell.name);
+        assert_eq!(fixture.op.vm_for(&job.cell.name).await.unwrap(), vm);
+        fixture.edge.vms.lock().unwrap().iter_mut().find(|v| v.vm_name == vm).unwrap().created_at = Some("replacement".into());
+        assert!(fixture.op.vm_for(&job.cell.name).await.is_err());
+        let tree = fixture.op.tree().unwrap().0;
+        assert!(apply::plans(fixture.edge.as_ref(), &fixture.op.config.tree.join(".pins"), &tree, &[job.cell.name.clone()]).is_err(), "apply cannot adopt a VM that reused a registered name");
+    }
+
     #[test]
     fn declaration_retry_never_overwrites_a_changed_cell_or_moves_it() {
         let fixture = Fixture::new();
         let cell: Cell = serde_json::from_value(json!({"name":"project-dev","grants":[]})).unwrap();
         let job = Creation {
+            display_name: None,
+            identity_revision: None,
             id: RequestId::generate(),
             cell,
             parent: Some("project".parse().unwrap()),

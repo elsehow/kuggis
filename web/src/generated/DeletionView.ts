@@ -6,4 +6,4 @@ import type { Hash } from "./Hash";
 import type { Name } from "./Name";
 import type { RequestId } from "./RequestId";
 
-export type DeletionView = { id: RequestId, cell: Cell, parent: Name | null, vm: string | null, approval: Hash, phase: DeletionPhase, resources: Array<CleanupView>, resources_reviewed: boolean, };
+export type DeletionView = { display_name: Name | null, id: RequestId, cell: Cell, parent: Name | null, vm: string | null, approval: Hash, phase: DeletionPhase, resources: Array<CleanupView>, resources_reviewed: boolean, };
