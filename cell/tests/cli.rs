@@ -191,7 +191,10 @@ fn tree_allow_plan_and_observe() {
     );
     let t = run(&["tree", cells.to_str().unwrap()], "");
     assert!(!t.status.success());
-    assert!(err(&t).contains("not covered by its parent"), "{}", err(&t));
+    assert!(
+        err(&t).contains("You must add these hosts to parent cell coordinator. (Children cannot have more access than their parents)."),
+        "{}", err(&t)
+    );
     fs::remove_file(&wide).unwrap();
 
     // a file that lies about its name

@@ -61,6 +61,7 @@ pub enum TreeError {
     /// A child holds a grant its parent does not cover.
     Wider {
         child: Name,
+        parent: Name,
         grant: Grant,
     },
     /// More than one writable repository.
@@ -79,7 +80,14 @@ impl fmt::Display for TreeError {
                 let s: Vec<String> = path.iter().map(ToString::to_string).collect();
                 write!(f, "cycle: {}", s.join(" -> "))
             }
-            TreeError::Wider { child, grant } => {
+            TreeError::Wider {
+                parent,
+                grant: Grant::Host(_),
+                ..
+            } => {
+                write!(f, "You must add these hosts to parent cell {parent}. (Children cannot have more access than their parents).")
+            }
+            TreeError::Wider { child, grant, .. } => {
                 write!(f, "{child}: {grant:?} is not covered by its parent")
             }
             TreeError::TwoWritable(n) => write!(f, "{n}: more than one writable repository"),
@@ -136,6 +144,7 @@ impl Tree {
                 if !parent.grants.iter().any(|p| p.covers(g)) {
                     return Err(TreeError::Wider {
                         child: name.clone(),
+                        parent: parent_name.clone(),
                         grant: g.clone(),
                     });
                 }

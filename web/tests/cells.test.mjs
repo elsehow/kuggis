@@ -179,7 +179,9 @@ test("cell tree, isolated sessions, credentials, connections and gateway restart
   assert.ok(!JSON.stringify(settings).includes("test-secret"));
   const forbidden = await request(`${base()}/plan`, "POST", { grants: [...grants, { host: "wider.example" }] });
   assert.equal(forbidden.status, 400);
-  assert.match(await forbidden.text(), /not covered by its parent/);
+  assert.deepEqual(await forbidden.json(), {
+    error: "You must add these hosts to parent cell project. (Children cannot have more access than their parents).",
+  });
   assert.equal((await request(`${base()}/settings/providers/anthropic`, "DELETE")).status, 204);
   settings = await (await fetch(`${base()}/settings`)).json();
   assert.equal(settings.providers[0].credential.state, "missing");
