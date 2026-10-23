@@ -49,7 +49,9 @@ button:focus-visible, a:focus-visible, textarea:focus-visible, select:focus-visi
 .chat-item:hover, .chat-item[data-active="true"] { background: #e8ece2; }
 .chat-link { flex: 1; display: flex; gap: 8px; min-width: 0; text-align: left; padding: 10px 8px; font-size: 12px; }
 .chat-link span:last-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.chat-glyph { color: #87917f; }
+.chat-glyph { color: #87917f; flex: 0 0 10px; display: flex; align-items: center; justify-content: center; }
+.chat-glyph[data-state="unread"]::before, .chat-glyph[data-state="waiting"]::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+.chat-glyph.spinner { align-self: center; width: 10px; height: 10px; border-width: 1.5px; }
 .item-action { display: inline-flex; align-items: center; justify-content: center; opacity: 0; padding: 8px; }
 .chat-item:hover .item-action, .chat-item:focus-within .item-action { opacity: 1; }
 .archive-toggle { display: flex; gap: 7px; align-items: center; padding: 12px 5px; color: var(--muted); font-size: 12px; }
@@ -197,7 +199,7 @@ button:focus-visible, a:focus-visible, textarea:focus-visible, select:focus-visi
 @media (max-width: 480px) {
   .shell.standalone { grid-template-rows: minmax(0, 1fr); }
   .cells-pane { padding-bottom: 8px; }
-  .chat-glyph { display: inline; }
+  .chat-glyph { display: flex; }
 }
 
 .resources-view { overflow-y: auto; padding: 24px; min-width: 0; flex: 1; }

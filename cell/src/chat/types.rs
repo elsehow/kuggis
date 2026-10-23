@@ -314,6 +314,9 @@ pub(super) struct ThreadMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_file: Option<PathBuf>,
     pub message_count: usize,
+    /// When a run last started or ended. The browser orders chats by it and
+    /// marks a finished run as unread until the chat is opened.
+    pub updated_at: String,
 }
 
 impl ThreadMetadata {
@@ -329,8 +332,34 @@ impl ThreadMetadata {
             config: ModelConfig::default(),
             session_file: None,
             message_count: 0,
+            updated_at: timestamp(std::time::SystemTime::now()),
         }
     }
+}
+
+/// RFC 3339 UTC with milliseconds, the form JavaScript's `Date.parse` accepts.
+pub(super) fn timestamp(time: std::time::SystemTime) -> String {
+    let ms = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let (days, of_day) = (ms / 86_400_000, ms % 86_400_000);
+    // Howard Hinnant's civil_from_days, restricted to dates after 1970.
+    let z = days + 719_468;
+    let (era, doe) = (z / 146_097, z % 146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = era * 400 + yoe + u64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
+        of_day / 3_600_000,
+        of_day / 60_000 % 60,
+        of_day / 1000 % 60,
+        of_day % 1000
+    )
 }
 
 #[derive(Deserialize)]
@@ -413,5 +442,20 @@ mod tests {
             serde_json::to_value(ModelConfig::default()).unwrap(),
             json!({})
         );
+    }
+
+    #[test]
+    fn timestamps_match_javascript_iso_strings() {
+        // Expected values from `new Date(ms).toISOString()`, across leap days and a century.
+        for (ms, expected) in [
+            (0, "1970-01-01T00:00:00.000Z"),
+            (951_782_400_000, "2000-02-29T00:00:00.000Z"),
+            (1_709_208_000_000, "2024-02-29T12:00:00.000Z"),
+            (1_792_700_886_123, "2026-10-22T20:28:06.123Z"),
+            (4_107_542_399_999, "2100-02-28T23:59:59.999Z"),
+        ] {
+            let time = std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms);
+            assert_eq!(timestamp(time), expected);
+        }
     }
 }

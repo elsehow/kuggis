@@ -280,6 +280,9 @@ impl View {
             }
             _ => {}
         }
+        if matches!(kind.as_str(), "agent_start" | "agent_settled" | "error") {
+            self.metadata.updated_at = timestamp(std::time::SystemTime::now());
+        }
         let settled = event["type"] == "agent_settled";
         let event = self.stamp(event);
         // Reconcile run status and any failed final message in one authoritative update.
@@ -1053,6 +1056,23 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
     }
     fs::create_dir_all(config.state.join("threads"))?;
     fs::create_dir_all(config.state.join("pi"))?;
+    // Pi appends to `<time>_<id>.jsonl` as a chat runs, so its mtime is the
+    // last activity of a chat that has not been opened since this start.
+    let mut activity = BTreeMap::new();
+    for entry in fs::read_dir(config.state.join("pi"))? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some((_, id)) = name
+            .to_str()
+            .and_then(|name| name.strip_suffix(".jsonl"))
+            .and_then(|stem| stem.rsplit_once('_'))
+        else {
+            continue;
+        };
+        let modified = entry.metadata()?.modified()?;
+        let latest = activity.entry(id.to_owned()).or_insert(modified);
+        *latest = (*latest).max(modified);
+    }
     let mut sessions = BTreeMap::new();
     for entry in fs::read_dir(config.state.join("threads"))? {
         let path = entry?.path();
@@ -1085,7 +1105,12 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
             }
             save_session(&config, &record).map_err(|e| e.message)?;
         }
-        let metadata = ThreadMetadata::new(record, config.workspace.clone());
+        let mut metadata = ThreadMetadata::new(record, config.workspace.clone());
+        let modified = match activity.get(&id.to_string()) {
+            Some(time) => *time,
+            None => fs::metadata(&path)?.modified()?,
+        };
+        metadata.updated_at = timestamp(modified);
         let (events, _) = broadcast::channel(256);
         sessions.insert(
             id,
@@ -1368,5 +1393,20 @@ mod event_tests {
             .unwrap();
         assert_eq!(unknown["extension"]["raw"], true);
         assert_eq!(unknown["type"], "future_extension_event");
+    }
+
+    #[test]
+    fn run_boundaries_record_activity_and_streaming_does_not() {
+        let mut view = new_view();
+        for (event, recorded) in [
+            (json!({"type":"agent_start"}), true),
+            (json!({"type":"turn_start"}), false),
+            (json!({"type":"agent_settled"}), true),
+            (json!({"type":"error","error":"Pi stopped"}), true),
+        ] {
+            view.metadata.updated_at = String::new();
+            view.apply(event.clone());
+            assert_eq!(!view.metadata.updated_at.is_empty(), recorded, "{event}");
+        }
     }
 }
