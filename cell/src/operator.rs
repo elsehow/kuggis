@@ -627,6 +627,9 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
         stopping: tokio::sync::watch::channel(false).0,
     });
     op.refresh_vms().await.map_err(|e| e.1)?;
+    if op.config.sockets.is_none() {
+        tokio::spawn(context_loop(op.clone()));
+    }
     let app = router(op.clone());
     eprintln!("Kuggis UI: {}", op.config.access.origin(&op.authority));
     let shutdown = op.clone();
@@ -640,6 +643,74 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
         .await?;
     drop(lock);
     Ok(())
+}
+
+/// Reconcile discovery independently of configuration hashes (names are mutable).
+/// Failed publications are retried, including after operator restart. Hold the
+/// mutation lock while publishing so an older snapshot cannot overwrite a rename.
+async fn context_loop(op: Arc<Operator>) {
+    let mut sent = BTreeMap::new();
+    loop {
+        if *op.stopping.borrow() {
+            break;
+        }
+        {
+            let _mutation = op.applying.lock().await;
+            let result = async {
+                op.refresh_vms().await?;
+                let (tree, _) = op.tree()?;
+                let pins = op.config.tree.join(".pins");
+                for cell in tree.iter() {
+                    let vm = match op.vm_for(&cell.name).await {
+                        Ok(vm) => vm,
+                        Err(e) => { eprintln!("cell {} context target unavailable: {}", cell.name, e.1); continue; }
+                    };
+                    if deletion::ensure_available(&op.config.state, &cell.name).is_err() {
+                        continue;
+                    }
+                    let context = match crate::context::Context::available(&tree, &cell.name, &pins) {
+                        Ok(Some(context)) => context,
+                        Ok(None) => continue,
+                        Err(e) => {
+                            eprintln!("cell {} context unavailable: {e}", cell.name);
+                            continue;
+                        }
+                    };
+                    let value = (vm.clone(), context.clone());
+                    if sent
+                        .get(&cell.name)
+                        .is_some_and(|(old, at): &(_, std::time::Instant)| {
+                            old == &value && at.elapsed().as_secs() < 60
+                        })
+                    {
+                        continue;
+                    }
+                    let edge = op.edge.clone();
+                    let target = vm.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        edge.context(&target, &context).map_err(|e| e.to_string())
+                    })
+                    .await
+                    {
+                        Ok(Ok(())) => {
+                            sent.insert(cell.name.clone(), (value, std::time::Instant::now()));
+                        }
+                        failure => eprintln!(
+                            "cell {} context publication failed; will retry: {:?}",
+                            cell.name, failure
+                        ),
+                    }
+                }
+                sent.retain(|id, _| tree.get(id).is_some());
+                Ok::<_, Error>(())
+            }
+            .await;
+            if let Err(e) = result {
+                eprintln!("cell context refresh: {}", e.1);
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
 }
 
 fn router(op: Arc<Operator>) -> Router {

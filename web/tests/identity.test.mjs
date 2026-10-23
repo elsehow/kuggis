@@ -49,12 +49,13 @@ test("legacy cells migrate atomically, retain aliases and chats, and reject chan
   const parent = inventory.cells.find(c => c.binding === "parent"); const child = inventory.cells.find(c => c.binding === "child");
   assert.match(parent.id, /^[a-f0-9-]{36}$/); assert.equal(child.parent, parent.id);
   assert.equal(inventory.canMigrateIdentity, false);
-  for (let n = 0; n < 200; n++) {
+  for (let n = 0; n < 1000; n++) {
     const current = await json(await fetch(base() + `/pi/threads/${chat.metadata.id}`));
     if (current.metadata.status !== "running" && current.messages.some(m => m.role === "assistant")) break;
     await pause(20);
   }
   const snapshot = await json(await fetch(base() + `/pi/threads/${chat.metadata.id}`));
+  assert.equal(snapshot.metadata.status, "idle", "wait for the complete streamed response before comparing history");
   assert.equal(snapshot.messages.filter(m => m.role === "user").length, 1);
   assert.ok(snapshot.messages.some(m => m.role === "assistant"));
   assert.deepEqual((await json(await fetch(f.url() + `/api/cells/${parent.id}/pi/threads/${chat.metadata.id}`))).metadata, snapshot.metadata);

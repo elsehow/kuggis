@@ -94,14 +94,9 @@ Do not restore a stale tree or operator snapshot after new writes. Repair forwar
 using the saved plan/registry receipt. There is no automatic downgrade or resource
 backend migration. No live deployment or VM migration is implied by test results.
 
-## PR #56 integration
+## Agent discovery
 
-Discovery should publish only the current cell, immediate parent and direct
-children. Public coordination references remain UUIDs. A trusted context must
-also retain each child's frozen runtime binding for legacy door routing, session
-commands and signature verification. Verify a result against both the mapped
-binding and pinned key, then present it under the UUID; never reinterpret or
-rewrite signed bytes to make them UUID-shaped. Display labels are discovery
-metadata, not authority. #56 must be rebased onto this compatibility layer before
-it is merged or deployed; its original UUID-only wire assumptions are unsafe for
-legacy cells.
+See [cell delegation](cell-delegation.md) for the one-hop projection and
+UUID-addressed child tasks. Trusted context retains each child's frozen runtime
+binding and pinned key. Door requests and signed results use that binding;
+display labels only affect discovery metadata.
