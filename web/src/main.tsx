@@ -1,4 +1,4 @@
-import { StrictMode, Fragment, createContext, useContext, useEffect, useMemo, useState, type FormEvent } from "react";
+import { StrictMode, Fragment, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AssistantRuntimeProvider, AttachmentPrimitive, ComposerPrimitive, MessagePrimitive,
@@ -15,6 +15,7 @@ import {
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MAX_IMAGE_BYTES, MAX_MESSAGE_BODY_BYTES, mib, utf8Length } from "./attachment-limits.mjs";
+import { activityTime, baseline, isUnread, loadSeen, saveSeen, type Seen } from "./unread.mjs";
 import { Settings } from "./settings";
 import { Resources } from "./resources";
 import type { CellInfo, CellsView } from "./api-types";
@@ -45,6 +46,7 @@ const guardedImageAttachments: AttachmentAdapter = {
 };
 
 const ChatMetadata = createContext<PiThreadMetadata[]>([]);
+const SeenChats = createContext<{ seen: Seen; markSeen: (id: string, time: number) => void }>({ seen: {}, markSeen() {} });
 
 function App() {
   const [resources, setResources] = useState(new URLSearchParams(location.search).get("view") === "resources");
@@ -134,6 +136,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
   const [modelsError, setModelsError] = useState("");
   const [changingModel, setChangingModel] = useState(false);
   const [archived, setArchived] = useState(false);
+  const pollNow = useRef(() => {});
   const [settings, setSettings] = useState(new URLSearchParams(location.search).get("setup") === "1");
   const base = standalone ? "/api" : `/api/cells/${cell.name}`;
   const client = useMemo(() => {
@@ -180,7 +183,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
     isSendDisabled: changingModel,
     adapters: { attachments: guardedImageAttachments },
     onError: (e) => setError(explain(e)),
-    onThreadIdChange(id) { const url = new URL(location.href); if (id) url.searchParams.set("chat", id); else url.searchParams.delete("chat"); history.replaceState(null, "", url); setError(""); },
+    onThreadIdChange(id) { const url = new URL(location.href); if (id) url.searchParams.set("chat", id); else url.searchParams.delete("chat"); history.replaceState(null, "", url); setError(""); pollNow.current(); },
   });
   const loadModels = async () => {
     setModelsLoading(true); setModelsError("");
@@ -189,13 +192,20 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
     finally { setModelsLoading(false); }
   };
   useEffect(() => { void loadModels(); }, [client]);
+  const seenKey = `kuggis:seen:${base}`;
+  const [seen, setSeen] = useState(() => loadSeen(localStorage, seenKey));
+  useEffect(() => { if (seen) saveSeen(localStorage, seenKey, seen); }, [seen, seenKey]);
+  const markSeen = useCallback((id: string, time: number) => setSeen((seen) => !seen || (seen[id] ?? 0) >= time ? seen : { ...seen, [id]: time }), []);
+  const seenChats = useMemo(() => ({ seen: seen ?? {}, markSeen }), [seen, markSeen]);
   useEffect(() => {
-    let disposed = false;
-    const poll = async () => { try { const rows = await client.listThreads({ includeArchived: true }); if (!disposed) setMetadata(rows); } catch {} };
+    let disposed = false, latest = 0;
+    const poll = async () => { const n = ++latest; try { const rows = await client.listThreads({ includeArchived: true }); if (!disposed && n === latest) { setMetadata(rows); setSeen((seen) => seen ?? baseline(rows)); } } catch {} };
     void poll(); const timer = setInterval(() => void poll(), 3000);
-    return () => { disposed = true; clearInterval(timer); };
+    // A chat left mid-run would otherwise read as idle until the next tick.
+    pollNow.current = () => void poll();
+    return () => { disposed = true; clearInterval(timer); pollNow.current = () => {}; };
   }, [client]);
-  return <AssistantRuntimeProvider runtime={runtime}><ChatMetadata.Provider value={metadata}>
+  return <AssistantRuntimeProvider runtime={runtime}><ChatMetadata.Provider value={metadata}><SeenChats.Provider value={seenChats}>
     <div className="workspace">
       <aside className="sidebar" aria-label="Chats">
         <header className="sidebar-header"><span className="sidebar-cell" title={cell.name}>{label(cell)}</span>
@@ -213,17 +223,18 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
       </main>
     </div>
     {settings && <Settings cell={cell} base={base} canApply={canApply} onClose={() => { setSettings(false); const url = new URL(location.href); url.searchParams.delete("setup"); history.replaceState(null, "", url); void loadModels(); }} onApplied={reload} onDelete={onDelete ? () => { setSettings(false); onDelete(); } : undefined} />}
-  </ChatMetadata.Provider></AssistantRuntimeProvider>;
+  </SeenChats.Provider></ChatMetadata.Provider></AssistantRuntimeProvider>;
 }
 
 function SortedChats({ archived = false }: { archived?: boolean }) {
-  const aui = useAui();
   const rows = useContext(ChatMetadata);
   const ids = useAuiState((s) => archived ? s.threads.archivedThreadIds : s.threads.threadIds);
+  // A new chat's remote ID arrives after its item does; subscribe rather than read once.
+  const threadItems = useAuiState((s) => s.threads.threadItems);
   const items = ids.map((id, index) => {
-    const remoteId = aui.threads().item({ index, archived }).getState().remoteId;
+    const remoteId = threadItems.find((item) => item.id === id)?.remoteId;
     const row = rows.find((r) => r.id === remoteId);
-    return { id, index, time: Date.parse(row?.updatedAt ?? row?.createdAt ?? "") || 0 };
+    return { id, index, time: row ? activityTime(row) : 0 };
   }).sort((a, b) => b.time - a.time);
   let previous = "";
   return <>{items.map(({ id, index, time }) => {
@@ -242,11 +253,17 @@ function ChatItem() {
   const rows = useContext(ChatMetadata);
   const row = rows.find((r) => r.id === remoteId);
   const extras = usePiRuntimeExtras();
+  const { seen, markSeen } = useContext(SeenChats);
   const current = session?.id === remoteId;
-  const waiting = current && extras.allHostUiRequests.length > 0;
-  const completed = row?.status === "idle" && (row.messageCount ?? 0) > 0;
+  // The open chat's own stream reports run status and end time before the next
+  // list poll does; whatever it reports while open counts as seen.
+  const time = Math.max(row ? activityTime(row) : 0, current && session ? activityTime(session) : 0);
+  useEffect(() => { if (current && remoteId && time) markSeen(remoteId, time); }, [current, remoteId, time, markSeen]);
+  const running = current ? extras.status === "running" : row?.status === "running";
+  const state = current && extras.allHostUiRequests.length > 0 ? "waiting" : running ? "running" : !current && row && isUnread(row, seen) ? "unread" : "idle";
+  const label = { waiting: "Input needed", running: "Working", unread: "Unread", idle: undefined }[state];
   return <ThreadListItemPrimitive.Root className="chat-item">
-    <ThreadListItemPrimitive.Trigger className="chat-link"><span className="chat-glyph" title={waiting ? "Input needed" : completed ? "Completed" : "Chat"} aria-label={waiting ? "Input needed" : completed ? "Completed" : undefined}>{waiting ? "●" : completed ? "✓" : "◌"}</span><span>{session && session.id === remoteId ? session.title ?? "New chat" : <ThreadListItemPrimitive.Title fallback="New chat" />}</span></ThreadListItemPrimitive.Trigger>
+    <ThreadListItemPrimitive.Trigger className="chat-link"><span className={state === "running" ? "chat-glyph spinner" : "chat-glyph"} data-state={state} title={label ?? "Chat"} aria-label={label}>{state === "idle" && "◌"}</span><span>{session && session.id === remoteId ? session.title ?? "New chat" : <ThreadListItemPrimitive.Title fallback="New chat" />}</span></ThreadListItemPrimitive.Trigger>
     {archived ? <ThreadListItemPrimitive.Unarchive className="item-action" title="Restore chat" aria-label="Restore chat"><ArchiveIcon restore /></ThreadListItemPrimitive.Unarchive>
       : <ThreadListItemPrimitive.Archive className="item-action" title="Archive chat" aria-label="Archive chat"><ArchiveIcon /></ThreadListItemPrimitive.Archive>}
   </ThreadListItemPrimitive.Root>;

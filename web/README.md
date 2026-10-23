@@ -33,8 +33,11 @@ cargo run --manifest-path cell/Cargo.toml -- ui .kuggis/tree \
 
 Open http://127.0.0.1:8080. The tree comes from declarations and is shown in
 the first sidebar pane; the second lists the selected cell's chats, with its
-settings gear. There is no separate cell index: a missing or stale selection
-opens the first available cell. The gateway uses
+settings gear. Chats are ordered by when a run last started or ended. A spinner
+marks a running chat, and a dot marks a finished run this browser has not shown
+open; what each browser has seen stays in its local storage, so opening a chat
+on one device does not clear it on another. There is no separate cell index: a
+missing or stale selection opens the first available cell. The gateway uses
 SSH and private Unix sockets; Pi runs persistently on the cell VM. `--bin`
 enables configuration review/apply; omit it for chatting without deployment.
 Use `--listen`, `--state`, and `--assets` to override the local UI defaults.
