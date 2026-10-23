@@ -525,6 +525,9 @@ mod tests {
         fail_setup: AtomicBool,
     }
     impl Edge for FakeEdge {
+        fn context(&self, _: &str, _: &crate::context::Context) -> crate::apply::Fallible {
+            Ok(())
+        }
         fn listing(&self) -> apply::Fallible<(Vec<Vm>, Vec<Integration>)> {
             Ok((
                 self.vms.lock().unwrap().clone(),

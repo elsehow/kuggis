@@ -72,6 +72,12 @@ usage:
   cell ship --cell CELLFILE --secret FILE --outbox DIR --said DIR [--once]
                                   sign what the agent drops in the outbox into the log
   cell knock --inbox DIR          as root on a box: file the Said on stdin in the inbox
+  cell context                    show this cell and its immediate relatives
+  cell delegate CHILD_UUID SESSION_ID REQUEST_ID TEXT
+                                  start/continue a direct child task via its door
+  cell child-status CHILD_UUID SESSION_ID [SINCE]
+                                  verify signed child status/results
+  cell request new                generate an idempotent request ID
   cell session new                generate a stable session ID
   cell brief DIR NAME SESSION_ID TEXT [--request REQUEST_ID]
                                   brief NAME's SESSION, over ssh, as you
@@ -113,6 +119,11 @@ fn run(args: &[String]) -> Fallible {
         Some("ship") => ship(rest),
         Some("knock") => knock(rest),
         Some("brief") => brief(rest),
+        Some("context" | "delegate" | "child-status") => cell::context::run(args),
+        Some("request") if rest == ["new"] => {
+            println!("{}", RequestId::generate());
+            Ok(())
+        }
         Some("session") if rest == ["new"] => {
             println!("{}", SessionId::generate());
             Ok(())
@@ -272,6 +283,9 @@ fn chat(args: &[String]) -> Fallible {
         (
             ExecutionMode::Cell {
                 declaration,
+                context: flag(args, "--context")
+                    .unwrap_or(cell::context::GUEST_PATH)
+                    .into(),
                 socket: required("--socket")?,
                 agent_dir: required("--agent-dir")?,
                 inbox: required("--inbox")?,
@@ -286,6 +300,7 @@ fn chat(args: &[String]) -> Fallible {
             "--inbox",
             "--outbox",
             "--workspace",
+            "--context",
         ] {
             if flag(args, name).is_some() {
                 return Err(format!("{name} requires --cell").into());

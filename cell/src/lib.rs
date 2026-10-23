@@ -42,3 +42,5 @@ pub use prim::{CellId, Commit, Hash, Host, Invalid, Name, Repo, RequestId, Sessi
 pub use said::{Key, Said, Secret, State, Statement, Unverified};
 pub use session::{Prompt, Session, SessionAction, SessionCommand, SessionRef};
 pub use tree::{Tree, TreeError};
+
+pub mod context;

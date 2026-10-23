@@ -451,6 +451,36 @@ impl Edge for Ssh {
         Ssh::vm(vm, "sudo /tmp/cell setup /tmp/cell.json")
     }
 
+    fn context(&self, vm: &str, context: &crate::context::Context) -> Fallible {
+        // Fixed host-owned directory, never a path supplied by the guest. Atomic
+        // replacement beneath a directory bind is visible to existing sessions.
+        // Publication is retried by the reconciler, not the provisioning SSH
+        // retry loop: an unreachable cell must not lock operator mutations for
+        // twenty connection attempts.
+        let key: crate::Key = context.key.parse()?;
+        let mut child = Command::new("ssh")
+            .args(VM_OPTS)
+            .args(["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2"])
+            .arg(format!("{vm}.exe.xyz"))
+            .arg(format!("test \"$(cat /etc/cell/key.pub)\" = '{key}' && {}", r#"sudo sh -c 'set -eu; mkdir -p /usr/local/lib/cell; t=$(mktemp /usr/local/lib/cell/.context.XXXXXX); trap "rm -f \"$t\"" EXIT; cat > "$t"; chmod 644 "$t"; mv -f "$t" /usr/local/lib/cell/context.json'"#))
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .take()
+            .expect("piped")
+            .write_all(&serde_json::to_vec(context)?)?;
+        let out = child.wait_with_output()?;
+        if !out.status.success() {
+            return Err(format!(
+                "publish context on {vm}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     fn knock(&self, vm: &str, said: &Said) -> Fallible<u64> {
         let out = Ssh::vm_in(
             vm,

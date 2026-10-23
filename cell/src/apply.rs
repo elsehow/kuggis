@@ -43,6 +43,10 @@ pub trait Edge {
     /// File a Said in the box's inbox as root, which is to say as you.
     /// Returns its inbox number.
     fn knock(&self, vm: &str, said: &Said) -> Fallible<u64>;
+    /// Publish only this cell and its immediate relatives; never the full tree.
+    fn context(&self, _vm: &str, _context: &crate::context::Context) -> Fallible {
+        Err("transport does not support cell context publication".into())
+    }
 }
 
 /// Pin a box's key on first contact; refuse a key that changed. The pin is
@@ -235,6 +239,13 @@ pub fn apply_with_progress(
             }
         }
         let Some((name, action)) = next else {
+            // Also runs for no-op apply and retries after a failed publication.
+            for id in &order {
+                let vm = vm_of(&vms, id).ok_or("cell has no VM")?;
+                if let Some(context) = crate::context::Context::available(tree, id, pins)? {
+                    edge.context(&vm.vm_name, &context)?;
+                }
+            }
             return Ok(done);
         };
         progress(&name, &action)?;
@@ -412,6 +423,8 @@ mod tests {
         inboxes: RefCell<BTreeMap<String, Vec<Said>>>,
         calls: RefCell<Vec<String>>,
         bin: RefCell<Option<Hash>>,
+        contexts: RefCell<BTreeMap<String, crate::context::Context>>,
+        fail_context: std::cell::Cell<bool>,
     }
 
     fn opt<'a>(args: &'a [&str], key: &str) -> Option<&'a str> {
@@ -452,6 +465,15 @@ mod tests {
     }
 
     impl Edge for Fake {
+        fn context(&self, vm: &str, context: &crate::context::Context) -> crate::apply::Fallible {
+            if self.fail_context.replace(false) {
+                return Err("context transport failed".into());
+            }
+            self.contexts
+                .borrow_mut()
+                .insert(vm.into(), context.clone());
+            Ok(())
+        }
         fn listing(&self) -> Fallible<(Vec<Vm>, Vec<Integration>)> {
             Ok((self.vms.borrow().clone(), self.ints.borrow().clone()))
         }
@@ -619,6 +641,47 @@ mod tests {
         let again = approve(&f, &pins, &t);
         assert!(again.plans().values().all(Plan::is_empty));
         assert_eq!(apply(&f, &pins, &t, &again, &mut Vec::new()).unwrap(), 0);
+    }
+
+    #[test]
+    fn context_publication_retries_noop_apply_and_refreshes_renames() {
+        let f = Fake::default();
+        let root = std::env::temp_dir().join(format!("context-apply-{}", crate::RequestId::generate()));
+        let pins = root.join(".pins");
+        let t = tree(&[("", A), ("a", B)]);
+        let approved = approve(&f, &pins, &t);
+        apply(&f, &pins, &t, &approved, &mut Vec::new()).unwrap();
+        assert!(f.contexts.borrow().is_empty(), "unmigrated trees remain usable without invented IDs");
+        let mut registry = crate::identity::Registry { version: 1, cells: t.iter().map(|c| {
+            let vm = crate::exe::vm_of(&f.vms.borrow(), &c.name).unwrap().clone();
+            crate::identity::Identity {
+                id: crate::CellId::generate(), binding: c.name.clone(), name: c.name.clone(),
+                key: crate::identity::pin(&root, &c.name).unwrap(),
+                vm: Some(crate::identity::VmBinding { name: vm.vm_name, created_at: vm.created_at.unwrap() }),
+            }
+        }).collect() };
+        registry.save(&root).unwrap();
+        f.fail_context.set(true);
+        assert!(apply(&f, &pins, &t, &approved, &mut Vec::new()).is_err());
+        assert_eq!(apply(&f, &pins, &t, &approved, &mut Vec::new()).unwrap(), 0);
+        let parent: Cell = serde_json::from_str(A).unwrap();
+        let before = f.contexts.borrow()[&crate::exe::provision_name(&parent.name)].clone();
+        assert_eq!(before.children.len(), 1);
+        assert!(before.children[0].key.is_some());
+        for record in &mut registry.cells {
+            record.name = if record.binding == parent.name { "renamed-parent" } else { "renamed-child" }.parse().unwrap();
+        }
+        registry.save(&root).unwrap();
+        let approved = approve(&f, &pins, &t);
+        assert!(approved.plans().values().all(Plan::is_empty));
+        assert_eq!(apply(&f, &pins, &t, &approved, &mut Vec::new()).unwrap(), 0);
+        let after = f.contexts.borrow()[&crate::exe::provision_name(&parent.name)].clone();
+        assert_eq!(after.children[0].cell.id, before.children[0].cell.id);
+        assert_eq!(after.children[0].cell.binding, before.children[0].cell.binding);
+        assert_eq!(after.children[0].key, before.children[0].key);
+        assert_eq!(after.children[0].cell.name.as_str(), "renamed-child");
+        assert_eq!(after.cell.name.as_str(), "renamed-parent");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -419,6 +419,8 @@ impl Store {
                                 .as_str()
                                 .or(view.error.as_deref())
                                 .map(str::to_owned)
+                        } else if state == crate::State::Done {
+                            result_summary(&view.messages)
                         } else {
                             None
                         },
@@ -685,8 +687,20 @@ async fn execute(store: &Store, id: &SessionId, command: SessionCommand) -> ApiR
     };
     let result = match &command.action {
         SessionAction::Prompt(input) => {
+            // Refresh each turn, including already-running sessions after rename.
+            // Local chats must not inherit the hosting machine's cell identity.
+            let content = match store.config.declaration() {
+                Some(cell) => {
+                    let guidance = match crate::context::load_for(store.config.context().expect("cell context path"), &cell.name) {
+                        Ok(context) => crate::context::instructions(&context),
+                        _ => format!("Your immutable cell runtime binding is {}. Current UUID and display name are unavailable. The checkout directory is not your cell identity. Current relationship metadata is unavailable; do not infer that there are no children. Run `cell context` to check.", cell.name),
+                    };
+                    format!("{guidance}\n\nUser request:\n{}", input.content)
+                }
+                None => input.content.clone(),
+            };
             let wire = PiCommand::Prompt {
-                message: &input.content,
+                message: &content,
                 streaming_behavior: input.streaming_behavior,
                 images: &input.attachments,
             };
@@ -1229,6 +1243,31 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
     Ok(())
 }
 
+/// Only summarize this turn's final assistant text, never an older task's answer
+/// or tool/thinking blocks. Bound the signed statement below the shipper limit.
+fn result_summary(messages: &[Value]) -> Option<String> {
+    let message = messages
+        .iter()
+        .rev()
+        .take_while(|m| m["role"] != "user")
+        .find(|m| m["role"] == "assistant")?;
+    let text = message["content"]
+        .as_array()?
+        .iter()
+        .filter(|b| b["type"] == "text")
+        .filter_map(|b| b["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.is_empty() {
+        return None;
+    }
+    let mut result: String = text.chars().take(8000).collect();
+    if text.chars().count() > 8000 {
+        result.push_str("\n[Result truncated; ask the child for a focused summary.]");
+    }
+    Some(result)
+}
+
 fn speak(
     config: &Config,
     session: crate::SessionRef,
@@ -1361,6 +1400,22 @@ async fn inbox_loop(store: Arc<Store>, inbox: PathBuf) {
 #[cfg(test)]
 mod event_tests {
     use super::*;
+
+    #[test]
+    fn signed_results_only_include_current_answer_and_are_bounded() {
+        let mut messages = vec![
+            json!({"role":"assistant","content":[{"type":"text","text":"old answer"}]}),
+            json!({"role":"user","content":"new task"}),
+        ];
+        assert_eq!(result_summary(&messages), None);
+        messages.push(json!({"role":"assistant","content":[{"type":"thinking","thinking":"private"},{"type":"toolCall","arguments":"secret"},{"type":"text","text":"done"}]}));
+        assert_eq!(result_summary(&messages).as_deref(), Some("done"));
+        messages.last_mut().unwrap()["content"] =
+            json!([{"type":"text","text":"\u{0001}".repeat(20000)}]);
+        let summary = result_summary(&messages).unwrap();
+        assert!(summary.contains("truncated"));
+        assert!(serde_json::to_vec(&summary).unwrap().len() < crate::ship::MAX_BYTES - 1024);
+    }
 
     fn new_view() -> View {
         let name: crate::Name = "dev".parse().unwrap();
