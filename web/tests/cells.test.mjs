@@ -217,8 +217,12 @@ test("Pi offers browser and code login, plus API-key-only providers", { timeout:
   await until(async () => (await (await fetch(path)).json()).state === "cancelled", "device flow cancelled");
   await assert.rejects(readFile(join(dir, "auth/auth.json")), { code: "ENOENT" });
   const browser = await beginLogin(base, "openai", "oauth");
-  const browserFlow = await chooseLogin(browser.path, browser.flow, "browser");
+  let browserFlow = await chooseLogin(browser.path, browser.flow, "browser");
   assert.match(browserFlow.notice.url, /^https:\/\/auth.openai.com\/oauth\/authorize/);
+  await until(async () => {
+    browserFlow = await (await fetch(browser.path)).json();
+    return browserFlow.prompt !== null;
+  }, "browser login input prompt");
   assert.equal(browserFlow.prompt.kind, "input");
   assert.equal((await request(browser.path, "POST", { id: browserFlow.prompt.id, value: "fixture#state" })).status, 204);
   await until(async () => (await (await fetch(browser.path)).json()).state === "complete", "browser login completes");

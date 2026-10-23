@@ -17,8 +17,9 @@ test("opening a cell starts stopped chat, diagnoses crashes, and requires explic
   let output = "";
   server.stderr.on("data", bytes => { output += bytes; });
   server.on("error", error => { output += error.message; });
-  let browser;
+  let browser, page;
   t.after(async () => {
+    await page?.unrouteAll({ behavior: "wait" });
     await browser?.close();
     if (server.exitCode === null && server.signalCode === null) {
       const stopped = new Promise(resolve => server.on("close", resolve));
@@ -32,7 +33,7 @@ test("opening a cell starts stopped chat, diagnoses crashes, and requires explic
   const url = output.match(/Kuggis chat: (http:\/\/[^\s]+)/)?.[1];
   assert.ok(url, output);
   browser = await chromium.launch({ headless: true, ...(process.env.KUGGIS_TEST_BROWSER ? { executablePath: process.env.KUGGIS_TEST_BROWSER } : {}) });
-  const page = await browser.newPage();
+  page = await browser.newPage();
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   const ready = { state: "ready", message: "Chat is ready.", recovery: null };
