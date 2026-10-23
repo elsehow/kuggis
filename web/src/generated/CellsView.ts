@@ -2,4 +2,4 @@
 import type { CellView } from "./CellView";
 import type { Mode } from "./Mode";
 
-export type CellsView = { cells: Array<CellView>, mode: Mode, canApply: boolean, canCreate: boolean, canDelete: boolean, };
+export type CellsView = { cells: Array<CellView>, mode: Mode, canApply: boolean, canCreate: boolean, canDelete: boolean, canMigrateIdentity: boolean, };

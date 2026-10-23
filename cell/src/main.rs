@@ -395,8 +395,19 @@ fn allow(args: &[String]) -> Fallible {
     Ok(())
 }
 
+fn identity_name(tree: &Path, value: &str) -> Fallible<Name> {
+    let route: Name = value.parse()?;
+    let registry = cell::identity::Registry::load(tree)?;
+    let name = registry.by_route(&route).or_else(|| registry.cells.iter().find(|c| c.name == route))
+        .map(|c| c.binding.clone()).unwrap_or(route);
+    registry.check_pin(tree, &name)?;
+    Ok(name)
+}
+
 fn load_tree(dir: &str) -> Fallible<Tree> {
-    Ok(cell::tree::load(Path::new(dir))?.0)
+    let tree = cell::tree::load(Path::new(dir))?.0;
+    cell::identity::Registry::load(Path::new(dir))?.check_active(Path::new(dir), &tree)?;
+    Ok(tree)
 }
 
 fn tree(args: &[String]) -> Fallible {
@@ -423,7 +434,7 @@ fn tree(args: &[String]) -> Fallible {
 fn named(tree: &Tree, args: &[String]) -> Fallible<Vec<Name>> {
     match args.get(1).filter(|a| !a.starts_with("--")) {
         Some(n) => {
-            let name: Name = n.parse()?;
+            let name = identity_name(Path::new(&args[0]), n)?;
             tree.get(&name)
                 .ok_or_else(|| format!("{name}: not in the tree"))?;
             Ok(vec![name])
@@ -604,19 +615,19 @@ fn knock(args: &[String]) -> Fallible {
 }
 
 /// The VM that is NAME's root, from a live listing.
-fn root_of(ssh: &Ssh, tree: &Tree, name: &Name) -> Fallible<String> {
+fn root_of(ssh: &Ssh, root: &Path, tree: &Tree, name: &Name) -> Fallible<String> {
     tree.get(name)
         .ok_or_else(|| format!("{name}: not in the tree"))?;
     let (vms, _) = ssh.listing()?;
-    cell::exe::cell_vm(&vms, name)
-        .map_err(io::Error::other)?
-        .map(|vm| vm.vm_name.clone())
+    let vm = cell::exe::cell_vm(&vms, name).map_err(io::Error::other)?;
+    cell::identity::Registry::load(root)?.check_vm(name, vm)?;
+    vm.map(|vm| vm.vm_name.clone())
         .ok_or_else(|| format!("{name}: no VM carries its tag; apply it first").into())
 }
 
 fn brief(args: &[String]) -> Fallible {
     let tree = load_tree(arg(args, 0, "DIR")?)?;
-    let name: Name = arg(args, 1, "NAME")?.parse()?;
+    let name = identity_name(Path::new(arg(args, 0, "DIR")?), arg(args, 1, "NAME")?)?;
     let session: SessionId = arg(args, 2, "SESSION_ID")?.parse()?;
     let request = flag(args, "--request")
         .map(str::parse)
@@ -624,7 +635,7 @@ fn brief(args: &[String]) -> Fallible {
         .unwrap_or_else(RequestId::generate);
     let text = arg(args, 3, "TEXT")?.to_string();
     let ssh = Ssh { bin: None };
-    let vm = root_of(&ssh, &tree, &name)?;
+    let vm = root_of(&ssh, Path::new(arg(args, 0, "DIR")?), &tree, &name)?;
     let said = Said::Brief {
         request,
         session: SessionRef {
@@ -642,10 +653,10 @@ fn brief(args: &[String]) -> Fallible {
 fn pull(args: &[String]) -> Fallible {
     let dir = arg(args, 0, "DIR")?;
     let tree = load_tree(dir)?;
-    let name: Name = arg(args, 1, "NAME")?.parse()?;
+    let name = identity_name(Path::new(arg(args, 0, "DIR")?), arg(args, 1, "NAME")?)?;
     let since: u64 = flag(args, "--since").map_or(Ok(0), str::parse)?;
     let ssh = Ssh { bin: None };
-    let vm = root_of(&ssh, &tree, &name)?;
+    let vm = root_of(&ssh, Path::new(arg(args, 0, "DIR")?), &tree, &name)?;
     let Some(log) = cell::apply::pull(&ssh, &pins(dir, args), &name, &vm)? else {
         return Err(format!("{name}: not set up yet").into());
     };
@@ -668,8 +679,8 @@ fn pull(args: &[String]) -> Fallible {
 
 fn login(args: &[String]) -> Fallible {
     let tree = load_tree(arg(args, 0, "DIR")?)?;
-    let name: Name = arg(args, 1, "NAME")?.parse()?;
-    let vm = root_of(&Ssh { bin: None }, &tree, &name)?;
+    let name = identity_name(Path::new(arg(args, 0, "DIR")?), arg(args, 1, "NAME")?)?;
+    let vm = root_of(&Ssh { bin: None }, Path::new(arg(args, 0, "DIR")?), &tree, &name)?;
     eprintln!("opening Pi as the agent on {vm}; use /login there");
     let pi = cell::wall::PI_BIN;
     let status = std::process::Command::new("ssh")

@@ -61,6 +61,10 @@ pub(crate) enum DeletionStep {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct Deletion {
+    #[serde(default)]
+    identity_revision: Option<Hash>,
+    #[serde(default)]
+    display_name: Option<Name>,
     pub id: RequestId,
     target: Target,
     pub approval: Hash,
@@ -74,6 +78,7 @@ pub(super) struct Deletion {
 }
 #[derive(Clone, Debug, Serialize, ts_rs::TS)]
 pub(crate) struct DeletionView {
+    display_name: Option<Name>,
     pub id: RequestId,
     cell: Cell,
     parent: Option<Name>,
@@ -106,6 +111,7 @@ impl Deletion {
     }
     pub fn view(&self) -> DeletionView {
         DeletionView {
+            display_name: self.display_name.clone(),
             id: self.id,
             cell: self.target.cell.clone(),
             parent: self.target.parent.clone(),
@@ -348,6 +354,7 @@ pub(super) async fn preview_request(
     } else {
         serde_json::from_slice(&body).map_err(bad)?
     };
+    let name = op.resolve(&name)?;
     preview_with(op, name, options).await
 }
 #[cfg(test)]
@@ -410,6 +417,11 @@ async fn preview_with(
             .map_err(fail)?
             .map_err(fail)?;
     target.vm = identity(&vms, &name)?;
+    if let Some(expected) = op.identities()?.by_binding(&name).and_then(|c| c.vm.as_ref()) {
+        if target.vm.as_ref().is_some_and(|vm| vm.name.as_str() != expected.name || vm.created_at != expected.created_at) {
+            return Err(bad("Cell VM incarnation changed; deletion cannot target the replacement"));
+        }
+    }
     (target.attachments, target.door) =
         owned(&vms, &integrations, &name, &target.parent, &target.vm)?;
     let done = prior
@@ -449,6 +461,8 @@ async fn preview_with(
         old.save(&op.config.state).map_err(fail)?;
     }
     let job = Deletion {
+        identity_revision: super::identity::revision(&op)?,
+        display_name: Some(op.identities()?.label(&target.cell.name)),
         id: RequestId::generate(),
         approval: ApprovedHash::of(&target),
         target,
@@ -512,6 +526,7 @@ pub(super) async fn start(
         ));
     }
     let preflight = async {
+        if !job.begun { super::identity::check_revision(&op, job.identity_revision)?; }
         check_tree(&op, &job.target)?;
         let check = op.clone();
         let target = job.target.clone();
@@ -764,6 +779,30 @@ fn execute_with_manual(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn migrated_identity_cannot_delete_a_replacement_vm() {
+        let fixture = Fixture::new();
+        let binding: Name = "project-dev".parse().unwrap();
+        let vm = fixture.edge.vms.lock().unwrap().iter().find(|v| v.vm_name == "project-dev").unwrap().clone();
+        crate::identity::Registry { version: 1, cells: vec![crate::identity::Identity {
+            id: crate::CellId::generate(), binding: binding.clone(), name: binding,
+            key: fixture.secret.public(), vm: Some(crate::identity::VmBinding { name: vm.vm_name, created_at: vm.created_at.unwrap() }),
+        }] }.save(&fixture.op.config.tree).unwrap();
+        fixture.edge.vms.lock().unwrap().iter_mut().find(|v| v.vm_name == "project-dev").unwrap().created_at = Some("replacement".into());
+        assert!(fixture.preview("project-dev").await.is_err());
+        assert!(fixture.edge.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn identity_migration_invalidates_unstarted_deletion_review() {
+        let fixture = Fixture::new();
+        let old = fixture.preview("project-dev").await.unwrap();
+        crate::identity::Registry::default().save(&fixture.op.config.tree).unwrap();
+        let result = fixture.start(&old).await.unwrap().0;
+        assert!(matches!(result.phase, DeletionPhase::Failed { recovery: RecoveryAction::Review, .. }));
+        assert!(fixture.edge.calls.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn legacy_failed_record_defaults_to_same_approved_retry() {

@@ -22,6 +22,7 @@ export function Settings({ cell, base, canApply, onClose, onApplied, onDelete }:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [cellName, setCellName] = useState(cell.name);
   const refresh = async () => {
     const d = await api<SettingsView>(`${base}/settings`); setDetail(d);
     setConnections(connectionNames.map((name) => ({ ...(d.connections.find((c) => c.name === name) ?? { name, url: "", auth: { method: "none" as const } }), credential: { operation: "keep" } })));
@@ -53,6 +54,7 @@ export function Settings({ cell, base, canApply, onClose, onApplied, onDelete }:
   });
   return <dialog ref={dialog} className="settings" onCancel={(e) => { e.preventDefault(); if (!busy) onClose(); }} aria-labelledby="settings-title">
     <header><h2 id="settings-title">{cell.name}</h2><button aria-label="Close settings" disabled={busy} onClick={onClose}>×</button></header>
+    {cell.can_rename && <section><label>Cell name<input aria-label="Cell name" value={cellName} onChange={e => setCellName(e.target.value)} /></label><button type="button" disabled={busy || cellName === cell.name} onClick={() => void work(async () => { await api(`/api/cells/${cell.id}/rename`, { method: "POST", body: JSON.stringify({ name: cellName }) }); await onApplied(); })}>Rename</button></section>}
     {error && <div className="inline-error" role="alert">{error}</div>}
     {preview ? <section className="review"><h3>Review changes</h3><ul>
       {preview.grants.filter((g) => !cell.grants.some((old) => same([g], [old]))).map((g) => <li key={`add-${JSON.stringify(g)}`}>Allow: {grantLabel(g)}</li>)}

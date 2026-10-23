@@ -6,4 +6,4 @@ import type { Name } from "./Name";
 import type { Plan } from "./Plan";
 import type { RequestId } from "./RequestId";
 
-export type Creation = { id: RequestId, cell: Cell, parent: Name | null, before: Hash, approval: Hash, plans: { [key in Name]: Plan }, phase: CreationPhase, };
+export type Creation = { id: RequestId, display_name: Name | null, identity_revision: Hash | null, cell: Cell, parent: Name | null, before: Hash, approval: Hash, plans: { [key in Name]: Plan }, phase: CreationPhase, };

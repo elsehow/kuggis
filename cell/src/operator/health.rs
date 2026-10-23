@@ -81,16 +81,15 @@ async fn inspect(op: &Operator, name: &Name, action: &str) -> Result<ChatHealth>
             },
         );
     }
-    let vm = op.vms.read().await.get(name).cloned().ok_or_else(|| {
-        Error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Cell has no VM; apply its declaration first".into(),
-        )
-    })?;
+    let vm = op.vm_for(name).await?;
     let command = format!(
         "sudo -n /usr/bin/python3 -c '{}' {action}",
         HOST.replace('\'', "'\\''")
     );
+    let command = match op.identities()?.by_binding(name) {
+        Some(identity) => format!("test \"$(cat /etc/cell/key.pub)\" = '{}' && {command}", identity.key),
+        None => command,
+    };
     let mut child = Command::new("ssh")
         .args([
             "-T",
@@ -128,7 +127,7 @@ pub(super) async fn get(
     State(op): State<Arc<Operator>>,
     Path(name): Path<Name>,
 ) -> Result<Json<ChatHealth>> {
-    inspect(&op, &name, "health").await.map(Json)
+    inspect(&op, &op.resolve(&name)?, "health").await.map(Json)
 }
 
 pub(super) async fn recover(
@@ -144,5 +143,5 @@ pub(super) async fn recover(
         ChatRecovery::Repair => "repair",
         ChatRecovery::Restart => "restart",
     };
-    inspect(&op, &name, action).await.map(Json)
+    inspect(&op, &op.resolve(&name)?, action).await.map(Json)
 }

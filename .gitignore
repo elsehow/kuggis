@@ -10,3 +10,7 @@ web/*.tsbuildinfo
 **/.pins/
 
 __pycache__/
+
+# Additive identity mappings and migration receipts are private deployment state.
+**/.identities.json
+**/.identity-migrations/
