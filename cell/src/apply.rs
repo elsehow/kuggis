@@ -43,6 +43,10 @@ pub trait Edge {
     /// File a Said in the box's inbox as root, which is to say as you.
     /// Returns its inbox number.
     fn knock(&self, vm: &str, said: &Said) -> Fallible<u64>;
+    /// Publish only this cell and its immediate relatives; never the full tree.
+    fn context(&self, _vm: &str, _context: &crate::context::Context) -> Fallible {
+        Err("transport does not support cell context publication".into())
+    }
 }
 
 /// Pin a box's key on first contact; refuse a key that changed. The pin is
@@ -228,6 +232,14 @@ pub fn apply_with_progress(
             }
         }
         let Some((name, action)) = next else {
+            // Also runs for no-op apply and retries after a failed publication.
+            for id in &order {
+                let vm = vm_of(&vms, id).ok_or("cell has no VM")?;
+                edge.context(
+                    &vm.vm_name,
+                    &crate::context::Context::for_cell(tree, id, pins)?,
+                )?;
+            }
             return Ok(done);
         };
         progress(&name, &action)?;
@@ -405,6 +417,8 @@ mod tests {
         inboxes: RefCell<BTreeMap<String, Vec<Said>>>,
         calls: RefCell<Vec<String>>,
         bin: RefCell<Option<Hash>>,
+        contexts: RefCell<BTreeMap<String, crate::context::Context>>,
+        fail_context: std::cell::Cell<bool>,
     }
 
     fn opt<'a>(args: &'a [&str], key: &str) -> Option<&'a str> {
@@ -445,6 +459,15 @@ mod tests {
     }
 
     impl Edge for Fake {
+        fn context(&self, vm: &str, context: &crate::context::Context) -> crate::apply::Fallible {
+            if self.fail_context.replace(false) {
+                return Err("context transport failed".into());
+            }
+            self.contexts
+                .borrow_mut()
+                .insert(vm.into(), context.clone());
+            Ok(())
+        }
         fn listing(&self) -> Fallible<(Vec<Vm>, Vec<Integration>)> {
             Ok((self.vms.borrow().clone(), self.ints.borrow().clone()))
         }
@@ -621,6 +644,48 @@ mod tests {
         let again = approve(&f, &pins, &t);
         assert!(again.plans().values().all(Plan::is_empty));
         assert_eq!(apply(&f, &pins, &t, &again, &mut Vec::new()).unwrap(), 0);
+    }
+
+    #[test]
+    fn context_publication_retries_noop_apply_and_refreshes_renames() {
+        let f = Fake::default();
+        let pins = pins();
+        let t = tree(&[("", A), ("904254dc-1b8f-5e80-9755-e5afc5b195c5", B)]);
+        let approved = approve(&f, &pins, &t);
+        f.fail_context.set(true);
+        assert!(apply(&f, &pins, &t, &approved, &mut Vec::new()).is_err());
+        // Infrastructure converged before metadata transport failed. Retrying
+        // the original approval still publishes context despite zero actions.
+        assert_eq!(apply(&f, &pins, &t, &approved, &mut Vec::new()).unwrap(), 0);
+        let parent: Cell = serde_json::from_str(A).unwrap();
+        let child: Cell = serde_json::from_str(B).unwrap();
+        let before = f.contexts.borrow()[&crate::exe::provision_name(&parent.id)].clone();
+        assert_eq!(before.children.len(), 1);
+        assert_eq!(before.children[0].cell.id, child.id);
+        assert!(before.children[0].key.is_some());
+        let renamed = Tree::new(t.iter().map(|c| {
+            let mut copy = c.clone();
+            copy.name = if c.id == child.id {
+                "renamed-child"
+            } else {
+                "renamed-parent"
+            }
+            .parse()
+            .unwrap();
+            (copy, t.parent(&c.id).map(|p| p.id.clone()))
+        }))
+        .unwrap();
+        let approved = approve(&f, &pins, &renamed);
+        assert!(approved.plans().values().all(Plan::is_empty));
+        assert_eq!(
+            apply(&f, &pins, &renamed, &approved, &mut Vec::new()).unwrap(),
+            0
+        );
+        let after = f.contexts.borrow()[&crate::exe::provision_name(&parent.id)].clone();
+        assert_eq!(after.children[0].cell.id, before.children[0].cell.id);
+        assert_eq!(after.children[0].key, before.children[0].key);
+        assert_eq!(after.children[0].cell.name.as_str(), "renamed-child");
+        assert_eq!(after.cell.name.as_str(), "renamed-parent");
     }
 
     #[test]

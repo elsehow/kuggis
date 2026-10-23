@@ -12,6 +12,7 @@ pub enum ExecutionMode {
     },
     Cell {
         declaration: Cell,
+        context: PathBuf,
         socket: PathBuf,
         agent_dir: PathBuf,
         inbox: PathBuf,
@@ -35,6 +36,12 @@ impl Config {
         self.declaration()
             .map(|c| c.id.clone())
             .unwrap_or_else(|| "00000000-0000-4000-8000-000000000000".parse().unwrap())
+    }
+    pub fn context(&self) -> Option<&Path> {
+        match &self.mode {
+            ExecutionMode::Cell { context, .. } => Some(context),
+            _ => None,
+        }
     }
     pub fn declaration(&self) -> Option<&Cell> {
         match &self.mode {

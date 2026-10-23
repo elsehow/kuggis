@@ -44,3 +44,5 @@ pub use tree::{Tree, TreeError};
 
 #[cfg(test)]
 mod fixtures;
+
+pub mod context;

@@ -68,3 +68,9 @@ old signed statement bytes would invalidate their signatures.
 
 Standalone `chat --local` uses a fixed local-only UUID, scoped to its state
 directory, rather than allocating a provisioned cell. Its UI label is `local`.
+
+## Agent discovery
+
+See [cell delegation](cell-delegation.md) for the one-hop runtime projection and
+UUID-addressed child tasks. Runtime labels are refreshed separately from the
+configuration hash; renaming does not change task or door identity.
