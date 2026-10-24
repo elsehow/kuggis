@@ -41,13 +41,19 @@ test("opening a cell starts stopped chat, diagnoses crashes, and requires explic
   const recovery = [];
   const writes = [];
   let requestsBeforeReady = 0;
+  let holdHealth;
+  let healthRequested;
   await page.route("**/api/cells", route => route.fulfill({ json: {
     mode: "cells", canApply: false, canCreate: false, canDelete: false,
     cells: [{ name: "demo", parent: null, grants: [], vm: "demo", lifecycle: { state: "available" }, creation: null, deletion: null }],
   } }));
   await page.route("**/api/cells/demo/**", async route => {
     const path = new URL(route.request().url()).pathname;
-    if (path.endsWith("/health")) return route.fulfill({ json: health });
+    if (path.endsWith("/health")) {
+      healthRequested?.();
+      if (holdHealth) await holdHealth;
+      return route.fulfill({ json: health });
+    }
     if (path.endsWith("/recovery")) {
       recovery.push(route.request().postDataJSON().action);
       health = ready;
@@ -58,12 +64,28 @@ test("opening a cell starts stopped chat, diagnoses crashes, and requires explic
       requestsBeforeReady++;
       return route.fulfill({ status: 502, json: { error: "Chat service unavailable. Check the cell's chat health and recovery options." } });
     }
-    return route.fulfill({ response: await route.fetch({ url: route.request().url().replace("/api/cells/demo/", "/api/") }) });
+    return route.continue({ url: route.request().url().replace("/api/cells/demo/", "/api/") });
   });
   await page.goto(`${url}/?cell=demo`);
   await page.getByRole("button", { name: "＋ New chat", exact: true }).waitFor();
   assert.deepEqual(recovery, ["start"]);
   assert.equal(requestsBeforeReady, 0, "chat requests wait for service readiness");
+
+  // Returning within the cache TTL mounts chat before a slow background probe.
+  await page.getByRole("button", { name: "Resources", exact: true }).click();
+  let releaseHealth;
+  holdHealth = new Promise(resolve => { releaseHealth = resolve; });
+  const probing = new Promise(resolve => { healthRequested = resolve; });
+  await page.getByRole("button", { name: "demo", exact: true }).click();
+  await probing;
+  try {
+    await page.getByRole("button", { name: "＋ New chat", exact: true }).waitFor();
+    assert.equal(await page.getByRole("heading", { name: "Checking chat…" }).count(), 0);
+  } finally {
+    const checked = page.waitForResponse(response => response.url().endsWith("/health"));
+    releaseHealth(); holdHealth = null; healthRequested = null;
+    await checked;
+  }
 
   health = { state: "failed", message: "Chat cannot start because its configured workspace differs from the saved chats. Repair restores the saved workspace and preserves conversations.", recovery: "repair" };
   await page.reload();
