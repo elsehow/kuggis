@@ -25,6 +25,9 @@ pub(super) struct Backend {
     pub name: Name,
     pub provider: ProviderRef,
     location: Location,
+    /// Opt in only when this operator owns the publisher’s complete policy.
+    #[serde(default)]
+    pub publishing: Option<crate::Url>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,6 +56,9 @@ pub(super) fn backends(tree: &FsPath) -> Result<Vec<Backend>> {
                 "Resource backend names and provider identities must be unique",
             ));
         }
+    }
+    if config.backends.iter().filter(|b| b.publishing.is_some()).count() > 1 {
+        return Err(bad("Only one automatic publisher may be configured"));
     }
     Ok(config.backends)
 }
@@ -505,4 +511,60 @@ pub(super) async fn apply(
     action.receipt = Some(receipt);
     action.save(&op.config.state)?;
     Ok(Json(action.view()))
+}
+
+pub(super) fn publishing(
+    op: &Operator,
+) -> Result<Option<BTreeMap<Name, crate::publish::provision::Discovery>>> {
+    let Some(backend) = registered(op)?.into_iter().find(|b| b.publishing.is_some()) else {
+        return Ok(None);
+    };
+    let tree = op.tree()?.0;
+    let cells = tree
+        .iter()
+        .map(|cell| {
+            Ok(crate::publish::provision::PolicyCell {
+                cell: cell.clone(),
+                parent: tree.parent(&cell.name).map(|p| p.name.clone()),
+                key: crate::identity::pin(&op.config.tree, &cell.name).map_err(fail)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let reply = backend.rpc(Rpc::ReconcilePublishing {
+        provider: backend.provider,
+        endpoint: backend.publishing.clone().unwrap(),
+        cells,
+    })?;
+    match reply {
+        Reply::Publishing(discovery) => {
+            if discovery.len() != tree.iter().count()
+                || discovery.iter().any(|(name, d)| {
+                    tree.get(name).is_none()
+                        || d.config.as_ref().is_some_and(|config| {
+                            config.audience != backend.provider.0
+                                || Some(&config.endpoint) != backend.publishing.as_ref()
+                                || config.socket != PathBuf::from("/run/cell-publish/bridge.sock")
+                        })
+                })
+            {
+                return Err(fail(
+                    "Publisher discovery does not match the configured backend and tree",
+                ));
+            }
+            remember(op, &backend)?;
+            Ok(Some(discovery))
+        }
+        _ => Err(fail("Unexpected publisher response")),
+    }
+}
+
+/// Public configuration, protected by the existing operator authentication.
+pub(super) async fn publishing_endpoint(
+    State(op): State<Arc<Operator>>,
+) -> Result<Json<Option<crate::Url>>> {
+    Ok(Json(
+        backends(&op.config.tree)?
+            .into_iter()
+            .find_map(|b| b.publishing),
+    ))
 }

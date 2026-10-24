@@ -74,7 +74,7 @@ async fn content(registry: Arc<Registry>, ns: String, name: String, path: String
     headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     response
 }
-fn mime(path: &str) -> &'static str {
+pub(super) fn mime(path: &str) -> &'static str {
     match path.rsplit('.').next().unwrap_or("") {
         "html" => "text/html; charset=utf-8",
         "css" => "text/css; charset=utf-8",

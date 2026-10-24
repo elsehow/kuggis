@@ -14,8 +14,11 @@ pub mod bridge;
 pub mod client;
 pub mod hosting;
 pub mod operator;
+pub mod private;
+pub mod provision;
 pub mod registry;
 pub mod transport;
+pub mod verify;
 
 /// Opaque stable namespace identifier. Recreating a cell with the same name
 /// must not automatically inherit an old namespace. Allocation and identity
@@ -35,6 +38,8 @@ pub struct SiteId {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase", deny_unknown_fields)]
 pub enum PublishScope {
+    /// Private sites in the caller’s own automatically allocated namespace.
+    Private,
     /// Create and manage multiple sites in exactly this namespace.
     Namespace(NamespaceId),
     /// Manage an existing site only; does not confer namespace ownership or
@@ -47,11 +52,27 @@ impl PublishScope {
     /// namespace, ancestors must explicitly hold authority for that namespace.
     pub fn covers(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::Private, Self::Private) => true,
+            (Self::Private, _) | (_, Self::Private) => false,
             (Self::Namespace(a), Self::Namespace(b)) => a == b,
             (Self::Namespace(a), Self::Site(b)) => a == &b.namespace,
             (Self::Site(a), Self::Site(b)) => a == b,
             (Self::Site(_), Self::Namespace(_)) => false,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    Private,
+    #[default]
+    Public,
+}
+
+impl Visibility {
+    pub fn is_public(&self) -> bool {
+        *self == Self::Public
     }
 }
 
@@ -69,6 +90,9 @@ pub struct PublicationReceipt {
     pub version: RequestId,
     pub artifact: Hash,
     pub url: Url,
+    // Missing on historical receipts, which were always public.
+    #[serde(default, skip_serializing_if = "Visibility::is_public")]
+    pub visibility: Visibility,
 }
 
 #[cfg(test)]
@@ -191,6 +215,7 @@ mod tests {
             version: RequestId::generate(),
             artifact: Hash::of(b"artifact"),
             url: "https://news.example.com/".parse().unwrap(),
+            visibility: Visibility::Public,
         };
         let value = serde_json::to_value(&receipt).unwrap();
         assert_eq!(

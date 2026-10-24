@@ -24,7 +24,7 @@ pub const HOST_CONFIG: &str = "/etc/cell/publisher.json";
 /// signer's socket and the public configuration the agent's client reads.
 pub const SHARED_DIR: &str = "/run/cell-publish";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub socket: PathBuf,
@@ -94,11 +94,16 @@ impl Bridge {
             Command::ReserveSite { site } => PublishScope::Namespace(site.namespace.clone()),
             _ => PublishScope::Site(command.site().clone()),
         };
-        if !cell
-            .grants
-            .iter()
-            .any(|g| matches!(g, Grant::Publish(scope) if scope.covers(&needed)))
-        {
+        if !cell.grants.iter().any(|g| match g {
+            Grant::Publish(scope) => {
+                scope.covers(&needed)
+                    || (*scope == PublishScope::Private
+                        && command.site().namespace
+                            == super::private::namespace(self.audience, self.secret.public())
+                        && !matches!(command, Command::Publish { .. }))
+            }
+            _ => false,
+        }) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "no local publishing grant for this command",

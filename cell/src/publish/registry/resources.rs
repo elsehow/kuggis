@@ -12,6 +12,15 @@ pub struct ResourceInventory {
     pub resources: Vec<ResourceRecord>,
     pub frozen: Vec<CellIdentity>,
     pub namespaces: Vec<NamespaceId>,
+    #[serde(default)]
+    pub sites: Vec<SiteView>,
+}
+/// Presentation of the existing managed site resource, never separate ownership.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+pub struct SiteView {
+    pub resource: ResourceId,
+    pub publication: PublicationReceipt,
+    pub verification: Option<crate::publish::verify::Verification>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
@@ -45,7 +54,7 @@ impl State {
             .expect("validated site ID");
         ResourceId::derive(ProviderRef(self.audience), ResourceKind::Site, &external)
     }
-    fn site_for_resource(&self, id: ResourceId) -> Result<SiteId> {
+    pub(super) fn site_for_resource(&self, id: ResourceId) -> Result<SiteId> {
         for (namespace, record) in &self.namespaces {
             for name in &record.sites {
                 let site = SiteId {
@@ -129,6 +138,7 @@ impl State {
                     record.owner != ResourceOwner::Cell(CellIdentity(a.key))
                         && !self.frozen.contains(&CellIdentity(a.key))
                         && a.scopes.iter().any(|s| match s {
+                            PublishScope::Private => false,
                             PublishScope::Site(target) => target == &site,
                             PublishScope::Namespace(ns) => {
                                 ns == &site.namespace && record.owner == namespace_owner
@@ -175,7 +185,7 @@ impl State {
         }
         Ok(())
     }
-    fn inventory(&self) -> ResourceInventory {
+    pub(super) fn inventory(&self) -> ResourceInventory {
         ResourceInventory {
             provider: ProviderRef(self.audience),
             revision: Hash::of(&crate::canon::bytes(&(
@@ -187,6 +197,22 @@ impl State {
             resources: self.resources.values().cloned().collect(),
             frozen: self.frozen.clone(),
             namespaces: self.namespaces.keys().cloned().collect(),
+            sites: self
+                .publications
+                .values()
+                .filter_map(|h| {
+                    let publication = h.active.and_then(|v| h.versions.get(&v))?.clone();
+                    Some(SiteView {
+                        resource: self.resource_id(&h.site),
+                        verification: h
+                            .verification
+                            .as_ref()
+                            .filter(|v| v.publication == publication)
+                            .cloned(),
+                        publication,
+                    })
+                })
+                .collect(),
         }
     }
     pub(super) fn effective_site_access(&self, caller: Key, site: &SiteId) -> bool {

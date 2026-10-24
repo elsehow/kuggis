@@ -114,7 +114,7 @@ nothing answers on it.
 The agent can now run:
 
 ```sh
-cell publish ./dist --site news-viewer
+cell publish ./dist --site news-viewer --visibility public
 cell publish status news-viewer
 cell publish rollback news-viewer VERSION_ID
 cell publish unpublish news-viewer
@@ -169,3 +169,144 @@ openssl. It uses disposable root-owned keys/services under `/run`, local HTTPS
 and temporary state, then cleans them up. It never contacts exe.dev or publishes
 anything to the Internet. Browser coverage checks module loading, JSON fetch,
 and opaque-origin isolation in addition to the complete CLI lifecycle.
+
+## Private sites and automatic cell provisioning
+
+Private publishing extends the existing managed Site resource. It uses the same
+resource ID, owner, attachments, retention policy, immutable artifacts and version
+history. A cell rename or move does not change its namespace or website URLs.
+This supports static HTML/CSS/JavaScript and data, including modules and local
+JSON fetch. Hosting arbitrary application servers is not implemented.
+
+### Configure hosting once
+
+Use the dedicated publisher host, separate from agents and the operator UI.
+Provide wildcard DNS, TLS and trusted authentication-gateway routing for a
+private site domain, for example `*.sites-private.example.com`. Each resource
+gets its own stable origin beneath that domain. Do not put private sites under
+the operator origin or the existing public site origin. The platform does not
+create DNS records, certificates, gateway accounts or new VMs automatically.
+
+The gateway must overwrite/remove client-supplied `X-ExeDev-UserID`, assert the
+stable signed-in user ID, and preserve the original host. Sessions should use
+Secure, HttpOnly cookies; no credentials are sent into cells. Anonymous requests
+may reach the reader (which returns 403), or go through gateway sign-in. Requests
+bearing `X-Cell-Site-Verification` must reach the reader: it validates the signed,
+site-scoped, expiring proof and current grants itself. A header's presence is
+**not** authentication. Keep the reader loopback-only and agents off this host.
+
+Create an operator-owned configuration, containing reader IDs, not secrets:
+
+```json
+{"domain":"sites-private.example.com","users":["STABLE_READER_ID"]}
+```
+
+Then configure the existing registry and install the private reader:
+
+```sh
+cell publisher configure-private /var/lib/cell-publisher /etc/cell-publisher-private.json
+# Install cell-private.service and adapt nginx-private.conf to your gateway/domain.
+sudo systemctl enable --now cell-private
+```
+
+The private domain cannot change after publishing; reader membership can change.
+Public and private versions cannot share a site identity: use a different site
+name to change audience. This avoids silently disclosing a formerly private URL
+or changing an existing public URL. Private sites use separate browser origins,
+no cross-origin read permission, and no service workers. The public reader never
+returns private artifacts, even to an authenticated user.
+
+### Connect the operator
+
+Add `publishing` to the existing backend in the operator tree's private
+`.resources.json`:
+
+```json
+{
+  "backends": [{
+    "name": "sites",
+    "provider": "PUBLISHER_AUDIENCE_ID",
+    "location": {"kind": "ssh", "vm": "PUBLISHER_VM"},
+    "publishing": "https://publisher.example.com"
+  }]
+}
+```
+
+This opts into reconciliation of the publisher's **complete** policy from this
+operator's validated tree and verified pins. Do not enable it for a publisher
+whose policy belongs to another operator or a larger tree. One automatic
+publisher per operator is supported; other resource backends remain available
+for lifecycle management. Existing manual publishing configurations still work
+without opting in.
+
+Enable **Private websites** in a cell's settings (and its ancestors). The grant
+is `{"publish":"private"}`. Children may inherit this capability, but receive
+their own namespace, not access to their parent's or siblings' sites. The form
+also includes the publisher hostname in the reviewed network grants; normal
+parent containment still applies. Public publishing requires a separate existing
+namespace/site grant and the explicit CLI flag `--visibility public`.
+
+On tree changes and at least once per minute, the operator allocates stable
+namespaces for permitted pinned keys, synchronizes policy, and installs the
+bridge configuration on the cell host. It does not restart chats. Resource
+transfers and explicit detachments are preserved. Removed grants stop subsequent
+publication and verification. Host context advertises the bridge and the cell's
+accessible Site resources, including their canonical URLs and last verification.
+`cell publish capabilities` reads this discovery without needing the chat URL.
+
+Upgrade the operator first (it accepts inventories from older publishers), then
+the publisher and cell runtime, before enabling the new grant. Restart all
+publisher processes (control, public reader and private reader) on the new binary
+before configuring private hosting. Back up the
+registry as usual. Older clients can continue explicitly authorized public
+publishing; existing public URLs and historical receipts retain their meaning.
+New private fields require the new publisher binary; restore the matching backup
+if rolling the publisher back. Cells predating the `/run/cell-publish` bind need
+an ordinary runtime apply before their bridge becomes available.
+
+### Publish and verify
+
+```sh
+cell publish capabilities
+cell publish ./dist --site pilot             # private by default
+cell publish verify pilot
+cell publish status pilot
+cell publish ./public-dist --site homepage --visibility public
+# Manage a previously granted site outside the default namespace:
+cell publish status homepage --namespace NAMESPACE_ID
+```
+
+Publish and rollback return the complete URL and perform an external HTTPS check
+from the publisher. Verification compares the exact returned URL and every
+uploaded file to the immutable artifact. It follows no redirects, rejects login
+pages even when they return HTTP 200, and checks anonymous denial for every
+private URL both before and after the authenticated response. A fresh signed Verify request serves as a five-minute, site-scoped
+read proof; current grants are checked again on each private file request.
+It cannot authorize publication or change reader membership. Cells need network
+access only to the publisher control endpoint.
+
+A failed check leaves the durable publication in place, reports its receipt and
+the failure, and exits nonzero. Repair hosting and run `cell publish verify`;
+do not republish just to retry a check. The resource view shows the canonical
+website link, private/public audience, and the latest verification result/time.
+A new version invalidates the previous version's check. These checks establish
+served content and access boundaries, **not** a browser-render or user sign-in
+test. The agent instructions explicitly distinguish those claims and prohibit
+sharing guessed relative URLs or workspace paths as websites.
+
+Validation (no production state is touched):
+
+```sh
+cargo test --manifest-path cell/Cargo.toml --locked
+# Linux: real CLI, signed requests, local TLS and private ingress; no sudo:
+python3 scripts/test-private-publishing.py
+# Browser origin/CSP contract using a local authenticated-gateway fixture:
+KUGGIS_TEST_PLAYWRIGHT=/path/to/playwright/index.mjs \
+KUGGIS_TEST_BROWSER=/path/to/chromium \
+  cargo test --manifest-path cell/Cargo.toml --test private_publish \
+  private_sites_in_a_browser -- --ignored --nocapture
+```
+
+The local fixtures do not verify production DNS, TLS or the gateway's real login
+flow. Exercise those with an authorized browser before calling a live deployment
+verified.

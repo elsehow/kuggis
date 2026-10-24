@@ -328,7 +328,10 @@ a leading zero, found a real hole while this was being written.
 command words are allowed). A site identity is its opaque namespace ID plus
 local name, not its URL or the most recent publishing cell.
 
-The new grant wire shapes are:
+Private websites use `{"publish":"private"}`: parent-contained authority for
+private sites in the caller's own automatically allocated namespace. It never
+authorizes public publication or sibling access. The existing public/delegated
+grant wire shapes are:
 
 ```json
 {"publish":{"namespace":"<64 lowercase hex digits>"}}
@@ -366,10 +369,12 @@ agents; operator-only methods must never be exposed through cell RPCs.
 
 ### Agent workflow
 
-With the operator-provisioned host bridge and public destination configured:
+With the operator-provisioned host bridge and destination configured (private is the default):
 
 ```sh
+cell publish capabilities
 cell publish ./dist --site news-viewer
+cell publish verify news-viewer
 cell publish status news-viewer
 cell publish rollback news-viewer VERSION_ID
 cell publish unpublish news-viewer
@@ -413,8 +418,10 @@ private door is never made public. See the deployment recipe for supported
 content, quotas, and limitations.
 
 The implementation includes durable version receipts/status, but does not yet
-append publication events to the cell's signed statement log. Deployment uses
-operator CLI/configuration rather than a new UI settings panel. No exe.dev
+append publication events to the cell's signed statement log. The operator can now provision permitted cells through the existing resource
+backend, while manual CLI/configuration remains supported. See the private-sites
+section of the deployment recipe for authentication, automatic provisioning and
+external verification. No exe.dev
 account credentials or public routes are created by running the tests.
 
 ### Deployment and practical tests

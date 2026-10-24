@@ -11,6 +11,7 @@
 
 use super::artifact::{self, Artifact};
 use crate::resource::{CellIdentity, ResourceId, ResourceOperation, ResourceRecord};
+mod private;
 pub mod resources;
 use super::{NamespaceId, PublicationReceipt, PublishScope, SiteId};
 use crate::prim::SiteName;
@@ -99,6 +100,8 @@ struct State {
     authorities: Vec<Authority>,
     #[serde(default)]
     public_base: Option<Url>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    private_hosting: Option<super::private::Config>,
     #[serde(default)]
     publications: BTreeMap<Hash, History>,
     resources: BTreeMap<ResourceId, ResourceRecord>,
@@ -112,6 +115,8 @@ struct History {
     site: SiteId,
     versions: BTreeMap<RequestId, PublicationReceipt>,
     active: Option<RequestId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    verification: Option<super::verify::Verification>,
 }
 // The pre-transport registry had no audience or accepted network requests.
 // Preserve its ownership/policy on upgrade; never reconstruct either from names.
@@ -184,6 +189,9 @@ impl State {
             return Err(RegistryError::InvalidState("unsupported format".into()));
         }
         self.validate_resources()?;
+        if let Some(config) = &self.private_hosting {
+            config.validate().map_err(RegistryError::InvalidState)?;
+        }
         for (key, history) in &self.publications {
             if *key != Hash::of(&crate::canon::bytes(&history.site)) || history.versions.len() > 32
             {
@@ -223,6 +231,7 @@ impl State {
     }
     fn check_scope(&self, scope: &PublishScope) -> Result<()> {
         let id = match scope {
+            PublishScope::Private => return Ok(()),
             PublishScope::Namespace(id) => id,
             PublishScope::Site(site) => &site.namespace,
         };
@@ -239,10 +248,31 @@ impl State {
     }
     fn allows(&self, caller: Key, scope: &PublishScope) -> bool {
         !self.frozen.contains(&CellIdentity(caller))
-            && self
-                .authorities
-                .iter()
-                .any(|a| a.key == caller && a.scopes.iter().any(|s| s.covers(scope)))
+            && self.authorities.iter().any(|a| {
+                a.key == caller
+                    && a.scopes.iter().any(|s| {
+                        s.covers(scope)
+                            || (*s == PublishScope::Private
+                                && match scope {
+                                    PublishScope::Namespace(ns) => {
+                                        *ns == super::private::namespace(self.audience, caller)
+                                    }
+                                    PublishScope::Site(site) => {
+                                        site.namespace
+                                            == super::private::namespace(self.audience, caller)
+                                            && self
+                                                .publications
+                                                .get(&Hash::of(&crate::canon::bytes(site)))
+                                                .is_none_or(|h| {
+                                                    h.versions.values().all(|r| {
+                                                        r.visibility == super::Visibility::Private
+                                                    })
+                                                })
+                                    }
+                                    _ => false,
+                                })
+                    })
+            })
     }
     fn check_site(&self, caller: Key, site: &SiteId) -> Result<()> {
         let scope = PublishScope::Site(site.clone());
@@ -284,6 +314,7 @@ impl Registry {
             namespaces: BTreeMap::new(),
             authorities: vec![],
             public_base: None,
+            private_hosting: None,
             publications: BTreeMap::new(),
             resources: BTreeMap::new(),
             resource_operations: BTreeMap::new(),
@@ -348,6 +379,7 @@ impl Registry {
                 namespaces: old.namespaces,
                 authorities: old.authorities,
                 public_base: None,
+                private_hosting: None,
                 publications: BTreeMap::new(),
                 resources: BTreeMap::new(),
                 resource_operations: BTreeMap::new(),
@@ -428,6 +460,7 @@ impl Registry {
     pub fn approve_tree(&self, tree: &Tree, pins: &BTreeMap<Name, Key>) -> Result<()> {
         self.transaction(|state| {
             state.authorities = state.policy(tree, pins)?;
+            state.provision_private_namespaces()?;
             state.refresh_attachments();
             Ok(((), true))
         })
@@ -453,6 +486,7 @@ impl Registry {
                 Hash::of(&crate::canon::bytes(&(
                     &state.authorities,
                     &state.public_base,
+                    &state.private_hosting,
                 ))),
                 tree,
                 pins,
@@ -477,6 +511,7 @@ impl Registry {
                 Hash::of(&crate::canon::bytes(&(
                     &state.authorities,
                     &state.public_base,
+                    &state.private_hosting,
                 ))),
                 tree,
                 pins,
@@ -487,6 +522,7 @@ impl Registry {
                 ));
             }
             state.authorities = next;
+            state.provision_private_namespaces()?;
             state.refresh_attachments();
             Ok(((), true))
         })
@@ -532,12 +568,13 @@ impl Registry {
             if state.used_requests.len() >= 10_000 {
                 return Err(RegistryError::Busy);
             }
-            if upload.is_some() && !matches!(verified.command, Command::Publish { .. }) {
+            if upload.is_some() && !matches!(verified.command, Command::Publish { .. } | Command::PublishPrivate { .. }) {
                 return Err(RegistryError::InvalidArtifact("unexpected upload".into()));
             }
             let site = verified.command.site();
             let site_key = Hash::of(&crate::canon::bytes(site));
             let reply = match &verified.command {
+                Command::Verify { .. } => return Err(RegistryError::InvalidPolicy("Use the verification transport".into())),
                 Command::ReserveSite { site } => {
                     state.reserve(verified.caller, site)?;
                     Reply::Reserved
@@ -546,10 +583,17 @@ impl Registry {
                     state.check_site(verified.caller, site)?;
                     Reply::Authorized
                 }
-                Command::Publish {
-                    site,
-                    artifact: expected,
-                } => {
+                Command::Publish { site, artifact: expected }
+                | Command::PublishPrivate { site, artifact: expected } => {
+                    let visibility = if matches!(verified.command, Command::PublishPrivate { .. }) {
+                        super::Visibility::Private
+                    } else { super::Visibility::Public };
+                    if visibility == super::Visibility::Public && !state.public_authority(verified.caller, site) {
+                        return Err(RegistryError::Denied);
+                    }
+                    if state.publications.get(&site_key).is_some_and(|h| h.versions.values().any(|r| r.visibility != visibility)) {
+                        return Err(RegistryError::InvalidPolicy("Use a different site name to change between private and public hosting".into()));
+                    }
                     if state
                         .check_scope(&PublishScope::Site(site.clone()))
                         .is_err()
@@ -557,11 +601,7 @@ impl Registry {
                         state.reserve(verified.caller, site)?;
                     }
                     state.check_site(verified.caller, site)?;
-                    let base = state.public_base.as_ref().ok_or_else(|| {
-                        RegistryError::InvalidArtifact(
-                            "operator must configure public URL first".into(),
-                        )
-                    })?;
+                    let url = state.site_url(site, visibility)?;
                     let artifact = upload
                         .ok_or_else(|| RegistryError::InvalidArtifact("missing upload".into()))?;
                     let digest = artifact
@@ -579,6 +619,7 @@ impl Registry {
                             site: site.clone(),
                             versions: BTreeMap::new(),
                             active: None,
+                            verification: None,
                         });
                     if history.versions.len() >= 32 {
                         return Err(RegistryError::Busy);
@@ -591,16 +632,8 @@ impl Registry {
                         publisher: verified.caller,
                         version: verified.request,
                         artifact: digest,
-                        url: format!(
-                            "{}/sites/{}/{}/",
-                            base.as_str().trim_end_matches('/'),
-                            site.namespace.0,
-                            site.name
-                        )
-                        .parse()
-                        .map_err(|e: crate::Invalid| {
-                            RegistryError::InvalidArtifact(e.to_string())
-                        })?,
+                        url,
+                        visibility,
                     };
                     // The immutable blob is durable before the atomic state switch.
                     // A crash can leave an unreferenced blob, never a partial site.
@@ -659,7 +692,23 @@ impl Registry {
             ));
         }
         self.transaction(|state| {
-            if !state.publications.is_empty() && state.public_base.as_ref() != Some(&base) {
+            if state.private_hosting.as_ref().is_some_and(|private| {
+                base.host() == private.domain
+                    || base
+                        .host()
+                        .as_str()
+                        .ends_with(&format!(".{}", private.domain))
+            }) {
+                return Err(RegistryError::InvalidPolicy(
+                    "Public and private sites must use separate origins".into(),
+                ));
+            }
+            if state.publications.values().any(|h| {
+                h.versions
+                    .values()
+                    .any(|r| r.visibility == super::Visibility::Public)
+            }) && state.public_base.as_ref() != Some(&base)
+            {
                 return Err(RegistryError::InvalidPolicy(
                     "cannot change origin after publishing".into(),
                 ));
@@ -682,6 +731,9 @@ impl Registry {
                 .active
                 .and_then(|v| history.versions.get(&v))
                 .ok_or(RegistryError::UnknownSite)?;
+            if receipt.visibility != super::Visibility::Public {
+                return Err(RegistryError::UnknownSite);
+            }
             let artifact = artifact::load(&self.directory, receipt.artifact)?;
             let file = artifact
                 .files

@@ -649,6 +649,9 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
 /// Failed publications are retried, including after operator restart. Hold the
 /// mutation lock while publishing so an older snapshot cannot overwrite a rename.
 async fn context_loop(op: Arc<Operator>) {
+    let mut publishing = None;
+    let mut publishing_at = std::time::Instant::now() - std::time::Duration::from_secs(61);
+    let mut publishing_tree = None;
     let mut sent = BTreeMap::new();
     loop {
         if *op.stopping.borrow() {
@@ -660,6 +663,19 @@ async fn context_loop(op: Arc<Operator>) {
                 op.refresh_vms().await?;
                 let (tree, _) = op.tree()?;
                 let pins = op.config.tree.join(".pins");
+                let fingerprint = Hash::of(&crate::canon::bytes(&tree.iter().map(|c| (c, tree.parent(&c.name).map(|p| &p.name))).collect::<Vec<_>>()));
+                if publishing_tree != Some(fingerprint) || publishing_at.elapsed().as_secs() >= 60 {
+                    let worker = op.clone();
+                    publishing = match tokio::task::spawn_blocking(move || resources::publishing(&worker)).await {
+                        Ok(Ok(discovery)) => discovery,
+                        failure => {
+                            eprintln!("publisher reconciliation failed: {failure:?}");
+                            Some(tree.iter().map(|c| (c.name.clone(), crate::publish::provision::Discovery::unavailable("Publisher connection unavailable; the operator must restore it"))).collect())
+                        }
+                    };
+                    publishing_tree = Some(fingerprint);
+                    publishing_at = std::time::Instant::now();
+                }
                 for cell in tree.iter() {
                     let vm = match op.vm_for(&cell.name).await {
                         Ok(vm) => vm,
@@ -668,7 +684,7 @@ async fn context_loop(op: Arc<Operator>) {
                     if deletion::ensure_available(&op.config.state, &cell.name).is_err() {
                         continue;
                     }
-                    let context = match crate::context::Context::available(&tree, &cell.name, &pins) {
+                    let mut context = match crate::context::Context::available(&tree, &cell.name, &pins) {
                         Ok(Some(context)) => context,
                         Ok(None) => continue,
                         Err(e) => {
@@ -676,6 +692,7 @@ async fn context_loop(op: Arc<Operator>) {
                             continue;
                         }
                     };
+                    context.publishing = publishing.as_ref().and_then(|all| all.get(&cell.name)).cloned();
                     let value = (vm.clone(), context.clone());
                     if sent
                         .get(&cell.name)
@@ -722,6 +739,7 @@ fn router(op: Arc<Operator>) -> Router {
         .route("/api/identity/migrations/:id/apply", post(identity::apply))
         .route("/api/cells/:name/rename", post(identity::rename))
         .route("/api/resources", get(resources::list))
+        .route("/api/publishing", get(resources::publishing_endpoint))
         .route("/api/resources/plan", post(resources::plan))
         .route("/api/resources/register-plan", post(resources::register_plan))
         .route("/api/resources/actions/:id", get(resources::get))

@@ -12,6 +12,11 @@ pub const MAX_RPC_BYTES: usize = 4 * 1024 * 1024;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    ReconcilePublishing {
+        provider: ProviderRef,
+        endpoint: crate::Url,
+        cells: Vec<crate::publish::provision::PolicyCell>,
+    },
     Inventory,
     PlanExternal {
         registration: ExternalRegistration,
@@ -47,6 +52,7 @@ pub enum Command {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Reply {
+    Publishing(BTreeMap<crate::Name, crate::publish::provision::Discovery>),
     Refused { conflict: bool, message: String },
     Inventory(ResourceInventory),
     OperationReceipt(Option<ResourceOperation>),
@@ -61,6 +67,11 @@ pub fn execute(
     command: Command,
 ) -> Result<Reply, crate::publish::registry::RegistryError> {
     Ok(match command {
+        Command::ReconcilePublishing {
+            provider,
+            endpoint,
+            cells,
+        } => Reply::Publishing(registry.reconcile_publishing(provider, endpoint, cells)?),
         Command::Inventory => Reply::Inventory(registry.resources()?),
         Command::PlanExternal { registration } => {
             Reply::Plan(registry.plan_external(registration)?)
