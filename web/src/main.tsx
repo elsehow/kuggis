@@ -29,6 +29,7 @@ import { ChatHealthBoundary } from "./chat-health";
 import "./style.css";
 
 import { api, explain } from "./api";
+import { presentationClient } from "./presentation-client.mjs";
 
 function label(cell: CellInfo) { return cell.name; }
 
@@ -155,7 +156,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, on
   const [base] = useState(() => standalone ? "/api" : `/api/cells/${cellId(cell)}`);
   const preferenceBase = standalone ? "/api" : `/api/cells/${cellBinding(cell)}`;
   const client = useMemo(() => {
-    const transport = createPiHttpClient({ baseUrl: `${base}/pi`, async fetchImpl(input, init) {
+    const transport = presentationClient(createPiHttpClient({ baseUrl: `${base}/pi`, async fetchImpl(input, init) {
     const headers = new Headers(init?.headers);
     if (init?.method === "POST" && !headers.has("X-Request-ID")) headers.set("X-Request-ID", crypto.randomUUID().replaceAll("-", ""));
     // Reject oversized bodies before the server does (413) so the error is explainable.
@@ -170,7 +171,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, on
       if (!(error instanceof DOMException && error.name === "AbortError")) onUnavailable();
       throw error;
     }
-  } });
+  } }));
     const key = `kuggis:model:${preferenceBase}`;
     const remember = (model: { provider: string; modelId: string }) => { try { localStorage.setItem(key, JSON.stringify(model)); } catch {} };
     return { ...transport,
