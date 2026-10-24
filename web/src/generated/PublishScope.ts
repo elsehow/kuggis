@@ -2,4 +2,4 @@
 import type { NamespaceId } from "./NamespaceId";
 import type { SiteId } from "./SiteId";
 
-export type PublishScope = { "namespace": NamespaceId } | { "site": SiteId };
+export type PublishScope = "private" | { "namespace": NamespaceId } | { "site": SiteId };

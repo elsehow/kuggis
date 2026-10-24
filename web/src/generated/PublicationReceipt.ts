@@ -3,10 +3,11 @@ import type { Hash } from "./Hash";
 import type { RequestId } from "./RequestId";
 import type { SiteId } from "./SiteId";
 import type { Url } from "./Url";
+import type { Visibility } from "./Visibility";
 
 /**
  * Data for a publisher-issued receipt. This value alone is not proof of a
  * deployment: it must be authenticated by the publisher/log transport.
  * The publishing cell's key can differ from the namespace owner's key.
  */
-export type PublicationReceipt = { site: SiteId, publisher: string, version: RequestId, artifact: Hash, url: Url, };
+export type PublicationReceipt = { site: SiteId, publisher: string, version: RequestId, artifact: Hash, url: Url, visibility?: Visibility, };

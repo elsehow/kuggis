@@ -34,3 +34,9 @@ test("ordinary settings changes preserve operator-managed publishing grants", ()
     { code: { repo: "example/tool", write: true } }, publishing, edge,
   ]), [publishing, edge]);
 });
+
+test("private website authority is distinct from public namespace authority", () => {
+  assert.equal(sameGrants([{publish: "private"}], [{publish: "private"}]), true);
+  assert.equal(sameGrants([{publish: "private"}], [{publish: {namespace: "owner"}}]), false);
+  assert.deepEqual(preservedGrants([{publish: "private"}, {host: "publisher.example"}]), [{publish: "private"}]);
+});

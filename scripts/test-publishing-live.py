@@ -41,9 +41,9 @@ def port():
         return stream.getsockname()[1]
 
 
-def start(args, log, root=False):
+def start(args, log, root=False, env=None):
     handle = open(log, "w")
-    process = subprocess.Popen([str(a) for a in args], stdout=handle, stderr=handle, start_new_session=True)
+    process = subprocess.Popen([str(a) for a in args], stdout=handle, stderr=handle, start_new_session=True, env=env)
     handle.close()
     processes.append((process, root))
     return process
@@ -131,9 +131,10 @@ try:
         plan = subprocess.run([str(BINARY), "publisher", "plan", str(registry), str(tree)], capture_output=True, text=True, check=True)
         approval = plan.stderr.strip().removeprefix("approve with ")
         command([BINARY, "publisher", "apply", registry, tree, "--approve", approval])
+        env = dict(os.environ, CURL_CA_BUNDLE=str(cert), HTTPS_PROXY="", HTTP_PROXY="", ALL_PROXY="", NO_PROXY="localhost")
         for service, listen in [("serve", control), ("host", public)]:
             log = work / f"{service}.log"
-            process = start([BINARY, "publisher", service, registry, "--listen", f"127.0.0.1:{listen}"], log)
+            process = start([BINARY, "publisher", service, registry, "--listen", f"127.0.0.1:{listen}"], log, env=env)
             wait_ready(lambda: listening(listen), process, log)
         config = {"socket": str(TRUSTED / "bridge.sock"), "namespace": namespace, "audience": audience, "endpoint": endpoint}
         local_config = work / "publisher.json"
@@ -155,7 +156,7 @@ try:
             return json.loads(command([BINARY, "publish", *args, "--config", TRUSTED / "publisher.json"], env=env))
 
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=str(cert))))
-        first = publish(dist, "--site", "demo")["published"]
+        first = publish(dist, "--site", "demo", "--visibility", "public")["published"]
         url = first["url"]
         assert b"version one" in opener.open(url).read()
         # Optional real-browser coverage; no browser download is performed here.
@@ -178,7 +179,7 @@ const {chromium} = require(process.argv[1]);
 """
             print(command(["node", "-e", browser_test, playwright, url]))
         (dist / "index.html").write_text("<!doctype html><h1>version two</h1>")
-        second = publish(dist, "--site", "demo")["published"]
+        second = publish(dist, "--site", "demo", "--visibility", "public")["published"]
         assert second["url"] == url and first["version"] != second["version"]
         assert b"version two" in opener.open(url).read()
         status = publish("status", "demo")["status"]

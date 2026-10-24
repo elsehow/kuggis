@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, explain } from "./api";
 import type { ResourcesView } from "./generated/ResourcesView";
 import type { ActionView } from "./generated/ActionView";
+import type { SiteView } from "./generated/SiteView";
 import type { ResourceRecord } from "./generated/ResourceRecord";
 import type { ResourceIntent } from "./generated/ResourceIntent";
 import type { ExternalRegistration } from "./generated/ExternalRegistration";
@@ -57,12 +58,12 @@ export function Resources() {
         {backend.error && <div role="alert" className="inline-error">Inventory unavailable: {backend.error}. Cleanup cannot be assumed complete.</div>}
         {backend.inventory && <ExternalForm busy={busy} onReview={registration => void work(async () => { remember(await api<ActionView>("/api/resources/register-plan", {method:"POST",body:JSON.stringify({backend:backend.name,registration})})); })} />}
         {backend.inventory?.resources.length === 0 && <p>No registered resources.</p>}
-        {backend.inventory?.resources.map(resource => <ResourceCard key={resource.id} resource={resource} cells={view.cells} busy={busy} onPlan={intent => void plan(backend.name, resource, intent)} />)}
+        {backend.inventory?.resources.map(resource => <ResourceCard key={resource.id} resource={resource} site={backend.inventory?.sites?.find(site => site.resource === resource.id)} cells={view.cells} busy={busy} onPlan={intent => void plan(backend.name, resource, intent)} />)}
       </section>)}
     </>}
   </main>;
 }
-function ResourceCard({ resource, cells, busy, onPlan }: { resource: ResourceRecord; cells: ResourcesView["cells"]; busy: boolean; onPlan: (intent: ResourceIntent) => void }) {
+function ResourceCard({ resource, site, cells, busy, onPlan }: { resource: ResourceRecord; site?: SiteView; cells: ResourcesView["cells"]; busy: boolean; onPlan: (intent: ResourceIntent) => void }) {
   const [target, setTarget] = useState("operator");
   const [unpublish, setUnpublish] = useState(true);
   const [attachTo, setAttachTo] = useState("");
@@ -72,6 +73,7 @@ function ResourceCard({ resource, cells, busy, onPlan }: { resource: ResourceRec
   const currentOwner = resource.owner === "operator" ? "operator" : resource.owner.cell;
   return <article className="resource-card" aria-label={resource.external_id}>
     <h3>{resource.external_id}</h3>
+    {site && <p><a href={site.publication.url} target="_blank" rel="noopener noreferrer">Open website</a> · {site.publication.visibility === "private" ? "Private" : "Public"} · {site.verification ? site.verification.error ? "Verification failed" : `HTTPS checked ${new Date(site.verification.checked_at * 1000).toLocaleString()}` : "Not verified"}</p>}
     <dl><dt>Owner</dt><dd>{ownerLabel(resource.owner, cells)}</dd><dt>Management</dt><dd>{resource.management} · {resource.kind}</dd><dt>Visibility/state</dt><dd>{published ? "Published" : resource.state === "unpublished" ? "Unpublished; data retained" : "Provider state unknown"}</dd></dl>
     {resource.external_account && <p>Provider/account: {resource.external_account.provider} / {resource.external_account.account}</p>}
     <p>Resource ID: <code>{resource.id}</code></p>

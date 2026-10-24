@@ -16,6 +16,9 @@ export function Settings({ cell, base, canApply, onClose, onApplied, onDelete }:
   const [detail, setDetail] = useState<SettingsView>();
   const [providers, setProviders] = useState(cell.grants.flatMap((g) => "provider" in g ? [g.provider] : []));
   const [repos, setRepos] = useState(cell.grants.flatMap((g) => "code" in g ? [g.code] : []));
+  const [privateSites, setPrivateSites] = useState(cell.grants.some(g => "publish" in g && g.publish === "private"));
+  const [publisher, setPublisher] = useState<string | null>(null);
+  useEffect(() => { void api<string | null>("/api/publishing").then(setPublisher).catch(() => {}); }, []);
   const [hosts, setHosts] = useState(cell.grants.flatMap((g) => "host" in g ? [g.host] : []).join("\n"));
   const [connections, setConnections] = useState<ConnectionDraft[]>([]);
   const [preview, setPreview] = useState<Preview>();
@@ -36,11 +39,13 @@ export function Settings({ cell, base, canApply, onClose, onApplied, onDelete }:
   const save = () => work(async () => {
     const grantedHosts = new Set(hosts.split(/\s+/).filter(Boolean));
     for (const c of connections.filter((c) => c.url.trim())) { const url = new URL(c.url); if (url.protocol !== "https:") throw new Error("Connections require HTTPS"); grantedHosts.add(url.hostname); }
+    if (privateSites && publisher) grantedHosts.add(new URL(publisher).hostname);
     const grants: Grant[] = [
+      ...(privateSites ? [{ publish: "private" as const }] : []),
       ...providers.map((provider) => ({ provider })),
       ...repos.filter((r) => r.repo.trim()).map((r) => ({ code: { repo: r.repo.trim(), write: r.write, ...(r.via?.trim() ? { via: r.via.trim() } : {}) } })),
       ...[...grantedHosts].map((host) => ({ host })),
-      ...preservedGrants(cell.grants),
+      ...preservedGrants(cell.grants).filter(g => !("publish" in g && g.publish === "private")),
     ];
     if (same(grants, cell.grants)) { await storeConnections(); await refresh(); setSaved(true); }
     else { if (!canApply) throw new Error("Configuration changes require the UI server's Linux deployment binary."); setPreview({ ...await api<Preview>(`${base}/plan`, { method: "POST", body: JSON.stringify({ grants }) }), grants }); }
@@ -64,6 +69,7 @@ export function Settings({ cell, base, canApply, onClose, onApplied, onDelete }:
         const provider = detail?.providers.find(p => p.id === id);
         return provider?.granted && <ProviderAuth provider={provider} base={base} refresh={refresh} />;
       }}</ProviderChoices>
+      <section><label><input type="checkbox" checked={privateSites} onChange={e => setPrivateSites(e.target.checked)} /> Private websites</label>{privateSites && !publisher && <p>Connect a publisher to enable website hosting.</p>}</section>
       <section><h3>Git repositories</h3>{repos.map((repo, i) => <div className="repo-row" key={i}>
         <input aria-label={`Repository ${i + 1}`} placeholder="owner/repository" value={repo.repo} onChange={(e) => setRepos(repos.map((r, n) => n === i ? { ...r, repo: e.target.value } : r))} />
         <select aria-label={`Repository ${i + 1} access`} value={repo.write ? "write" : "read"} onChange={(e) => setRepos(repos.map((r, n) => n === i ? { ...r, write: e.target.value === "write" } : r))}><option value="read">Read</option><option value="write">Write</option></select>
