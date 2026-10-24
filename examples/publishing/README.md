@@ -211,6 +211,14 @@ Store `X-Exedev-Authorization: Bearer TOKEN` in a private regular file owned by
 to the publisher service. This token stays on the trusted publisher, never in
 cells, receipts, registry state or discovery. It is sent only with authenticated
 private verification requests, never anonymous checks; redirects are not followed.
+On exe.dev, the VM's `/etc/hosts` maps its own name to an internal address.
+Create `/etc/cell-publisher/verify-hosts` as a root-owned 0644 file containing
+only `127.0.0.1 localhost` and `::1 localhost`, each on its own line. Install
+`exe-verifier.conf` as `/etc/systemd/system/cell-publisher.service.d/exe.conf`,
+then reload systemd and restart `cell-publisher`. This overrides `/etc/hosts`
+only inside the verifier service, so checks use public DNS and the real HTTPS
+auth gateway without changing the VM's own hostname mapping or pinning IPs.
+
 Manage expiry/rotation or explicitly choose a non-expiring VM-scoped credential.
 Revocation affects verification, not readers' ordinary exe.dev login.
 
