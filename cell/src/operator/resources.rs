@@ -129,7 +129,7 @@ impl Backend {
                     return Err(bad("Resource command exceeds limit"));
                 }
                 let mut child=std::process::Command::new("ssh").args(["-T","-o","BatchMode=yes","-o","ConnectTimeout=10","-o","ServerAliveInterval=5","-o","ServerAliveCountMax=2"])
-     .arg(format!("{vm}.exe.xyz")).arg("sudo -n /usr/local/bin/cell publisher resource-rpc /var/lib/cell-publisher")
+     .arg(format!("{vm}.exe.xyz")).arg("sudo -n -u cell-publisher /usr/local/bin/cell publisher resource-rpc /var/lib/cell-publisher")
      .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(fail)?;
                 let mut input = child.stdin.take().unwrap();
                 let output = child.stdout.take().unwrap();

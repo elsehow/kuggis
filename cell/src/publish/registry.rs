@@ -102,6 +102,8 @@ struct State {
     public_base: Option<Url>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     private_hosting: Option<super::private::Config>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    private_ports: BTreeMap<ResourceId, u16>,
     #[serde(default)]
     publications: BTreeMap<Hash, History>,
     resources: BTreeMap<ResourceId, ResourceRecord>,
@@ -189,6 +191,7 @@ impl State {
             return Err(RegistryError::InvalidState("unsupported format".into()));
         }
         self.validate_resources()?;
+        self.validate_private_ports()?;
         if let Some(config) = &self.private_hosting {
             config.validate().map_err(RegistryError::InvalidState)?;
         }
@@ -315,6 +318,7 @@ impl Registry {
             authorities: vec![],
             public_base: None,
             private_hosting: None,
+            private_ports: BTreeMap::new(),
             publications: BTreeMap::new(),
             resources: BTreeMap::new(),
             resource_operations: BTreeMap::new(),
@@ -380,6 +384,7 @@ impl Registry {
                 authorities: old.authorities,
                 public_base: None,
                 private_hosting: None,
+                private_ports: BTreeMap::new(),
                 publications: BTreeMap::new(),
                 resources: BTreeMap::new(),
                 resource_operations: BTreeMap::new(),
@@ -601,6 +606,7 @@ impl Registry {
                         state.reserve(verified.caller, site)?;
                     }
                     state.check_site(verified.caller, site)?;
+                    if visibility == super::Visibility::Private { state.assign_private_port(site)?; }
                     let url = state.site_url(site, visibility)?;
                     let artifact = upload
                         .ok_or_else(|| RegistryError::InvalidArtifact("missing upload".into()))?;
@@ -692,13 +698,11 @@ impl Registry {
             ));
         }
         self.transaction(|state| {
-            if state.private_hosting.as_ref().is_some_and(|private| {
-                base.host() == private.domain
-                    || base
-                        .host()
-                        .as_str()
-                        .ends_with(&format!(".{}", private.domain))
-            }) {
+            if state
+                .private_hosting
+                .as_ref()
+                .is_some_and(|private| private.overlaps(&base))
+            {
                 return Err(RegistryError::InvalidPolicy(
                     "Public and private sites must use separate origins".into(),
                 ));

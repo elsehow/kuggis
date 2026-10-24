@@ -44,6 +44,18 @@ fn get(
     ]);
     if let Some(proof) = proof {
         command.args(["--header", &format!("x-cell-site-verification: {proof}")]);
+        // Optional VM-scoped ingress credential, readable only by the trusted
+        // publisher. Never send it on anonymous checks or return it to a cell.
+        if let Some(path) = std::env::var_os("CELL_PUBLISH_INGRESS_HEADERS") {
+            let path = std::path::PathBuf::from(path);
+            use std::os::unix::fs::PermissionsExt;
+            let meta =
+                std::fs::symlink_metadata(&path).map_err(|_| "Ingress credential unavailable")?;
+            if !meta.is_file() || meta.permissions().mode() & 0o077 != 0 {
+                return Err("Ingress credential must be a private regular file".into());
+            }
+            command.arg("--header").arg(format!("@{}", path.display()));
+        }
     }
     let output = command.arg(url).output().map_err(|e| e.to_string())?;
     if !output.status.success() {
@@ -170,6 +182,7 @@ mod tests {
         registry
             .configure_private(private::Config {
                 domain: "private.example".parse().unwrap(),
+                ports: None,
                 users: ["reader".into()].into(),
             })
             .unwrap();

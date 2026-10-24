@@ -14,13 +14,47 @@ use std::{collections::BTreeSet, sync::Arc};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Wildcard DNS/TLS and gateway routing must cover *.domain.
+    /// Gateway hostname; without ports, wildcard DNS/TLS must cover *.domain.
     pub domain: Host,
+    /// Native exe.xyz hosting: one stable port origin per Site. Omit for wildcard DNS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ports: Option<PortRange>,
     /// Stable identities asserted by the trusted ingress, never by the cell.
     pub users: BTreeSet<String>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PortRange {
+    pub first: u16,
+    pub last: u16,
+}
 impl Config {
+    pub(crate) fn overlaps(&self, base: &crate::Url) -> bool {
+        if let Some(range) = self.ports {
+            let authority = base
+                .as_str()
+                .trim_start_matches("https://")
+                .split('/')
+                .next()
+                .unwrap();
+            let port = authority
+                .rsplit_once(':')
+                .and_then(|(_, p)| p.parse::<u16>().ok())
+                .unwrap_or(443);
+            base.host() == self.domain && (range.first..=range.last).contains(&port)
+        } else {
+            base.host() == self.domain
+                || base.host().as_str().ends_with(&format!(".{}", self.domain))
+        }
+    }
     pub fn validate(&self) -> Result<(), String> {
+        if self.ports.is_some_and(|p| {
+            p.first < 3000 || p.last > 9998 || p.first > p.last || p.last - p.first > 999
+        }) {
+            return Err(
+                "Private ports must be a range of at most 1000 ports within 3000–9998".into(),
+            );
+        }
         if self.domain.as_str().len() > 180
             || self.users.is_empty()
             || self.users.iter().any(|id| {
@@ -86,6 +120,8 @@ async fn read(State(registry): State<Arc<Registry>>, request: Request) -> Respon
     headers.insert("cache-control", "private, no-store".parse().unwrap());
     headers.insert("x-content-type-options", "nosniff".parse().unwrap());
     headers.insert("referrer-policy", "no-referrer".parse().unwrap());
+    headers.insert("origin-agent-cluster", "?1".parse().unwrap());
+    headers.insert("permissions-policy", "document-domain=()".parse().unwrap());
     // Unique resource origins permit modules/fetch without credentialed CORS.
     // No service workers or external network; never hosted on the operator origin.
     headers.insert("content-security-policy", "sandbox allow-scripts allow-same-origin; default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; media-src 'self'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'".parse().unwrap());
@@ -158,10 +194,26 @@ pub async fn serve(registry: Registry, address: std::net::SocketAddr) -> crate::
             "Private hosting must bind loopback behind a trusted authentication gateway".into(),
         );
     }
-    axum::serve(
-        tokio::net::TcpListener::bind(address).await?,
-        router(registry),
-    )
-    .await?;
-    Ok(())
+    let ports = registry.private_ports()?;
+    let router = router(registry);
+    let addresses: Vec<_> = match ports {
+        Some(range) => (range.first..=range.last)
+            .map(|port| std::net::SocketAddr::new(address.ip(), port))
+            .collect(),
+        None => vec![address],
+    };
+    // Bind all configured ports before serving any of them; conflicts fail startup.
+    let mut listeners = vec![];
+    for address in addresses {
+        listeners.push(tokio::net::TcpListener::bind(address).await?);
+    }
+    let mut tasks = tokio::task::JoinSet::new();
+    for listener in listeners {
+        let router = router.clone();
+        tasks.spawn(async move { axum::serve(listener, router).await });
+    }
+    let result = tasks.join_next().await.ok_or("No private listeners")?;
+    tasks.abort_all();
+    result??;
+    Err("Private reader stopped unexpectedly".into())
 }
