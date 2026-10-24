@@ -7,6 +7,60 @@ use crate::publish::{
 };
 use crate::resource::ProviderRef;
 impl State {
+    pub(super) fn validate_private_ports(&self) -> Result<()> {
+        let range = self.private_hosting.as_ref().and_then(|c| c.ports);
+        let mut used = BTreeSet::new();
+        for (id, port) in &self.private_ports {
+            if !range.is_some_and(|r| (r.first..=r.last).contains(port))
+                || !used.insert(port)
+                || !self.publications.values().any(|h| {
+                    self.resource_id(&h.site) == *id
+                        && h.versions
+                            .values()
+                            .any(|r| r.visibility == Visibility::Private)
+                })
+            {
+                return Err(RegistryError::InvalidState(
+                    "Invalid private site port reservation".into(),
+                ));
+            }
+        }
+        if range.is_some() {
+            for h in self.publications.values() {
+                for r in h
+                    .versions
+                    .values()
+                    .filter(|r| r.visibility == Visibility::Private)
+                {
+                    if r.url != self.site_url(&h.site, Visibility::Private)? {
+                        return Err(RegistryError::InvalidState(
+                            "Private site origin mismatch".into(),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn assign_private_port(&mut self, site: &SiteId) -> Result<()> {
+        let Some(range) = self
+            .private_hosting
+            .as_ref()
+            .and_then(|config| config.ports)
+        else {
+            return Ok(());
+        };
+        let id = self.resource_id(site);
+        if !self.private_ports.contains_key(&id) {
+            let port = (range.first..=range.last)
+                .find(|p| !self.private_ports.values().any(|used| used == p))
+                .ok_or(RegistryError::Busy)?;
+            self.private_ports.insert(id, port);
+        }
+        Ok(())
+    }
+
     pub(super) fn provision_private_namespaces(&mut self) -> Result<()> {
         for authority in &self.authorities {
             if authority.scopes.contains(&PublishScope::Private) {
@@ -51,11 +105,21 @@ impl State {
             ),
             Visibility::Private => {
                 let config = self.private_hosting.as_ref().ok_or_else(|| RegistryError::InvalidPolicy("Private hosting is not configured; ask the operator to connect a private publisher".into()))?;
-                format!(
-                    "https://{}.{}/",
-                    private::label(self.resource_id(site)),
-                    config.domain
-                )
+                if config.ports.is_some() {
+                    let port =
+                        self.private_ports
+                            .get(&self.resource_id(site))
+                            .ok_or_else(|| {
+                                RegistryError::InvalidState("Private site port is missing".into())
+                            })?;
+                    format!("https://{}:{port}/", config.domain)
+                } else {
+                    format!(
+                        "https://{}.{}/",
+                        private::label(self.resource_id(site)),
+                        config.domain
+                    )
+                }
             }
         };
         url.parse()
@@ -75,6 +139,14 @@ impl State {
     }
 }
 impl Registry {
+    pub fn private_ports(&self) -> Result<Option<private::PortRange>> {
+        self.transaction(|s| {
+            Ok((
+                s.private_hosting.as_ref().and_then(|config| config.ports),
+                false,
+            ))
+        })
+    }
     pub fn record_verification(
         &self,
         verification: &crate::publish::verify::Verification,
@@ -103,19 +175,19 @@ impl Registry {
                 h.versions
                     .values()
                     .any(|r| r.visibility == Visibility::Private)
-            }) && s.private_hosting.as_ref().map(|c| &c.domain) != Some(&config.domain)
+            }) && s
+                .private_hosting
+                .as_ref()
+                .is_none_or(|c| c.domain != config.domain || c.ports != config.ports)
             {
                 return Err(RegistryError::InvalidPolicy(
                     "Cannot change private site origins after publishing".into(),
                 ));
             }
-            if s.public_base.as_ref().is_some_and(|base| {
-                base.host() == config.domain
-                    || base
-                        .host()
-                        .as_str()
-                        .ends_with(&format!(".{}", config.domain))
-            }) {
+            if s.public_base
+                .as_ref()
+                .is_some_and(|base| config.overlaps(base))
+            {
                 return Err(RegistryError::InvalidPolicy(
                     "Public and private sites must use separate origins".into(),
                 ));
@@ -138,11 +210,13 @@ impl Registry {
                 .publications
                 .values()
                 .find(|h| {
-                    format!(
-                        "{}.{}",
-                        private::label(s.resource_id(&h.site)),
-                        config.domain
-                    ) == host
+                    s.site_url(&h.site, Visibility::Private).is_ok_and(|url| {
+                        url.as_str()
+                            .strip_prefix("https://")
+                            .unwrap()
+                            .trim_end_matches('/')
+                            == host
+                    })
                 })
                 .ok_or(RegistryError::UnknownSite)?;
             if let Some(proof) = proof {

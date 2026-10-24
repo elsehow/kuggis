@@ -8,7 +8,7 @@ const [address, first, second] = process.argv.slice(2);
 try {
   const context = await browser.newContext();
   let authenticated = true;
-  await context.route('https://*.private.example/**', async route => {
+  await context.route(url => [new URL(first).origin, new URL(second).origin].includes(url.origin), async route => {
     const request = route.request(), url = new URL(request.url());
     const original = await request.allHeaders();
     const headers = {'host': url.host, 'x-forwarded-host': url.host, 'x-forwarded-proto': 'https'};

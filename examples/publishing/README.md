@@ -180,12 +180,39 @@ JSON fetch. Hosting arbitrary application servers is not implemented.
 
 ### Configure hosting once
 
-Use the dedicated publisher host, separate from agents and the operator UI.
-Provide wildcard DNS, TLS and trusted authentication-gateway routing for a
-private site domain, for example `*.sites-private.example.com`. Each resource
-gets its own stable origin beneath that domain. Do not put private sites under
-the operator origin or the existing public site origin. The platform does not
-create DNS records, certificates, gateway accounts or new VMs automatically.
+Use a dedicated publisher VM, separate from agents and the operator UI. Native
+exe.xyz hosting needs no custom domain or external DNS. Configure a port range:
+
+```json
+{"domain":"YOUR-PUBLISHER-VM.exe.xyz","ports":{"first":4000,"last":4999},"users":["STABLE_READER_ID"]}
+```
+
+Each Site receives a permanent URL such as `https://YOUR-PUBLISHER-VM.exe.xyz:4000/`.
+exe.dev provides TLS and login on these ports. Alternate ports remain private
+when the default port is public for the signed control API. Never select a site
+port as the default public share port. The private reader binds the entire
+configured range on the `--listen` IP; its single port is ignored in this mode.
+All listeners must bind successfully. Ports are never recycled, including after
+unpublish. Exhaustion refuses new sites without changing existing publications.
+The range is limited to 1000 ports within 3000–9998; reserve 9999 for platform use.
+
+Port origins isolate DOM, fetch and localStorage, but **cookies share a hostname
+across ports**. Use localStorage for site state. Gateway sessions must use
+HttpOnly cookies. Origin-Agent-Cluster and document-domain restrictions prevent
+legacy origin relaxation. For distinct cookie scopes, omit `ports` and configure
+wildcard DNS/TLS and gateway routing for `*.sites-private.example.com` instead.
+The platform does not create DNS records, gateway accounts or VMs automatically.
+
+For external verification through exe.dev's private ingress, generate a
+VM-scoped HTTP token for this publisher only (see exe.dev HTTP token docs).
+Store `X-Exedev-Authorization: Bearer TOKEN` in a private regular file owned by
+`cell-publisher`, mode 0600, under a root-owned directory. Add
+`Environment=CELL_PUBLISH_INGRESS_HEADERS=/etc/cell-publisher/ingress.headers`
+to the publisher service. This token stays on the trusted publisher, never in
+cells, receipts, registry state or discovery. It is sent only with authenticated
+private verification requests, never anonymous checks; redirects are not followed.
+Manage expiry/rotation or explicitly choose a non-expiring VM-scoped credential.
+Revocation affects verification, not readers' ordinary exe.dev login.
 
 The gateway must overwrite/remove client-supplied `X-ExeDev-UserID`, assert the
 stable signed-in user ID, and preserve the original host. Sessions should use
@@ -209,7 +236,7 @@ cell publisher configure-private /var/lib/cell-publisher /etc/cell-publisher-pri
 sudo systemctl enable --now cell-private
 ```
 
-The private domain cannot change after publishing; reader membership can change.
+The private domain and port range cannot change after publishing; reader membership can change.
 Public and private versions cannot share a site identity: use a different site
 name to change audience. This avoids silently disclosing a formerly private URL
 or changing an existing public URL. Private sites use separate browser origins,
@@ -231,6 +258,9 @@ Add `publishing` to the existing backend in the operator tree's private
   }]
 }
 ```
+
+SSH resource commands run as `cell-publisher` through sudo, matching the service
+user and preserving registry file ownership.
 
 This opts into reconciliation of the publisher's **complete** policy from this
 operator's validated tree and verified pins. Do not enable it for a publisher
@@ -300,6 +330,7 @@ Validation (no production state is touched):
 cargo test --manifest-path cell/Cargo.toml --locked
 # Linux: real CLI, signed requests, local TLS and private ingress; no sudo:
 python3 scripts/test-private-publishing.py
+KUGGIS_TEST_NATIVE_PORTS=1 python3 scripts/test-private-publishing.py
 # Browser origin/CSP contract using a local authenticated-gateway fixture:
 KUGGIS_TEST_PLAYWRIGHT=/path/to/playwright/index.mjs \
 KUGGIS_TEST_BROWSER=/path/to/chromium \

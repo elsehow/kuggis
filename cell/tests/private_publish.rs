@@ -24,6 +24,7 @@ impl Fixture {
         registry
             .configure_private(private::Config {
                 domain: "private.example".parse().unwrap(),
+                ports: None,
                 users: ["reader".into()].into(),
             })
             .unwrap();
@@ -471,6 +472,16 @@ async fn private_http_enforces_reader_identity_origin_and_signed_verification_sc
 #[ignore = "requires KUGGIS_TEST_PLAYWRIGHT and KUGGIS_TEST_BROWSER"]
 async fn private_sites_in_a_browser() {
     let f = Fixture::new();
+    f.registry
+        .configure_private(private::Config {
+            domain: "publisher.example".parse().unwrap(),
+            ports: Some(private::PortRange {
+                first: 4000,
+                last: 4001,
+            }),
+            users: ["reader".into()].into(),
+        })
+        .unwrap();
     let first = f.publish(true, "first");
     let second = f.publish(false, "second");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -612,4 +623,98 @@ fn automatic_policy_updates_do_not_restore_an_explicitly_detached_site() {
         .registry
         .verification_snapshot(&f.sign(false, Command::Verify { site: first.site }))
         .is_err());
+}
+
+#[test]
+fn native_ports_are_stable_reserved_and_fail_closed_when_full_or_corrupt() {
+    let f = Fixture::new();
+    let config = private::Config {
+        domain: "publisher.example".parse().unwrap(),
+        ports: Some(private::PortRange {
+            first: 4000,
+            last: 4001,
+        }),
+        users: ["reader".into()].into(),
+    };
+    f.registry
+        .configure_public_base("https://publisher.example".parse().unwrap())
+        .unwrap();
+    f.registry.configure_private(config.clone()).unwrap();
+    assert!(f
+        .registry
+        .configure_public_base("https://publisher.example:4000".parse().unwrap())
+        .is_err());
+    let first = f.publish(true, "first");
+    assert_eq!(first.url.as_str(), "https://publisher.example:4000/");
+    assert!(f
+        .registry
+        .private_file("publisher.example:4000", "index.html", Some("reader"), None)
+        .is_ok());
+    assert!(f
+        .registry
+        .private_file("publisher.example", "index.html", Some("reader"), None)
+        .is_err());
+    assert!(f
+        .registry
+        .private_file("publisher.example:4000", "index.html", None, None)
+        .is_err());
+    assert_eq!(f.publish(true, "first").url, first.url);
+    f.registry
+        .execute(&f.sign(
+            true,
+            Command::Unpublish {
+                site: first.site.clone(),
+            },
+        ))
+        .unwrap();
+    let second = f.publish(false, "second");
+    assert_eq!(second.url.as_str(), "https://publisher.example:4001/");
+    let registry = Registry::open(&f.root).unwrap();
+    assert_eq!(registry.private_ports().unwrap(), config.ports);
+    assert_eq!(f.publish(true, "first").url, first.url);
+    let artifact = Fixture::artifact();
+    assert!(matches!(
+        registry.execute_upload(
+            &f.sign(
+                true,
+                Command::PublishPrivate {
+                    site: f.site(true, "third"),
+                    artifact: artifact.hash().unwrap()
+                }
+            ),
+            &artifact
+        ),
+        Err(RegistryError::Busy)
+    ));
+    assert_eq!(registry.resources().unwrap().resources.len(), 2);
+    let mut changed = config.clone();
+    changed.ports.as_mut().unwrap().last = 4002;
+    assert!(registry.configure_private(changed).is_err());
+    let state_path = f.root.join("state.json");
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    state["private_ports"] = serde_json::json!({});
+    fs::write(state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    assert!(Registry::open(&f.root).is_err());
+}
+
+#[test]
+fn native_port_configuration_rejects_overlapping_origins_and_invalid_ranges() {
+    let f = Fixture::new();
+    let mut config = private::Config {
+        domain: "publisher.example".parse().unwrap(),
+        ports: Some(private::PortRange {
+            first: 4000,
+            last: 4999,
+        }),
+        users: ["reader".into()].into(),
+    };
+    f.registry
+        .configure_public_base("https://publisher.example:4001".parse().unwrap())
+        .unwrap();
+    assert!(f.registry.configure_private(config.clone()).is_err());
+    for (first, last) in [(2999, 4000), (4001, 4000), (4000, 5000), (9990, 9999)] {
+        config.ports = Some(private::PortRange { first, last });
+        assert!(config.validate().is_err());
+    }
 }

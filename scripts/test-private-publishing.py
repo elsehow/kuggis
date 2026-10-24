@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 
+native = os.environ.get('KUGGIS_TEST_NATIVE_PORTS') == '1'
 binary = Path(sys.argv[1] if len(sys.argv) > 1 else 'cell/target/debug/cell').resolve()
 
 def run(*args, **kwargs):
@@ -45,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix='private-site-https-', dir='/tmp') as di
     registry = work / 'registry'
     audience = run('publisher', 'init', registry)
     private_config = work / 'private.json'
-    private_config.write_text(json.dumps({'domain': 'private.example', 'users': ['reader']}))
+    private_config.write_text(json.dumps({'domain': 'publisher.example', 'ports': {'first': 4900, 'last': 4901}, 'users': ['reader']} if native else {'domain': 'private.example', 'users': ['reader']}))
     run('publisher', 'configure-private', registry, private_config)
     cells = [{'cell': {'name': 'author', 'grants': [{'publish': 'private'}, {'host': 'publisher.example'}]}, 'parent': None, 'key': public_key}]
     reply = json.loads(run('publisher', 'resource-rpc', registry, input=json.dumps({'reconcile_publishing': {'provider': audience, 'endpoint': 'https://publisher.example', 'cells': cells}})))
@@ -55,7 +56,7 @@ with tempfile.TemporaryDirectory(prefix='private-site-https-', dir='/tmp') as di
     config_path.write_text(json.dumps(config))
     cert, key = work / 'cert.pem', work / 'tls.key'
     subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=publisher.example', '-addext', 'subjectAltName=DNS:publisher.example,DNS:*.private.example', '-keyout', str(key), '-out', str(cert)], check=True, capture_output=True)
-    control, private = port(), port()
+    control, private = port(), 4900 if native else port()
     corrupt_asset = False
     expose_anonymous = False
 
@@ -63,12 +64,18 @@ with tempfile.TemporaryDirectory(prefix='private-site-https-', dir='/tmp') as di
         def forward(self):
             host = self.headers['Host']
             is_control = host == 'publisher.example'
+            if native and not is_control:
+                token = self.headers.get('X-Exedev-Authorization')
+                proof = self.headers.get('X-Cell-Site-Verification')
+                assert not token or proof, 'Credential leaked into anonymous check'
+                if proof and token != 'Bearer fixture-only':
+                    self.send_response(403); self.end_headers(); return
             data = self.rfile.read(int(self.headers.get('Content-Length', 0)))
             headers = {'Host': host, 'X-Forwarded-Host': host, 'X-Forwarded-Proto': 'https', 'Content-Type': 'application/json'}
             if 'X-Cell-Site-Verification' in self.headers:
                 headers['X-Cell-Site-Verification'] = self.headers['X-Cell-Site-Verification']
             if expose_anonymous is True or (expose_anonymous == "asset" and self.path.endswith("/data.json")): headers['X-ExeDev-UserID'] = 'reader'
-            upstream = http.client.HTTPConnection('127.0.0.1', control if is_control else private, timeout=60)
+            upstream = http.client.HTTPConnection('127.0.0.1', control if is_control else int(host.rsplit(':', 1)[1]) if native else private, timeout=60)
             upstream.request(self.command, self.path, data, headers)
             response = upstream.getresponse()
             body = response.read()
@@ -96,7 +103,7 @@ with tempfile.TemporaryDirectory(prefix='private-site-https-', dir='/tmp') as di
             line = self.rfile.readline().decode().strip().split()
             if len(line) != 3 or line[0] != 'CONNECT': return
             host, _, target_port = line[1].rpartition(':')
-            if target_port != '443' or not (host == 'publisher.example' or host.endswith('.private.example')): return
+            if target_port not in (['443', '4900', '4901'] if native else ['443']) or not (host == 'publisher.example' or host.endswith('.private.example')): return
             while self.rfile.readline().strip(): pass
             with socket.create_connection(('127.0.0.1', tls.server_port)) as upstream:
                 self.wfile.write(b'HTTP/1.1 200 Connection established\r\n\r\n'); self.wfile.flush()
@@ -111,6 +118,11 @@ with tempfile.TemporaryDirectory(prefix='private-site-https-', dir='/tmp') as di
         daemon_threads = True
     proxy = background(Proxy(('127.0.0.1', 0), Connect))
     env = dict(os.environ, HTTPS_PROXY=f'http://127.0.0.1:{proxy.server_address[1]}', https_proxy=f'http://127.0.0.1:{proxy.server_address[1]}', HTTP_PROXY='', ALL_PROXY='', NO_PROXY='', no_proxy='', CURL_CA_BUNDLE=str(cert))
+
+    if native:
+        credential = work / 'ingress.headers'
+        credential.write_text('X-Exedev-Authorization: Bearer fixture-only\n'); credential.chmod(0o600)
+        env['CELL_PUBLISH_INGRESS_HEADERS'] = str(credential)
 
     class Signer(socketserver.StreamRequestHandler):
         def handle(self):
@@ -141,7 +153,7 @@ with tempfile.TemporaryDirectory(prefix='private-site-https-', dir='/tmp') as di
         assert first['published']['visibility'] == 'private'
         assert first['verification']['error'] is None and first['verification']['checked_files'] == 3
         url = first['published']['url']
-        assert url.startswith('https://s') and url.endswith('.private.example/')
+        assert url == 'https://publisher.example:4900/' if native else url.startswith('https://s') and url.endswith('.private.example/')
         second = publish(dist, '--site', 'demo')
         assert second['published']['url'] == url
         restored = publish('rollback', 'demo', first['published']['version'])

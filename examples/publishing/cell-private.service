@@ -8,6 +8,7 @@ Group=cell-publisher
 ExecStart=/usr/local/bin/cell publisher private-host /var/lib/cell-publisher --listen 127.0.0.1:8092
 Restart=on-failure
 UMask=0077
+LimitNOFILE=4096
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
