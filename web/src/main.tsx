@@ -26,6 +26,7 @@ import { CreateCell, creationLabel } from "./create-cell";
 import { DeleteCell, deletionLabel } from "./delete-cell";
 import { ModelPicker } from "./model-picker";
 import { ChatHealthBoundary } from "./chat-health";
+import { ChatListLoading } from "./chat-list-loading";
 import "./style.css";
 
 import { api, explain } from "./api";
@@ -144,6 +145,7 @@ function App() {
 function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, onUnavailable }: { cell: CellInfo; standalone: boolean; local: boolean; canApply: boolean; reload: () => Promise<void>; onDelete?: () => void; onUnavailable: () => void }) {
   const [error, setError] = useState("");
   const [metadata, setMetadata] = useState<PiThreadMetadata[]>([]);
+  const [listError, setListError] = useState("");
   const [models, setModels] = useState<PiModelInfo[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState("");
@@ -175,6 +177,13 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, on
     const key = `kuggis:model:${preferenceBase}`;
     const remember = (model: { provider: string; modelId: string }) => { try { localStorage.setItem(key, JSON.stringify(model)); } catch {} };
     return { ...transport,
+      async listThreads(input: Parameters<typeof transport.listThreads>[0]) {
+        try {
+          const rows = await transport.listThreads(input);
+          setListError("");
+          return rows;
+        } catch (error) { setListError(explain(error)); throw error; }
+      },
       async setModel(id: string, model: { provider: string; modelId: string }) { await transport.setModel(id, model); remember(model); },
       async sendMessage(...args: Parameters<typeof transport.sendMessage>) {
         await transport.sendMessage(...args);
@@ -237,8 +246,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, on
         </header>
         <ThreadListPrimitive.Root className="thread-list">
           <ThreadListPrimitive.New className="new-chat">＋ New chat</ThreadListPrimitive.New>
-          <SortedChats />
-          {archived && <><div className="section-label">Archived</div><SortedChats archived /></>}
+          <ChatList archived={archived} error={listError} />
         </ThreadListPrimitive.Root><label className="archive-toggle"><input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} />Archived</label></aside>
       <main className="chat-main"><ChatHeader client={client} models={models} modelsLoading={modelsLoading} modelsError={modelsError} reloadModels={loadModels} openSettings={() => setSettings(true)} changingModel={changingModel} setChangingModel={setChangingModel} onError={setError} />
         {error && <div className="error-banner" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError("")}>×</button></div>}
@@ -247,6 +255,25 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, on
     </div>
     {settings && <Settings cell={cell} base={base} canApply={canApply} onClose={() => { setSettings(false); const url = new URL(location.href); url.searchParams.delete("setup"); history.replaceState(null, "", url); void loadModels(); }} onApplied={reload} onDelete={onDelete ? () => { setSettings(false); onDelete(); } : undefined} />}
   </SeenChats.Provider></ChatMetadata.Provider></AssistantRuntimeProvider>;
+}
+
+function ChatList({ archived, error }: { archived: boolean; error: string }) {
+  const aui = useAui();
+  const loading = useAuiState(s => s.threads.isLoading);
+  const count = useAuiState(s => s.threads.threadIds.length + s.threads.archivedThreadIds.length);
+  const [retrying, setRetrying] = useState(false);
+  const retry = async () => {
+    setRetrying(true);
+    try { await aui.threads().reload(); } catch { /* The transport exposes the error inline. */ }
+    finally { setRetrying(false); }
+  };
+  if (!count && (retrying || (loading && !error))) return <ChatListLoading />;
+  return <>
+    {error && <div className="chat-list-error" role="alert"><p>Couldn’t load chats: {error}</p><button disabled={retrying} onClick={() => void retry()}>Retry loading chats</button></div>}
+    {!error && !loading && !count && <p className="pane-note">No chats yet.</p>}
+    <SortedChats />
+    {archived && <><div className="section-label">Archived</div><SortedChats archived /></>}
+  </>;
 }
 
 function SortedChats({ archived = false }: { archived?: boolean }) {
