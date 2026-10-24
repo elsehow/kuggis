@@ -4,5 +4,6 @@ import type { Hash } from "./Hash";
 import type { NamespaceId } from "./NamespaceId";
 import type { ProviderRef } from "./ProviderRef";
 import type { ResourceRecord } from "./ResourceRecord";
+import type { SiteView } from "./SiteView";
 
-export type ResourceInventory = { provider: ProviderRef, revision: Hash, resources: Array<ResourceRecord>, frozen: Array<CellIdentity>, namespaces: Array<NamespaceId>, };
+export type ResourceInventory = { provider: ProviderRef, revision: Hash, resources: Array<ResourceRecord>, frozen: Array<CellIdentity>, namespaces: Array<NamespaceId>, sites: Array<SiteView>, };

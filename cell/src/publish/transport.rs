@@ -23,6 +23,14 @@ pub const MAX_LIFETIME_SECS: u64 = 300;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    /// Read-only external verification; also a short-lived proof for private reads.
+    Verify {
+        site: SiteId,
+    },
+    PublishPrivate {
+        site: SiteId,
+        artifact: crate::Hash,
+    },
     Publish {
         site: SiteId,
         artifact: crate::Hash,
@@ -50,7 +58,9 @@ impl Command {
     pub fn site(&self) -> &SiteId {
         match self {
             Self::ReserveSite { site }
+            | Self::Verify { site }
             | Self::Check { site, .. }
+            | Self::PublishPrivate { site, .. }
             | Self::Publish { site, .. }
             | Self::Status { site }
             | Self::Rollback { site, .. }
@@ -124,6 +134,7 @@ impl SignedRequest {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reply {
+    Verified(super::verify::Verification),
     Reserved,
     Authorized,
     Published(PublicationReceipt),
@@ -171,7 +182,7 @@ pub fn router(registry: Registry) -> Router {
                     // Applied before JSON extraction: bound simultaneous uploads,
                     // not merely the already-parsed handler invocations.
                     match tokio::time::timeout(
-                        std::time::Duration::from_secs(30),
+                        std::time::Duration::from_secs(60),
                         next.run(request),
                     )
                     .await
@@ -187,11 +198,17 @@ async fn request(
     State(registry): State<Arc<Registry>>,
     Json(request): Json<SignedRequest>,
 ) -> Result<Json<Reply>, (StatusCode, &'static str)> {
-    tokio::task::spawn_blocking(move || registry.execute(&request))
-        .await
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "publisher unavailable"))?
-        .map(Json)
-        .map_err(public_error)
+    tokio::task::spawn_blocking(move || {
+        if matches!(request.verify()?.command, Command::Verify { .. }) {
+            super::verify::run(&registry, &request).map(Reply::Verified)
+        } else {
+            registry.execute(&request)
+        }
+    })
+    .await
+    .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "publisher unavailable"))?
+    .map(Json)
+    .map_err(public_error)
 }
 async fn upload(
     State(registry): State<Arc<Registry>>,

@@ -26,6 +26,9 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
   const [write, setWrite] = useState(false);
   const [fork, setFork] = useState("");
   const [providers, setProviders] = useState<ProviderId[]>([]);
+  const [privateSites, setPrivateSites] = useState(false);
+  const [publisher, setPublisher] = useState<string | null>(null);
+  useEffect(() => { void api<string | null>("/api/publishing").then(setPublisher).catch(() => {}); }, []);
   const [hosts, setHosts] = useState("");
   const [job, setJob] = useState<Creation>();
   const [busy, setBusy] = useState(false);
@@ -41,6 +44,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
     setParent(value);
     const grants = cells.find((c) => cellId(c) === value || cellBinding(c) === value)?.grants;
     setProviders(grants ? grants.flatMap((g) => "provider" in g ? [g.provider] : []) : ["anthropic"]);
+    setPrivateSites(!!grants?.some(g => "publish" in g && g.publish === "private"));
     setHosts(defaultHosts(grants).join("\n"));
     const code = grants?.find((g) => "code" in g);
     setRepo(code && "code" in code ? code.code.repo : "");
@@ -51,6 +55,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
     if (!job) return;
     setName(job.display_name ?? job.cell.name); setParent(job.parent ?? "");
     setProviders(job.cell.grants.flatMap((g) => "provider" in g ? [g.provider] : []));
+    setPrivateSites(job.cell.grants.some(g => "publish" in g && g.publish === "private"));
     setHosts(job.cell.grants.flatMap((g) => "host" in g ? [g.host] : []).join("\n"));
     const code = job.cell.grants.find((g) => "code" in g);
     setRepo(code && "code" in code ? code.code.repo : "");
@@ -81,6 +86,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
   const work = async (fn: () => Promise<void>) => { setBusy(true); setError(""); try { await fn(); } catch (e) { setError(explain(e)); } finally { setBusy(false); } };
   const preview = () => work(async () => {
     const grants: Grant[] = [
+      ...(privateSites ? [{ publish: "private" as const }, ...(publisher ? [{ host: new URL(publisher).hostname }] : [])] : []),
       ...providers.map((provider) => ({ provider })),
       ...[...new Set(hosts.split(/\s+/).filter(Boolean))].map(host => ({ host })),
       ...(repo.trim() ? [{ code: { repo: repo.trim(), write, ...(fork.trim() ? { via: fork.trim() } : {}) } }] : []),
@@ -115,6 +121,8 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
         <datalist id="parent-repositories">{parentCell?.grants.flatMap((g) => "code" in g ? [<option key={`${g.code.repo}/${g.code.via ?? ""}`} value={g.code.repo} />] : [])}</datalist>
         <select aria-label="Repository access" value={write ? "write" : "read"} onChange={(e) => setWrite(e.target.value === "write")}><option value="read">Read</option><option value="write">Write</option></select>
       </div><details open={!!fork}><summary>Fork</summary><input aria-label="Repository fork" placeholder="owner/repository" value={fork} onChange={(e) => setFork(e.target.value)} /></details></section>
+      <label><input type="checkbox" checked={privateSites} disabled={!!parentCell && !parentCell.grants.some(g => "publish" in g && g.publish === "private")} onChange={e => setPrivateSites(e.target.checked)} /> Private websites</label>
+      {privateSites && !publisher && <p role="status">Connect a publisher to enable website hosting.</p>}
       <ProviderChoices selected={providers} onChange={setProviders} disabled={id => !!parentCell && !parentCell.grants.some(g => "provider" in g && g.provider === id)} />
       <section><h3>Allowed hosts</h3>
         <p>Defaults allow npm packages, Playwright browsers, and Ubuntu browser dependencies. Remove hosts you do not need.</p>

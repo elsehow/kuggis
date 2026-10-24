@@ -458,11 +458,13 @@ impl Edge for Ssh {
         // retry loop: an unreachable cell must not lock operator mutations for
         // twenty connection attempts.
         let key: crate::Key = context.key.parse()?;
+        let managed = context.publishing.is_some();
+        let install = include_str!("publish/install.py").replace('\'', "'\\''");
         let mut child = Command::new("ssh")
             .args(VM_OPTS)
             .args(["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2"])
             .arg(format!("{vm}.exe.xyz"))
-            .arg(format!("test \"$(cat /etc/cell/key.pub)\" = '{key}' && {}", r#"sudo sh -c 'set -eu; mkdir -p /usr/local/lib/cell; t=$(mktemp /usr/local/lib/cell/.context.XXXXXX); trap "rm -f \"$t\"" EXIT; cat > "$t"; chmod 644 "$t"; mv -f "$t" /usr/local/lib/cell/context.json'"#))
+            .arg(if managed { format!("sudo -n /usr/bin/python3 -c '{install}'") } else { format!("test \"$(cat /etc/cell/key.pub)\" = '{key}' && {}", r#"sudo sh -c 'set -eu; mkdir -p /usr/local/lib/cell; t=$(mktemp /usr/local/lib/cell/.context.XXXXXX); trap "rm -f \"$t\"" EXIT; cat > "$t"; chmod 644 "$t"; mv -f "$t" /usr/local/lib/cell/context.json'"#) })
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
             .spawn()?;
         child

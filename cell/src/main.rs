@@ -40,10 +40,13 @@ usage:
   cell adopt VM NAME              tag an existing VM as NAME's root
   cell observe [--from DIR]       read exe.dev (or DIR/ls.json + DIR/int.json) as
                                   cells and doors
-  cell publish DIR --site NAME [--config FILE]
+  cell publish DIR --site NAME [--visibility private|public] [--config FILE]
                                   snapshot and publish static files via the host bridge
+  cell publish capabilities | verify NAME
   cell publish status NAME | rollback NAME VERSION | unpublish NAME [--config FILE]
   cell publisher configure REGISTRY --public-base HTTPS_ORIGIN
+  cell publisher configure-private REGISTRY CONFIG_JSON
+  cell publisher private-host REGISTRY --listen 127.0.0.1:8092
   cell publisher host REGISTRY --listen 127.0.0.1:8091
                                   read-only public artifact server, behind HTTPS
   cell publisher bridge --config FILE --cell CELLFILE --secret KEY --agent-uid UID
@@ -205,6 +208,15 @@ fn publisher(args: &[String]) -> Fallible {
         Some("configure") if args.len() == 4 && args[2] == "--public-base" => {
             Registry::open(Path::new(&args[1]))?.configure_public_base(args[3].parse()?)?;
             println!("public origin configured");
+        }
+        Some("configure-private") if args.len() == 3 => {
+            let config = serde_json::from_slice(&fs::read(&args[2])?)?;
+            Registry::open(Path::new(&args[1]))?.configure_private(config)?;
+            println!("private hosting configured");
+        }
+        Some("private-host") if args.len() == 4 && args[2] == "--listen" => {
+            let registry = Registry::open(Path::new(&args[1]))?;
+            tokio::runtime::Runtime::new()?.block_on(cell::publish::private::serve(registry, args[3].parse()?))?;
         }
         Some("host") if args.len() == 4 && args[2] == "--listen" => {
             let registry = Registry::open(Path::new(&args[1]))?;
