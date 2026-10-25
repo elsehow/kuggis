@@ -26,7 +26,8 @@ SNAPSHOT = {
         {"project": "kuggis", "name": "dashboard", "state": "idle", "age": "3m"},
         {"project": "other", "name": "-", "state": "no sessions", "age": "-"},
     ],
-    "briefs": [{"id": "task.md", "project": "airo", "session": "task", "since": 1000}],
+    "requests": [{"id": "a" * 64, "kind": "brief", "cell": "", "project": "airo", "session": "task",
+                  "url": "", "since": 1000, "held": True}],
 }
 
 
@@ -101,7 +102,7 @@ class Cells(unittest.TestCase):
 
     def test_stopped_needs_help_but_idle_and_running_do_not(self):
         data = copy.deepcopy(SNAPSHOT)
-        data["briefs"] = []
+        data["requests"] = []
         data["sessions"][0]["state"] = "stopped (codex)"
         data["sessions"][1]["state"] = "running (codex)"
         cell = project(data, self.config)["cells"][1]
@@ -111,7 +112,7 @@ class Cells(unittest.TestCase):
     def test_all_runtime_suffixes_preserve_attention_and_attach_command(self):
         for agent in ("claude", "codex", "pi"):
             data = copy.deepcopy(SNAPSHOT)
-            data["briefs"] = []
+            data["requests"] = []
             data["sessions"][0]["state"] = f"waiting on you (blocked) ({agent})"
             data["sessions"][1]["state"] = f"idle ({agent})"
             cell = project(data, self.config)["cells"][1]
@@ -203,9 +204,9 @@ class CLI(unittest.TestCase):
             data = json.loads(result.stdout)
             self.assertEqual(data["sessions"][0]["name"], "sample")
             self.assertEqual(data["projects"], [{"name": "airo", "profile": "airo"}])
-            self.assertEqual(len(data["briefs"]), 1)
-            self.assertEqual(data["briefs"][0]["session"], "sample")
-            self.assertIsInstance(data["briefs"][0]["since"], int)
+            self.assertEqual(len(data["requests"]), 1)
+            self.assertEqual(data["requests"][0]["session"], "sample")
+            self.assertIsInstance(data["requests"][0]["since"], int)
             self.assertNotIn("NOT_FOR_DASHBOARD", result.stdout)
 
 

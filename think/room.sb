@@ -1,0 +1,12 @@
+;; The room's wall: macOS's process sandbox, applied by the launcher to the
+;; agent and everything it starts. No network at all, except outbound TCP on
+;; loopback to the kuggis proxy (the only road to the model APIs) and to
+;; BigBrain's door. Unix sockets count as network here on purpose: the system
+;; resolver is reached over one, and a name lookup carries data out.
+;;
+;;   sandbox-exec -D PROXY=4749 -D BB=4748 -f room.sb <agent...>
+(version 1)
+(allow default)
+(deny network*)
+(allow network-outbound (remote tcp (string-append "localhost:" (param "PROXY"))))
+(allow network-outbound (remote tcp (string-append "localhost:" (param "BB"))))
