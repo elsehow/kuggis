@@ -80,6 +80,8 @@ pub fn firewall() -> String {
     firewall_for(&crate::host_runtime::Runtime::default())
 }
 
+pub const SCOPED_GIT_CHECK: &str = "ok  host: scoped Git broker refuses unscoped routes; credentials stay private: ok";
+
 pub fn firewall_for(runtime: &crate::host_runtime::Runtime) -> String {
     let b = BoundarySpec::default();
     let dns = runtime.dns().iter().map(|ip| {
@@ -93,8 +95,10 @@ table inet cell {{
  chain input {{
   type filter hook input priority -200; policy accept;
   iifname "{iface}" ip daddr {host} tcp dport 3128 accept
+  iifname "{iface}" ip daddr {host} tcp dport 3129 accept
   iifname "{iface}" counter reject
   iifname != "lo" tcp dport 3128 counter reject
+  iifname != "lo" tcp dport 3129 counter reject
  }}
  chain forward {{
   type filter hook forward priority -200; policy accept;
@@ -108,9 +112,15 @@ table inet cell {{
 {dns}
   meta skuid "cell-proxy" tcp dport {{ 443, 8443 }} accept
   meta skuid "cell-proxy" counter reject
+  meta skuid "cell-git" oifname "lo" accept
+  meta skuid "cell-git" oifname "{iface}" tcp sport 3129 accept
+{git_dns}
+  meta skuid "cell-git" tcp dport 443 accept
+  meta skuid "cell-git" counter reject
  }}
 }}
 "#,
+        git_dns = dns.replace("cell-proxy", "cell-git"),
         iface = b.interface,
         host = b.host_ip
     )

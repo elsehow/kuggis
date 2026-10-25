@@ -8,7 +8,7 @@
 //! host agent account remains locked down; it no longer runs the harness.
 
 use crate::cell::Cell;
-use crate::grant::{Provider, EDGE_SUFFIX, GITHUB_EDGE};
+use crate::grant::{Provider, EDGE_SUFFIX};
 use crate::log;
 use crate::prim::Hash;
 use crate::said::{Said, Secret, State, Statement};
@@ -134,6 +134,32 @@ ReadWritePaths={INBOX}
 WantedBy=multi-user.target
 "
     )
+}
+
+fn git_unit() -> &'static str {
+    "[Unit]
+Description=Repository-scoped Git broker
+Requires=cell-wall.service
+After=cell-wall.service network-online.target
+[Service]
+User=cell-git
+ExecStart=/usr/bin/python3 /usr/local/lib/cell/git-broker.py serve
+LoadCredential=github:/etc/cell/git-credentials.json
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=512M
+TasksMax=32
+UMask=0077
+[Install]
+WantedBy=multi-user.target
+"
 }
 
 /// A locked npm installation on a checksum-pinned, patched Node runtime.
@@ -314,8 +340,8 @@ pub fn prepare_pi(cell: &Cell) -> Fallible<PathBuf> {
             0o600,
         )?;
     }
-    // Existing clones are left intact. New grants clone through the same edge
-    // as the previous runner, under the agent UID and the network wall.
+    // Existing clones stay intact; guest setup rewrites their GitHub URLs to
+    // the same broker used by new clones, independently of hosting provider.
     let work = Path::new(AGENT_HOME).join("work");
     fs::create_dir_all(&work)?;
     for grant in &cell.grants {
@@ -329,7 +355,7 @@ pub fn prepare_pi(cell: &Cell) -> Fallible<PathBuf> {
                 &[
                     "clone",
                     "-q",
-                    &format!("https://{GITHUB_EDGE}/{repo}.git"),
+                    &format!("http://10.203.0.1:3129/{repo}.git"),
                     path.to_str().unwrap(),
                 ],
             )?;
@@ -473,8 +499,17 @@ pub fn setup_with_runtime(
     if Path::new(ETC).join("cell.json").exists() && runtime.is_exe() != previous.is_exe() {
         return Err("changing a cell's hosting backend requires an explicit migration".into());
     }
+    // Missing write credentials must fail before stopping an existing cell.
+    // The embedded helper never prints credentials or accepts guest paths.
+    let preflight = Command::new("python3")
+        .args(["-c", include_str!("git_broker.py"), "preflight"])
+        .arg(cell_path).output()?;
+    if !preflight.status.success() {
+        return Err(format!("Git preflight failed: {}", String::from_utf8_lossy(&preflight.stderr)).into());
+    }
     preserve_before_upgrade()?;
     let _ = attempt("systemctl", &["stop", "cell-agent"]);
+    let _ = attempt("systemctl", &["stop", "cell-git"]);
     fs::create_dir_all(ETC)?;
     // A fresh Ubuntu host may not include nftables. Install it before opening
     // the proxy listener; the guest is still stopped at this point.
@@ -492,7 +527,7 @@ pub fn setup_with_runtime(
         "--shell",
         "/usr/sbin/nologin",
     ];
-    for user in [PROXY_USER, DOOR_USER, SAY_USER] {
+    for user in [PROXY_USER, DOOR_USER, SAY_USER, "cell-git"] {
         if !user_exists(user) {
             run("useradd", &[&system[..], &[user]].concat())?;
         }
@@ -572,6 +607,12 @@ pub fn setup_with_runtime(
         proxy_unit().as_bytes(),
         0o644,
     )?;
+    fs::create_dir_all("/usr/local/lib/cell")?;
+    write_as_root(Path::new("/usr/local/lib/cell/git-broker.py"), include_bytes!("git_broker.py"), 0o644)?;
+    if !etc("git-credentials.json").exists() {
+        write_as_root(&etc("git-credentials.json"), b"{}\n", 0o600)?;
+    }
+    write_as_root(Path::new("/etc/systemd/system/cell-git.service"), git_unit().as_bytes(), 0o644)?;
     write_as_root(
         Path::new("/etc/systemd/system/cell-door.service"),
         door_unit().as_bytes(),
@@ -610,6 +651,7 @@ pub fn setup_with_runtime(
     // Restarting the bridge without a publisher configuration is a no-op.
     let mut units = vec![
         "cell-proxy",
+        "cell-git",
         "cell-say",
         "cell-agent",
         "cell-publish-bridge",
@@ -1055,7 +1097,7 @@ pub fn check() -> Fallible<Statement> {
         },
         format!("host runtime {}", Hash::of(&crate::canon::bytes(&runtime))),
     ));
-    let mut units = vec!["cell-proxy", "cell-say", "cell-agent"];
+    let mut units = vec!["cell-proxy", "cell-git", "cell-say", "cell-agent"];
     if runtime.is_exe() {
         units.push("cell-door");
     }
@@ -1170,6 +1212,14 @@ mod tests {
             .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/chat_health.py"))
             .status()
             .unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    fn scoped_git_uses_real_clients_and_isolates_credentials() {
+        let status = std::process::Command::new("python3")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/git_broker.py"))
+            .status().unwrap();
         assert!(status.success());
     }
 

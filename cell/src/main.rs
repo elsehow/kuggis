@@ -19,6 +19,7 @@ use std::time::Duration;
 
 const USAGE: &str = "\
 usage:
+  cell git credential OWNER/REPO  as host root: store a repository token from stdin
   cell host inspect HOSTFILE      inspect an existing Ubuntu host through pinned SSH
   cell host plan CELLFILE HOSTFILE --bin LINUX_CELL --state DIR
                                   review bootstrap on a dedicated existing host
@@ -110,6 +111,14 @@ fn run(args: &[String]) -> Fallible {
     match args.first().map(String::as_str) {
         Some("key") => key(rest),
         Some("host") => host(rest),
+        Some("git") if rest.len() == 2 && rest[0] == "credential" => {
+            let repo: cell::Repo = rest[1].parse()?;
+            let status = std::process::Command::new("python3")
+                .args(["-c", include_str!("git_broker.py"), "credential", repo.as_str()])
+                .status()?;
+            if !status.success() { return Err("Git credential installation failed".into()); }
+            Ok(())
+        }
         Some("say") => say(rest),
         Some("open") => open(rest),
         Some("allow") => allow(rest),

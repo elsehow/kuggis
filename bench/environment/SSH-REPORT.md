@@ -1,5 +1,8 @@
 # Standalone SSH host acceptance
 
+This records the initial bootstrap. See [shared Git acceptance](GIT-REPORT.md)
+for the subsequent broker upgrade.
+
 The production bootstrap was exercised on a fresh OVH RISE-S dedicated host
 running x86_64 Ubuntu 24.04, with an AMD Ryzen 7 9700X (16 logical CPUs) and
 64 GB of physical RAM. The guest limit was 56 GiB, with no CPU quota. The

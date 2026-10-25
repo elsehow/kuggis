@@ -127,7 +127,7 @@ fn cli_rejects_unsupported_grants_and_invalid_options_before_ssh() {
     }
     fs::write(
         f.root.join("cell.json"),
-        r#"{"name":"worker","grants":[{"code":{"repo":"example/project","write":true}}]}"#,
+        r#"{"name":"worker","grants":[{"edge":"search"}]}"#,
     )
     .unwrap();
     let out = f.run("plan", &[]);

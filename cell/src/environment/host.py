@@ -187,7 +187,7 @@ WantedBy=multi-user.target
     write('/etc/systemd/system/cell-agent.service', f'''[Unit]
 Description=Cell persistent autonomous environment
 Requires=cell-wall.service
-After=cell-wall.service cell-proxy.service cell-say.service
+After=cell-wall.service cell-proxy.service cell-git.service cell-say.service
 [Service]
 Type=notify
 Delegate=yes
@@ -266,6 +266,32 @@ for host,port in [("1.1.1.1",443),("169.254.169.254",80),("10.203.0.1",8000),("1
         code = f'DENIED_HOST = {denied!r}\nALLOWED_HOST = {public!r}\nDOOR_STATUS = {status!r}\n' + code
         run('nsenter', '-t', pid, '-n', '/usr/bin/python3', '-c', code, timeout=90)
     case('host: guest network reaches proxy and cannot bypass it', network_probes)
+    def git_boundary():
+        pid = run('machinectl', 'show', MACHINE, '-p', 'Leader', '--value').stdout.strip()
+        cell = json.loads((ETC / 'cell.json').read_text())
+        repositories = {}
+        for grant in cell['grants']:
+            if 'code' in grant:
+                g = grant['code']; repo = g.get('via') or g['repo']
+                repositories[repo] = repositories.get(repo, False) or g['write']
+        code = '''import http.client
+c = http.client.HTTPConnection('10.203.0.1', 3129, timeout=10)
+c.request('GET', '/not-a-git-route')
+assert c.getresponse().status == 403, 'Git broker accepts an unscoped route'
+c.close()
+for repo, write in REPOSITORIES.items():
+ for operation in (['upload', 'receive'] if write else ['upload']):
+  c = http.client.HTTPConnection('10.203.0.1', 3129, timeout=40)
+  c.request('GET', '/' + repo + '.git/info/refs?service=git-' + operation + '-pack')
+  r = c.getresponse()
+  assert r.status == 200, 'declared repository operation unavailable'
+  assert r.getheader('Content-Type') == 'application/x-git-' + operation + '-pack-advertisement'
+  r.read(32); c.close()
+'''
+        run('nsenter', '-t', pid, '-n', '/usr/bin/python3', '-c', f'REPOSITORIES = {repositories!r}\n' + code)
+        info = (ETC / 'git-credentials.json').stat()
+        assert info.st_uid == 0 and info.st_mode & 0o777 == 0o600, 'Git credential permissions'
+    case('host: scoped Git broker refuses unscoped routes; credentials stay private', git_boundary)
     def chat():
         run('curl', '-fsS', '--max-time', '10', '--unix-socket', '/run/cell-chat/api.sock',
             '-H', 'Host: cell.internal', 'http://cell.internal/api/pi/threads?includeArchived=true')

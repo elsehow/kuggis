@@ -105,20 +105,27 @@ impl Plan {
                 actions.push(Action::Setup);
             }
             Some((have, doors)) => {
+                // Replace the old Git path only after the new runtime passes
+                // setup. Legacy attachments remain observable solely so they
+                // can be removed; no new Git attachment is ever created.
+                let legacy_git = have.grants.iter().any(|g| matches!(g, Grant::Code { .. }));
+                if legacy_git && !proved {
+                    actions.push(Action::Setup);
+                }
                 let carried: BTreeSet<Grant> = want.edge_grants().map(Grant::carried).collect();
                 for g in &carried {
                     if !have.grants.contains(g) {
                         actions.push(Action::Attach(g.clone()));
                     }
                 }
-                for g in have.edge_grants() {
+                for g in have.grants.iter().filter(|g| g.at_edge() || matches!(g, Grant::Code { .. })) {
                     if !carried.contains(g) {
                         actions.push(Action::Detach(g.clone()));
                     }
                 }
                 actions.extend(children.difference(doors).cloned().map(Action::Open));
                 actions.extend(doors.difference(children).cloned().map(Action::Close));
-                if !proved {
+                if !proved && !legacy_git {
                     actions.push(Action::Setup);
                 }
             }
@@ -207,27 +214,22 @@ mod tests {
             p.actions,
             vec![
                 Action::Create,
-                Action::Attach(Grant::Code {
-                    repo: "example/widget".parse().unwrap(),
-                    write: true,
-                    via: None
-                }),
                 Action::Open("scratch".parse().unwrap()),
                 Action::Setup,
             ]
         );
         assert_eq!(
-            serde_json::to_value(&p.actions[2]).unwrap(),
+            serde_json::to_value(&p.actions[1]).unwrap(),
             serde_json::json!({"open": "scratch"})
         );
-        assert_eq!(p.actions[2].to_string(), r#"{"open":"scratch"}"#);
+        assert_eq!(p.actions[1].to_string(), r#"{"open":"scratch"}"#);
     }
 
     #[test]
     fn a_settled_cell_plans_nothing() {
         let want = cell(WANT);
         let have = cell(
-            r#"{"name":"widget","grants":[{"provider":"openai"},{"code":{"repo":"example/widget","write":true}}]}"#,
+            r#"{"name":"widget","grants":[]}"#,
         );
         let doors = names(&["scratch"]);
         let p = Plan::new(
@@ -257,11 +259,7 @@ mod tests {
         assert_eq!(
             p.actions,
             vec![
-                Action::Attach(Grant::Code {
-                    repo: "example/widget".parse().unwrap(),
-                    write: true,
-                    via: None
-                }),
+                Action::Setup,
                 Action::Detach(Grant::Code {
                     repo: "example/widget".parse().unwrap(),
                     write: false,
@@ -270,7 +268,6 @@ mod tests {
                 Action::Detach(Grant::Edge("brave".parse().unwrap())),
                 Action::Open("new".parse().unwrap()),
                 Action::Close("old".parse().unwrap()),
-                Action::Setup,
             ]
         );
     }

@@ -2,6 +2,7 @@
 
 Production integration: [migration acceptance results](PRODUCTION-REPORT.md).
 Standalone SSH hosting: [dedicated-host acceptance results](SSH-REPORT.md).
+Shared scoped Git: [broker acceptance results](GIT-REPORT.md).
 
 Architecture experiment result: [22/22 cases passed on exe.dev](REPORT.md), including a
 full VM reboot. The report also records an intermittent existing auth-test failure.
@@ -140,3 +141,23 @@ These phases check identity, configuration, workspace, installed software,
 idle chat, Pi startup, and a fresh signed boundary check. Verify the resulting
 signed check and pinned identity with `cell host plan` from the operator machine.
 Keep raw logs and deployment receipts in ignored private storage.
+
+### Scoped Git upgrade
+
+After seeding the standalone canary, add the read-only code grant
+`{"code":{"repo":"octocat/hello-world","write":false}}` and review/apply
+the new runtime through the SSH host CLI. Run, as host root:
+
+```sh
+python3 ssh_git_acceptance.py test-canary
+```
+
+This tests public clone/fetch, standard GitHub and legacy URL rewrites, refused
+access to another repository, a refused dry-run push, blocked broad CONNECT
+tunnels, guest exclusion from credential paths, and preservation of the
+original signing identity, guest configuration, installed jq, workspace and chat.
+It requires an empty broker credential store and makes no remote writes.
+Repeat after a reviewed no-op apply and an authorized host reboot; compare boot
+IDs separately. Private GitHub reads and real GitHub pushes need a separate
+disposable repository and scoped credential. The local Git broker suite tests
+real pushes against disposable Git backends with synthetic credentials.

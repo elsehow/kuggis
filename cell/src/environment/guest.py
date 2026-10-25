@@ -1,5 +1,4 @@
 """Invoked only inside the guest, including on reapply. Never on the host."""
-import json
 import os
 from pathlib import Path
 import shutil
@@ -10,8 +9,7 @@ if not Path('/run/systemd/container').exists():
     raise RuntimeError('guest setup requires a container')
 
 PROXY = 'http://10.203.0.1:3128'
-RUNTIME = json.loads(Path('/run/cell-runtime/host.json').read_text()) if Path('/run/cell-runtime/host.json').exists() else {'backend': 'exe_dev'}
-GH_HOST = 'github.int.exe.xyz' if RUNTIME['backend'] == 'exe_dev' else 'github.com'
+GH_HOST = 'github.com'
 ENV = {**os.environ, 'DEBIAN_FRONTEND': 'noninteractive', 'HOME': '/home/agent', 'HTTPS_PROXY': PROXY,
        'HTTP_PROXY': PROXY, 'https_proxy': PROXY, 'http_proxy': PROXY,
        'NO_PROXY': 'localhost,127.0.0.1,::1', 'no_proxy': 'localhost,127.0.0.1,::1',
@@ -77,6 +75,14 @@ export NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1
 export GH_HOST={GH_HOST} PI_CODING_AGENT_DIR=/home/agent/.pi/agent
 export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
 ''')
+# One transport for new and existing clones on every hosting provider. These
+# are conveniences only: the host broker enforces scopes even for guest root.
+git_base = 'http://10.203.0.1:3129/'
+sp.run(['git', 'config', '--system', '--unset-all', f'url.{git_base}.insteadOf'], env=ENV, capture_output=True)
+for source in ('https://github.com/', 'https://github.int.exe.xyz/', 'git@github.com:', 'ssh://git@github.com/'):
+    run('git', 'config', '--system', '--add', f'url.{git_base}.insteadOf', source)
+run('git', 'config', '--system', f'http.{git_base}.proxy', '')
+run('git', 'config', '--system', f'http.{git_base}.followRedirects', 'false')
 workspace = run('runuser', '-u', 'agent', '--', '/usr/local/bin/cell', 'prepare', '/etc/cell/cell.json')
 if '\n' in workspace or not workspace.startswith('/home/agent/'):
     raise RuntimeError('invalid workspace')

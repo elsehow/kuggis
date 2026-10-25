@@ -1,6 +1,6 @@
-//! Grants: every reach a cell has beyond its own root. Each grant implies
-//! hosts the proxy may tunnel to, and some imply an exe.dev attachment that
-//! holds the credential at the edge.
+//! Grants: every reach a cell has beyond its own root. Network grants name
+//! proxy destinations; Git grants use the shared host broker. Other named
+//! integrations still imply an exe.dev attachment.
 
 use crate::canon;
 use crate::prim::{Host, Name, Repo};
@@ -51,12 +51,9 @@ pub enum Grant {
     /// Provider access, independent of the runtime. Credentials are held
     /// separately on the box or at the edge, never in a grant.
     Provider(Provider),
-    /// A repository at exe.dev's GitHub edge, read or write. `via` names a
-    /// fork the grant is carried by: the edge then holds the fork, and the
-    /// authority is still on `repo`. The edge is one GitHub App for every
-    /// cell, so what tells a parent from a child is which repository each
-    /// carries: the child its fork, the parent the upstream. Merging is
-    /// writing the upstream.
+    /// A repository through the host's scoped Git broker, read or write.
+    /// `via` carries the grant through that fork only; it does not authorize
+    /// accessing the upstream. Merging upstream requires its own write grant.
     Code {
         repo: Repo,
         write: bool,
@@ -90,8 +87,6 @@ pub const CLAUDE_HOSTS: [&str; 3] = ["api.anthropic.com", "claude.ai", "platform
 /// Pi’s API-key and subscription endpoints, including device-code sign-in.
 pub const OPENAI_HOSTS: [&str; 3] = ["api.openai.com", "auth.openai.com", "chatgpt.com"];
 pub const PAPER_INSTRUMENTS_HOST: &str = "api.paperinstruments.com";
-/// exe.dev's GitHub edge; one hostname for every repo integration.
-pub const GITHUB_EDGE: &str = "github.int.exe.xyz";
 /// Suffix of every personal exe.dev integration hostname.
 pub const EDGE_SUFFIX: &str = ".int.exe.xyz";
 
@@ -103,7 +98,7 @@ impl Grant {
             Grant::Provider(Provider::Anthropic) => CLAUDE_HOSTS.iter().map(|h| fixed(h)).collect(),
             Grant::Provider(Provider::OpenAi) => OPENAI_HOSTS.iter().map(|h| fixed(h)).collect(),
             Grant::Provider(Provider::PaperInstruments) => vec![fixed(PAPER_INSTRUMENTS_HOST)],
-            Grant::Code { .. } => vec![fixed(GITHUB_EDGE)],
+            Grant::Code { .. } => vec![],
             Grant::Edge(name) => vec![fixed(&format!("{name}{EDGE_SUFFIX}"))],
             Grant::Host(h) => vec![h.clone()],
             Grant::Publish(_) => vec![],
@@ -113,10 +108,10 @@ impl Grant {
     /// Enforced by an exe.dev attachment, so observable and attachable
     /// there. The rest are enforced on the box and reconciled by setup.
     pub fn at_edge(&self) -> bool {
-        matches!(self, Grant::Code { .. } | Grant::Edge(_))
+        matches!(self, Grant::Edge(_))
     }
 
-    /// The grant as the edge carries it: the fork in place of its upstream.
+    /// The effective repository: the fork in place of its upstream.
     pub fn carried(&self) -> Grant {
         match self {
             Grant::Code {
@@ -220,7 +215,8 @@ mod tests {
             "a fork does not cover the upstream"
         );
         assert!(!code("o/r", false).covers(&g));
-        assert_eq!(g.hosts()[0].as_str(), GITHUB_EDGE);
+        assert!(g.hosts().is_empty());
+        assert!(!g.at_edge());
     }
 
     #[test]

@@ -304,6 +304,8 @@ fn verified(
         return Err("host returned a statement that is not a boundary check".into());
     };
     Ok(*ok
+        && (!cell.grants.iter().any(|g| matches!(g, crate::Grant::Code { .. }))
+            || report.lines().any(|line| line == crate::environment::SCOPED_GIT_CHECK))
         && *checked_cell == cell.hash()
         && *checked_binary == binary
         && observed.cell.as_ref() == Some(cell)

@@ -9,8 +9,9 @@ The implementation is the Rust crate in [cell/](cell/README.md). Its
 
 An experimental [existing-host bootstrap](deploy/ssh-hosts.md) can set up a new
 standalone cell on an Ubuntu server over SSH, independently of the cloud
-provider. Git integration, operator UI registration, and migration are still
-required before moving an existing exe.dev cell.
+provider. [Repository-scoped Git](deploy/scoped-git.md) is shared by both hosting
+options. Operator UI registration and migration are still required before moving
+an existing exe.dev cell.
 
 ## Build and test
 

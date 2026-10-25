@@ -9,11 +9,11 @@ cell remains separate from bootstrapping a new cell.
 
 This is a bootstrap CLI, not yet a second backend for the operator tree. It does
 not register the host in the browser UI, move an existing cell, provision/delete
-servers, or implement parent–child doors. Provider and public-host grants work;
-code, integration, and publishing grants are refused before connecting because
-their current enforcement depends on exe.dev. Do not remove an existing cell's
-code grants to bypass that check. Migrating Merrillfront requires scoped Git
-access and supervisor/identity integration in subsequent work.
+servers, or implement parent–child doors. Provider, public-host, and repository
+code grants work. [Scoped Git](scoped-git.md) uses the same broker on every host;
+private reads and writes require host-held repository credentials. Integration
+and publishing grants still depend on exe.dev and are refused before connecting.
+Migrating an existing cell still requires supervisor/identity integration.
 
 ## Configuration
 
@@ -98,12 +98,9 @@ erase partial environments or replace keys. Failed bootstrap staging remains in
 
 ## Remaining work before a migration
 
-1. Implement one provider-neutral repository-scoped Git access path, with tests
-   for read-only grants, forks, and credential isolation. Validate it on the
-   canary, then use it for both exe.dev and SSH hosts and retire the existing
-   exe.dev Git path. Hosting backends must not select separate permanent Git
-   implementations. Preserve grant semantics throughout the rollout; never
-   broaden access to make migration work.
+1. Finish live private/write validation of the shared scoped Git broker, provision
+   repository credentials, and retire existing exe.dev Git attachments through
+   reviewed upgrades. Preserve grant semantics throughout the rollout.
 2. Route supervisor chat, health, settings, and lifecycle operations through an
    explicit host binding; external hosts must never inherit exe.dev deletion.
 3. Add a reviewed migration that preserves cell identity, signed logs, chats,

@@ -60,7 +60,7 @@ impl Runtime {
         if !self.is_exe() {
             for grant in &cell.grants {
                 match grant {
-                    Grant::Provider(_) => {},
+                    Grant::Provider(_) | Grant::Code { .. } => {},
                     Grant::Host(host) if !host.as_str().ends_with(crate::grant::EDGE_SUFFIX) => {},
                     _ => return Err(format!("SSH hosts do not yet support grant {grant}; an explicit replacement for the exe.dev integration is required").into()),
                 }
@@ -95,7 +95,6 @@ mod tests {
     fn external_hosts_do_not_claim_platform_grants() {
         let runtime: Runtime = serde_json::from_str(r#"{"backend":"ssh","dns":["127.0.0.53","2001:4860:4860::8888"],"memory_max":8589934592}"#).unwrap();
         for grant in [
-            r#"{"code":{"repo":"example/project","write":true}}"#,
             r#"{"edge":"search"}"#,
             r#"{"host":"door-child.int.exe.xyz"}"#,
             r#"{"publish":"private"}"#,
@@ -106,7 +105,7 @@ mod tests {
             assert!(runtime.validate_cell(&cell).is_err(), "{grant}");
         }
         let cell: Cell = serde_json::from_str(
-            r#"{"name":"worker","grants":[{"provider":"openai"},{"host":"pypi.org"}]}"#,
+            r#"{"name":"worker","grants":[{"provider":"openai"},{"host":"pypi.org"},{"code":{"repo":"example/project","write":false}}]}"#,
         )
         .unwrap();
         runtime.validate_cell(&cell).unwrap();

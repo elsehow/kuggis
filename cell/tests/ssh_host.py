@@ -1,5 +1,6 @@
 """Exercise the bootstrap protocol without root, SSH, or a provider account."""
 import hashlib
+import http.client
 import ast
 import importlib.util
 import io
@@ -125,19 +126,32 @@ class EnvironmentBoundary(unittest.TestCase):
             if args[0] == 'machinectl': return SimpleNamespace(stdout='123')
             if args[0] == '/usr/local/bin/cell': return SimpleNamespace(stdout='api.openai.com\n')
             if args[0] == 'nsenter':
-                with patch.dict('sys.modules', {'socket': SimpleNamespace(create_connection=connect)}):
-                    exec(compile(args[-1], '<trusted-network-probes>', 'exec'), {})
+                if 'import http.client' in args[-1]:
+                    client = SimpleNamespace(request=lambda *a: None, getresponse=lambda: SimpleNamespace(status=403), close=lambda: None)
+                    with patch.object(http.client, 'HTTPConnection', return_value=client):
+                        exec(compile(args[-1], '<trusted-git-probes>', 'exec'), {})
+                else:
+                    with patch.dict('sys.modules', {'socket': SimpleNamespace(create_connection=connect)}):
+                        exec(compile(args[-1], '<trusted-network-probes>', 'exec'), {})
             return SimpleNamespace(stdout='')
         with tempfile.TemporaryDirectory() as root:
             uid_map = Path(root) / 'proc/123/uid_map'; uid_map.parent.mkdir(parents=True)
             uid_map.write_text('0 524288 65536\n')
+            etc = Path(root) / 'etc/cell'; etc.mkdir(parents=True)
+            (etc / 'cell.json').write_text('{"grants":[]}')
+            (etc / 'git-credentials.json').write_text('{}')
+            original_stat = Path.stat
+            def fake_stat(path, *args, **kwargs):
+                if path == etc / 'git-credentials.json': return SimpleNamespace(st_uid=0, st_mode=0o600)
+                return original_stat(path, *args, **kwargs)
             namespace = dict(run=run, Path=lambda p: Path(root) / str(p).lstrip('/'),
+                             ETC=etc,
                              os=SimpleNamespace(readlink=lambda p: str(p)), json=json,
                              MACHINE='cell-env', BASE=524288, SPEC={'uid_count': 65536}, RUNTIME=runtime,
                              guard=lambda: None, guest=lambda *a, **k: None,
                              print=lambda s: captured.extend(json.loads(s)))
             exec(compile(ast.Module(body=[check], type_ignores=[]), '<environment-check>', 'exec'), namespace)
-            namespace['check']()
+            with patch.object(Path, 'stat', fake_stat): namespace['check']()
         return captured, targets
 
     def test_ssh_runtime_checks_memory_public_egress_and_refuses_platform_doors(self):
