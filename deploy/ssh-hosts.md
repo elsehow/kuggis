@@ -98,9 +98,11 @@ erase partial environments or replace keys. Failed bootstrap staging remains in
 
 ## Remaining work before a migration
 
-1. Finish live private/write validation of the shared scoped Git broker, provision
-   repository credentials, and retire existing exe.dev Git attachments through
-   reviewed upgrades. Preserve grant semantics throughout the rollout.
+1. Provision repository credentials for production cells and retire existing
+   exe.dev Git attachments through reviewed upgrades. The shared broker has
+   passed live private clone/fetch, read-only enforcement, and authenticated
+   dry-run push [acceptance](../bench/environment/GIT-REPORT.md). Preserve grant
+   semantics throughout the rollout.
 2. Route supervisor chat, health, settings, and lifecycle operations through an
    explicit host binding; external hosts must never inherit exe.dev deletion.
 3. Add a reviewed migration that preserves cell identity, signed logs, chats,

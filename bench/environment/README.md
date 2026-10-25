@@ -158,6 +158,31 @@ tunnels, guest exclusion from credential paths, and preservation of the
 original signing identity, guest configuration, installed jq, workspace and chat.
 It requires an empty broker credential store and makes no remote writes.
 Repeat after a reviewed no-op apply and an authorized host reboot; compare boot
-IDs separately. Private GitHub reads and real GitHub pushes need a separate
-disposable repository and scoped credential. The local Git broker suite tests
-real pushes against disposable Git backends with synthetic credentials.
+IDs separately. The local Git broker suite tests real pushes against disposable
+Git backends with synthetic credentials.
+
+For private repository acceptance, install a [repository-scoped credential](../../deploy/scoped-git.md#credentials)
+and restart `cell-git`. Confirm independently that the selected repository is
+private. Before adding its Code grant, its broker advertisement must still
+return 403: a stored credential is not authorization. Review/apply a read-only
+grant, then run as host root:
+
+```sh
+python3 ssh_private_git_acceptance.py test-canary example/private-project read
+```
+
+With a write-capable token already installed, this proves that the grant still
+refuses pushes. Review/apply the same grant with `write: true`, then run:
+
+```sh
+python3 ssh_private_git_acceptance.py test-canary example/private-project write
+```
+
+Both phases independently clone/fetch into a temporary guest directory, check
+legacy URL routing and scope refusal, and verify credential isolation, preserved
+canary state, and fresh signed boundary checks. Write mode proposes a unique
+new branch using `git push --dry-run` and verifies the exact ref is absent before
+and after. It makes no remote changes; it does not validate actual ref updates
+or server-side update hooks. The original seed and an ungranted
+`octocat/spoon-knife` repository are required. Keep logs in private deployment
+storage and verify the final signed observation through `cell host plan`.

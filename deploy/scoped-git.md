@@ -94,3 +94,9 @@ credential/header isolation, private-address refusal and redirects. The Rust
 suite includes these tests and checks platform reconciliation and upgrade
 ordering. Live `cell check` tests the broker from the guest network namespace,
 including advertised read/write operations for each declared repository.
+
+The standalone canary also passed live private clone/fetch, read-only push
+refusal with a write-capable token, and an authenticated dry-run push after
+enabling its write grant. No remote refs were changed. See the
+[acceptance results](../bench/environment/GIT-REPORT.md) and
+[reproduction steps](../bench/environment/README.md#scoped-git-upgrade).
