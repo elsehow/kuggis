@@ -9,8 +9,12 @@ const modelLabel = (model: PiModelInfo) => (model.name ?? model.modelId)
   .replace(/\s+/g, " ").trim();
 const keyOf = (model: PiModelInfo) => `${model.provider}/${model.modelId}`;
 
-export function ModelPicker({ models, selection, disabled, onSelect }: {
+export function ModelPicker({ models, loading, error, onRetry, onConfigure, selection, disabled, onSelect }: {
   models: PiModelInfo[];
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+  onConfigure: () => void;
   selection: string;
   disabled: boolean;
   onSelect: (model: PiModelInfo) => void;
@@ -41,11 +45,11 @@ export function ModelPicker({ models, selection, disabled, onSelect }: {
       ? root.current?.querySelector<HTMLElement>(`[data-model-provider="${CSS.escape(provider)}"] .model-submenu [role="menuitem"]`)
       : lastProvider.current
         ? providerButtons.current.get(lastProvider.current)
-        : root.current?.querySelector<HTMLElement>("[data-model-group] [role=menuitem]");
+        : root.current?.querySelector<HTMLElement>("[role=menuitem]:not(:disabled)");
     if (provider) lastProvider.current = provider;
     else lastProvider.current = null;
     target?.focus();
-  }, [open, provider]);
+  }, [open, provider, choices]);
 
   const keyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
@@ -76,10 +80,17 @@ export function ModelPicker({ models, selection, disabled, onSelect }: {
 
   const choose = (model: PiModelInfo) => { onSelect(model); setOpen(false); setProvider(null); trigger.current?.focus(); };
   return <div className="model-picker" ref={root} onKeyDown={keyDown}>
-    <button ref={trigger} className="model-picker-trigger" type="button" aria-label={`Model: ${selected ? modelLabel(selected) : "Choose model"}`} aria-haspopup="menu" aria-expanded={open} disabled={disabled || models.length === 0} onClick={() => { setOpen((value) => !value); setProvider(null); }}>
-      {selected ? modelLabel(selected) : selection || "Model"}<span aria-hidden="true">⌄</span>
+    <button ref={trigger} className="model-picker-trigger" type="button" aria-label={`Model: ${selected ? modelLabel(selected) : "Choose model"}`} aria-haspopup="menu" aria-expanded={open} disabled={disabled} onClick={() => { setOpen((value) => !value); setProvider(null); }}>
+      {selected ? modelLabel(selected) : selection || "Choose model"}<span aria-hidden="true">⌄</span>
     </button>
     {open && <div role="menu" aria-label="Choose model" className="model-menu">
+      {loading ? <p role="status" className="model-notice">Loading models…</p>
+        : error ? <p role="alert" className="model-notice">Could not load models: {error}</p>
+        : models.length === 0 && <p role="status" className="model-notice">No models available. Enable a provider and sign in in Cell settings, then choose a model.</p>}
+      {(error || models.length === 0) && <>
+        <button type="button" role="menuitem" onClick={() => { setOpen(false); setProvider(null); onConfigure(); }}>Provider settings</button>
+        <button type="button" role="menuitem" disabled={loading} onClick={onRetry}>Retry loading models</button>
+      </>}
       {groups.map(([name, items]) => {
         const current = selected?.provider === name && !choices.some((item) => keyOf(item) === keyOf(selected));
         return <div role="none" className="model-group" data-model-group key={name} data-model-provider={name}>

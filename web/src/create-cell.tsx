@@ -5,6 +5,7 @@ import type { ProviderId } from "./settings-types";
 import { ProviderChoices } from "./provider-choices";
 import { providerLabel } from "./providers";
 import { publishLabel } from "./grants";
+import { browserTestingHosts, defaultHosts } from "./default-hosts";
 
 const steps: Record<Step, string> = { preparing: "Preparing…", creating_vm: "Creating cell…", configuring_access: "Configuring access…", installing_runtime: "Setting up workspace…", connecting_parent: "Connecting parent…", opening_chat: "Opening chat…" };
 export const creationLabel = (creation: Creation) => creation.phase.state === "provisioning" ? steps[creation.phase.step] : creation.phase.state === "failed" ? "Setup failed" : "";
@@ -24,6 +25,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
   const [write, setWrite] = useState(false);
   const [fork, setFork] = useState("");
   const [providers, setProviders] = useState<ProviderId[]>([]);
+  const [hosts, setHosts] = useState("");
   const [job, setJob] = useState<Creation>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -37,6 +39,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
     setParent(value);
     const grants = cells.find((c) => c.name === value)?.grants;
     setProviders(grants ? grants.flatMap((g) => "provider" in g ? [g.provider] : []) : ["anthropic"]);
+    setHosts(defaultHosts(grants).join("\n"));
     const code = grants?.find((g) => "code" in g);
     setRepo(code && "code" in code ? code.code.repo : "");
     setFork(code && "code" in code ? code.code.via ?? "" : ""); setWrite(false);
@@ -46,6 +49,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
     if (!job) return;
     setName(job.cell.name); setParent(job.parent ?? "");
     setProviders(job.cell.grants.flatMap((g) => "provider" in g ? [g.provider] : []));
+    setHosts(job.cell.grants.flatMap((g) => "host" in g ? [g.host] : []).join("\n"));
     const code = job.cell.grants.find((g) => "code" in g);
     setRepo(code && "code" in code ? code.code.repo : "");
     setWrite(code && "code" in code ? code.code.write : false);
@@ -76,6 +80,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
   const preview = () => work(async () => {
     const grants: Grant[] = [
       ...providers.map((provider) => ({ provider })),
+      ...[...new Set(hosts.split(/\s+/).filter(Boolean))].map(host => ({ host })),
       ...(repo.trim() ? [{ code: { repo: repo.trim(), write, ...(fork.trim() ? { via: fork.trim() } : {}) } }] : []),
     ];
     const next = await api<Creation>("/api/cells/plan", { method: "POST", body: JSON.stringify({ name: fullName, parent: parent || null, grants }) });
@@ -109,6 +114,11 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
         <select aria-label="Repository access" value={write ? "write" : "read"} onChange={(e) => setWrite(e.target.value === "write")}><option value="read">Read</option><option value="write">Write</option></select>
       </div><details open={!!fork}><summary>Fork</summary><input aria-label="Repository fork" placeholder="owner/repository" value={fork} onChange={(e) => setFork(e.target.value)} /></details></section>
       <ProviderChoices selected={providers} onChange={setProviders} disabled={id => !!parentCell && !parentCell.grants.some(g => "provider" in g && g.provider === id)} />
+      <section><h3>Allowed hosts</h3>
+        <p>Defaults allow npm packages, Playwright browsers, and Ubuntu browser dependencies. Remove hosts you do not need.</p>
+        {parentCell && defaultHosts(parentCell.grants).length < browserTestingHosts.length && <p role="status">Some browser testing hosts are unavailable because the parent does not grant them. Add them to the parent first to enable full browser installation.</p>}
+        <textarea aria-label="Allowed hosts" rows={7} value={hosts} onChange={(e) => setHosts(e.target.value)} />
+      </section>
       <footer className="settings-actions"><button className="primary" disabled={busy || !name || fullName.length > 63}>{busy ? "Checking…" : "Continue"}</button></footer>
     </form>}
   </dialog>;

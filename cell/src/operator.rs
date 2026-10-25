@@ -595,6 +595,7 @@ fn router(op: Arc<Operator>) -> Router {
         .route("/api/cells", get(cells))
         .route("/api/resources", get(resources::list))
         .route("/api/resources/plan", post(resources::plan))
+        .route("/api/resources/register-plan", post(resources::register_plan))
         .route("/api/resources/actions/:id", get(resources::get))
         .route("/api/resources/actions/:id/apply", post(resources::apply))
         .route("/api/cells/plan", post(creation::preview))

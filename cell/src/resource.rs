@@ -96,12 +96,44 @@ pub struct ResourceAttachment {
     pub scope: AccessScope,
     pub credential: Option<CredentialRef>,
 }
+/// Operator-verified provider/account labels, not credentials or URLs to follow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalAccount {
+    pub provider: ExternalResourceId,
+    pub account: ExternalResourceId,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalRegistration {
+    pub account: ExternalAccount,
+    pub kind: ResourceKind,
+    pub external_id: ExternalResourceId,
+}
+impl ExternalRegistration {
+    pub fn record(self, provider: ProviderRef) -> ResourceRecord {
+        ResourceRecord {
+            id: ResourceId::external(provider, self.kind, &self.account, &self.external_id),
+            provider,
+            external_id: self.external_id,
+            external_account: Some(self.account),
+            kind: self.kind,
+            owner: ResourceOwner::Operator,
+            management: ResourceManagement::External,
+            state: ResourceState::Unknown,
+            deletion_policy: OwnerDeletionPolicy::RetainForOperator,
+            attachments: vec![],
+        }
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceRecord {
     pub id: ResourceId,
     pub provider: ProviderRef,
     pub external_id: ExternalResourceId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_account: Option<ExternalAccount>,
     pub kind: ResourceKind,
     pub owner: ResourceOwner,
     pub management: ResourceManagement,
@@ -110,6 +142,20 @@ pub struct ResourceRecord {
     pub attachments: Vec<ResourceAttachment>,
 }
 impl ResourceId {
+    pub fn external(
+        provider: ProviderRef,
+        kind: ResourceKind,
+        account: &ExternalAccount,
+        external: &ExternalResourceId,
+    ) -> Self {
+        Self(Hash::of(&canon::bytes(&(
+            "external-resource-v1",
+            provider,
+            kind,
+            account,
+            external,
+        ))))
+    }
     /// Provider/account scope and kind are part of identity. Same-named remote
     /// resources in different accounts cannot alias. Ownership is NOT identity.
     pub fn derive(
@@ -125,7 +171,16 @@ impl ResourceRecord {
         Hash::of(&canon::bytes(self))
     }
     pub fn validate(&self) -> Result<(), String> {
-        if self.id != ResourceId::derive(self.provider, self.kind, &self.external_id) {
+        let expected = match &self.external_account {
+            Some(account) if self.management == ResourceManagement::External => {
+                ResourceId::external(self.provider, self.kind, account, &self.external_id)
+            }
+            Some(_) => {
+                return Err("managed resources cannot claim external account metadata".into())
+            }
+            None => ResourceId::derive(self.provider, self.kind, &self.external_id),
+        };
+        if self.id != expected {
             return Err("resource identity does not match provider/kind/external ID".into());
         }
         if self.management == ResourceManagement::External
@@ -173,6 +228,8 @@ pub enum TransferVisibility {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ResourceIntent {
+    RegisterExternal,
+    Attach(ResourceAttachment),
     Unpublish,
     Transfer {
         to: ResourceOwner,
@@ -186,6 +243,9 @@ pub enum ResourceIntent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceEffect {
+    MetadataRecorded,
+    LocalAccessRecorded,
+    ProviderAccessRequiresManualAction,
     PublicAccessStopped,
     DataRetained,
     OwnershipTransferred,
@@ -206,6 +266,32 @@ impl ResourcePlan {
         resource.validate()?;
         let external = resource.management == ResourceManagement::External;
         let effects = match &intent {
+            ResourceIntent::RegisterExternal
+                if external
+                    && resource.external_account.is_some()
+                    && resource.owner == ResourceOwner::Operator
+                    && resource.attachments.is_empty() =>
+            {
+                vec![
+                    ResourceEffect::MetadataRecorded,
+                    ResourceEffect::CostsMayContinue,
+                ]
+            }
+            ResourceIntent::Attach(attachment)
+                if external
+                    && attachment.scope == AccessScope::Use
+                    && resource.attachments.len() < 64
+                    && !resource
+                        .attachments
+                        .iter()
+                        .any(|a| a.cell == attachment.cell) =>
+            {
+                vec![
+                    ResourceEffect::LocalAccessRecorded,
+                    ResourceEffect::ProviderAccessRequiresManualAction,
+                    ResourceEffect::CostsMayContinue,
+                ]
+            }
             ResourceIntent::Unpublish if !external && resource.kind == ResourceKind::Site => vec![
                 ResourceEffect::PublicAccessStopped,
                 ResourceEffect::DataRetained,
@@ -245,7 +331,11 @@ impl ResourcePlan {
             _ => return Err("unsupported resource lifecycle operation".into()),
         };
         Ok(Self {
-            expected_revision: resource.revision(),
+            expected_revision: if intent == ResourceIntent::RegisterExternal {
+                Hash::ZERO
+            } else {
+                resource.revision()
+            },
             resource,
             intent,
             effects,
@@ -291,6 +381,7 @@ mod tests {
             id: ResourceId::derive(provider, ResourceKind::Site, &external),
             provider,
             external_id: external,
+            external_account: None,
             kind: ResourceKind::Site,
             owner: ResourceOwner::Cell(CellIdentity(crate::Secret::generate().public())),
             management: ResourceManagement::Managed,
