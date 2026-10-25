@@ -22,6 +22,9 @@ PRs with its reviews, and every session, with a live preview of the highlighted
 one (a session's current screen). Enter opens it, ctrl-x closes a session
 (`kuggis done`), and the list refreshes itself. Detach from a session with
 `C-b d` to come back to it. Merging a PR offers to close its session.
+ctrl-t on a PR has the Thinker review it in the background (headless, in its
+room, on Opus; `KUGGIS_REVIEW_MODEL` changes that); the row shows it working,
+then its verdict.
 It uses [fzf](https://github.com/junegunn/fzf) when installed (`brew install
 fzf`), and a numbered menu otherwise. The Thinker, an agent that
 reads your vault and the web from a contained room on the laptop, is in
