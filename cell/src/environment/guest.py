@@ -10,10 +10,12 @@ if not Path('/run/systemd/container').exists():
     raise RuntimeError('guest setup requires a container')
 
 PROXY = 'http://10.203.0.1:3128'
+RUNTIME = json.loads(Path('/run/cell-runtime/host.json').read_text()) if Path('/run/cell-runtime/host.json').exists() else {'backend': 'exe_dev'}
+GH_HOST = 'github.int.exe.xyz' if RUNTIME['backend'] == 'exe_dev' else 'github.com'
 ENV = {**os.environ, 'DEBIAN_FRONTEND': 'noninteractive', 'HOME': '/home/agent', 'HTTPS_PROXY': PROXY,
        'HTTP_PROXY': PROXY, 'https_proxy': PROXY, 'http_proxy': PROXY,
        'NO_PROXY': 'localhost,127.0.0.1,::1', 'no_proxy': 'localhost,127.0.0.1,::1',
-       'GH_HOST': 'github.int.exe.xyz'}
+       'GH_HOST': GH_HOST}
 
 def run(*args, **kw):
     return sp.run(args, check=True, text=True, capture_output=True, env=ENV, **kw).stdout.strip()
@@ -69,10 +71,10 @@ if sp.run(['dpkg', '--compare-versions', installed, 'lt', candidate], env=ENV).r
 run('update-ca-certificates', '--fresh', timeout=60)
 version = run('dpkg-query', '-W', '-f=${Version}', 'ca-certificates')
 run('dpkg', '--compare-versions', version, 'ge', '20260816ubuntu0.24.04.1')
-write('/etc/profile.d/cell.sh', '''export HTTPS_PROXY=http://10.203.0.1:3128 HTTP_PROXY=http://10.203.0.1:3128
+write('/etc/profile.d/cell.sh', f'''export HTTPS_PROXY=http://10.203.0.1:3128 HTTP_PROXY=http://10.203.0.1:3128
 export https_proxy=$HTTPS_PROXY http_proxy=$HTTP_PROXY
 export NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1
-export GH_HOST=github.int.exe.xyz PI_CODING_AGENT_DIR=/home/agent/.pi/agent
+export GH_HOST={GH_HOST} PI_CODING_AGENT_DIR=/home/agent/.pi/agent
 export PATH="$HOME/.cargo/bin:/usr/local/bin:$PATH"
 ''')
 workspace = run('runuser', '-u', 'agent', '--', '/usr/local/bin/cell', 'prepare', '/etc/cell/cell.json')
@@ -93,7 +95,7 @@ Environment=HOME=/home/agent PI_CODING_AGENT_DIR=/home/agent/.pi/agent
 Environment=PATH=/home/agent/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 Environment=HTTPS_PROXY={PROXY} HTTP_PROXY={PROXY} https_proxy={PROXY} http_proxy={PROXY}
 Environment=NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1
-Environment=GH_HOST=github.int.exe.xyz
+Environment=GH_HOST={GH_HOST}
 ExecStart=/usr/local/bin/cell chat --cell /etc/cell/cell.json --workspace "{workspace}" --state /home/agent/.kuggis/chat --socket /run/cell-chat/api.sock --agent-dir /home/agent/.pi/agent --pi /usr/local/lib/cell/pi-1.3.0-node-24.22.1/pi --inbox /var/lib/cell/inbox --outbox /var/lib/cell/outbox
 Restart=always
 RestartSec=2

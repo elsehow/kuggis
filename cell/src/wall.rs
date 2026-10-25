@@ -91,10 +91,6 @@ fn user_exists(name: &str) -> bool {
     attempt("id", &["-u", name]).0
 }
 
-fn wall_nft() -> String {
-    crate::environment::firewall()
-}
-
 fn proxy_unit() -> String {
     format!(
         "[Unit]
@@ -103,7 +99,7 @@ After=network-online.target
 
 [Service]
 User={PROXY_USER}
-ExecStart={BIN} proxy --listen 0.0.0.0:3128 --cell {ETC}/cell.json
+ExecStart={BIN} proxy --listen 0.0.0.0:3128 --cell {ETC}/cell.json --host-runtime {ETC}/host.json
 Restart=always
 RestartSec=1
 NoNewPrivileges=yes
@@ -460,13 +456,32 @@ WantedBy=multi-user.target
 
 /// Build the wall. Idempotent: run it again after changing the cell file.
 pub fn setup(cell_path: &Path) -> Fallible<Statement> {
+    setup_with_runtime(cell_path, None)
+}
+
+pub fn setup_with_runtime(
+    cell_path: &Path,
+    requested: Option<&crate::host_runtime::Runtime>,
+) -> Fallible<Statement> {
     if run("id", &["-u"])?.trim() != "0" {
         return Err("setup runs as root".into());
     }
     let cell: Cell = serde_json::from_str(&fs::read_to_string(cell_path)?)?;
+    let previous = crate::host_runtime::Runtime::load(Path::new(crate::host_runtime::PATH))?;
+    let runtime = requested.unwrap_or(&previous);
+    runtime.validate_cell(&cell)?;
+    if Path::new(ETC).join("cell.json").exists() && runtime.is_exe() != previous.is_exe() {
+        return Err("changing a cell's hosting backend requires an explicit migration".into());
+    }
     preserve_before_upgrade()?;
     let _ = attempt("systemctl", &["stop", "cell-agent"]);
     fs::create_dir_all(ETC)?;
+    // A fresh Ubuntu host may not include nftables. Install it before opening
+    // the proxy listener; the guest is still stopped at this point.
+    if !runtime.is_exe() && !attempt("nft", &["--version"]).0 {
+        run("apt-get", &["update", "-qq"])?;
+        run("apt-get", &["install", "-y", "-qq", "nftables"])?;
+    }
     fs::create_dir_all(SAID)?;
     fs::create_dir_all(INBOX)?;
     fs::create_dir_all(OUTBOX)?;
@@ -539,7 +554,16 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
         format!("{}\n", secret.public()).as_bytes(),
         0o644,
     )?;
-    write_as_root(&etc("wall.nft"), wall_nft().as_bytes(), 0o644)?;
+    write_as_root(
+        Path::new(crate::host_runtime::PATH),
+        &crate::canon::bytes(runtime),
+        0o644,
+    )?;
+    write_as_root(
+        &etc("wall.nft"),
+        crate::environment::firewall_for(runtime).as_bytes(),
+        0o644,
+    )?;
     // Package installation can restart services. Protect the wider proxy bind
     // before writing its unit, rather than waiting until bootstrap completes.
     run("nft", &["-f", &etc("wall.nft").to_string_lossy()])?;
@@ -584,13 +608,15 @@ pub fn setup(cell_path: &Path) -> Fallible<Statement> {
     let expected = run("nft", &["-j", "list", "table", "inet", "cell"])?;
     write_as_root(&etc("wall.expected.json"), expected.as_bytes(), 0o644)?;
     // Restarting the bridge without a publisher configuration is a no-op.
-    let units = [
+    let mut units = vec![
         "cell-proxy",
-        "cell-door",
         "cell-say",
         "cell-agent",
         "cell-publish-bridge",
     ];
+    if runtime.is_exe() {
+        units.push("cell-door");
+    }
     run("systemctl", &[&["enable"][..], &units].concat())?;
     run("systemctl", &[&["restart"][..], &units].concat())?;
     crate::environment::helper("configure")?;
@@ -970,6 +996,8 @@ pub fn check() -> Fallible<Statement> {
     }
     let cell_bytes = fs::read(etc("cell.json"))?;
     let cell: Cell = serde_json::from_slice(&cell_bytes)?;
+    let runtime = crate::host_runtime::Runtime::load(Path::new(crate::host_runtime::PATH))?;
+    runtime.validate_cell(&cell)?;
     let hash = Hash::of(&cell_bytes);
     let secret: Secret = fs::read_to_string(etc("secret"))?.parse()?;
 
@@ -1017,7 +1045,20 @@ pub fn check() -> Fallible<Statement> {
         owner.trim(),
         "",
     ));
-    let mut units = vec!["cell-proxy", "cell-door", "cell-say", "cell-agent"];
+    probes.push(Probe::new(
+        "root: firewall source matches host runtime",
+        "matches",
+        if fs::read_to_string(etc("wall.nft"))? == crate::environment::firewall_for(&runtime) {
+            "matches"
+        } else {
+            "changed"
+        },
+        format!("host runtime {}", Hash::of(&crate::canon::bytes(&runtime))),
+    ));
+    let mut units = vec!["cell-proxy", "cell-say", "cell-agent"];
+    if runtime.is_exe() {
+        units.push("cell-door");
+    }
     if Path::new(crate::publish::bridge::HOST_CONFIG).exists() {
         units.push("cell-publish-bridge");
     }

@@ -7,6 +7,11 @@ log. Cells form a tree: a child can hold only grants its parent covers.
 The implementation is the Rust crate in [cell/](cell/README.md). Its
 `cell` binary is the CLI on the laptop and the runtime on each VM.
 
+An experimental [existing-host bootstrap](deploy/ssh-hosts.md) can set up a new
+standalone cell on an Ubuntu server over SSH, independently of the cloud
+provider. Git integration, operator UI registration, and migration are still
+required before moving an existing exe.dev cell.
+
 ## Build and test
 
 From the repository root, with Rust installed:

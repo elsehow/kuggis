@@ -19,6 +19,11 @@ use std::time::Duration;
 
 const USAGE: &str = "\
 usage:
+  cell host inspect HOSTFILE      inspect an existing Ubuntu host through pinned SSH
+  cell host plan CELLFILE HOSTFILE --bin LINUX_CELL --state DIR
+                                  review bootstrap on a dedicated existing host
+  cell host apply CELLFILE HOSTFILE --bin LINUX_CELL --state DIR --approve HASH
+                                  bootstrap the reviewed host; pin and verify its identity
   cell key new PATH               mint a secret at PATH (0600); print its public key
   cell key pub PATH               print the public key of the secret at PATH
   cell say CELL SEQ SECRET        sign the Said on stdin as CELL, sequence SEQ
@@ -104,6 +109,7 @@ fn run(args: &[String]) -> Fallible {
     let rest = args.get(1..).unwrap_or(&[]);
     match args.first().map(String::as_str) {
         Some("key") => key(rest),
+        Some("host") => host(rest),
         Some("say") => say(rest),
         Some("open") => open(rest),
         Some("allow") => allow(rest),
@@ -271,6 +277,60 @@ fn arg<'a>(args: &'a [String], i: usize, what: &str) -> Fallible<&'a str> {
     args.get(i)
         .map(String::as_str)
         .ok_or_else(|| format!("missing {what}").into())
+}
+
+fn host(args: &[String]) -> Fallible {
+    use cell::ssh_host;
+    let action = arg(args, 0, "inspect|plan|apply")?;
+    if action == "inspect" {
+        if args.len() != 2 {
+            return Err("usage: cell host inspect HOSTFILE".into());
+        }
+        let config = ssh_host::Config::load(Path::new(&args[1]))?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&ssh_host::inspect(&config)?)?
+        );
+        return Ok(());
+    }
+    if !["plan", "apply"].contains(&action) {
+        return Err("expected host inspect, plan or apply".into());
+    }
+    let declaration = load_cell(arg(args, 1, "CELLFILE")?)?;
+    let config = ssh_host::Config::load(Path::new(arg(args, 2, "HOSTFILE")?))?;
+    let mut options = BTreeMap::new();
+    let mut rest = args[3..].chunks_exact(2);
+    for pair in &mut rest {
+        if !["--bin", "--state", "--approve"].contains(&pair[0].as_str())
+            || options.insert(pair[0].as_str(), pair[1].as_str()).is_some()
+        {
+            return Err(format!("unknown or repeated host option: {}", pair[0]).into());
+        }
+    }
+    if !rest.remainder().is_empty() {
+        return Err("host option requires a value".into());
+    }
+    let required = |name| {
+        options
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("host {action} requires {name}"))
+    };
+    let binary = ssh_host::linux_binary(Path::new(required("--bin")?))?;
+    let state = Path::new(required("--state")?);
+    let approval: Option<Hash> = options.get("--approve").map(|s| s.parse()).transpose()?;
+    if (action == "apply") != approval.is_some() {
+        return Err("--approve is required only for host apply".into());
+    }
+    let plan = ssh_host::plan(&ssh_host::Ssh, config, declaration, &binary, state)?;
+    if let Some(approval) = approval {
+        let observed = ssh_host::apply(&ssh_host::Ssh, &plan, approval, &binary, state)?;
+        println!("{}", serde_json::to_string_pretty(&observed)?);
+    } else {
+        println!("{}", serde_json::to_string_pretty(&plan)?);
+        eprintln!("approve with {}", plan.hash());
+    }
+    Ok(())
 }
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
@@ -549,8 +609,16 @@ fn observe(args: &[String]) -> Fallible {
 }
 
 fn setup(args: &[String]) -> Fallible {
+    if !(args.len() == 1 || (args.len() == 3 && args[1] == "--host-runtime")) {
+        return Err("usage: cell setup CELLFILE [--host-runtime FILE]".into());
+    }
     let path = Path::new(arg(args, 0, "CELLFILE")?);
-    checked(cell::wall::setup(path)?)
+    let runtime = flag(args, "--host-runtime")
+        .map(|p| -> Fallible<cell::host_runtime::Runtime> {
+            Ok(serde_json::from_slice(&fs::read(p)?)?)
+        })
+        .transpose()?;
+    checked(cell::wall::setup_with_runtime(path, runtime.as_ref())?)
 }
 
 /// The providers with a credential on the box, one word each.
@@ -724,9 +792,17 @@ fn login(args: &[String]) -> Fallible {
 }
 
 fn proxy(args: &[String]) -> Fallible {
+    if args.iter().any(|a| a == "--host-runtime") && flag(args, "--host-runtime").is_none() {
+        return Err("--host-runtime requires a file".into());
+    }
     let listen = flag(args, "--listen").ok_or("proxy: --listen ADDR")?;
     let cell = load_cell(flag(args, "--cell").ok_or("proxy: --cell CELLFILE")?)?;
     let mut policy = Policy::for_cell(&cell);
+    if let Some(path) = flag(args, "--host-runtime") {
+        let runtime: cell::host_runtime::Runtime = serde_json::from_slice(&fs::read(path)?)?;
+        runtime.validate_cell(&cell)?;
+        policy.allow_doors = runtime.is_exe();
+    }
     policy.private_ok = args.iter().any(|a| a == "--private-ok");
     let listener = TcpListener::bind(listen)?;
     eprintln!(
