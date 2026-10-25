@@ -93,6 +93,41 @@ already exists and continues within the original approval. It never overwrites
 a changed declaration or recreates a completed VM/chat. A ready cell is added
 to the gateway's routing table immediately, without restarting the UI server.
 
+## Files and downloads
+
+Each cell has **Chat** and **Files** views. Files opens the workspace and supports
+an absolute path, parent navigation, folder filtering, and downloads of individual
+files or entire folders. Switching views preserves the chat and its draft. File
+locations are saved in the URL for refresh, browser back/forward, and sharing
+within the same authenticated supervisor.
+
+Assistant Markdown links such as `[Results](</home/agent/forecast runs>)` open
+Files for that path in the selected cell. Ordinary web links stay web links;
+file links are never fetched automatically. New agent sessions receive these
+link instructions in their workspace prompt.
+
+`GET /api/files?path=ABSOLUTE_PATH` returns file metadata or a directory listing
+(at most 10,000 entries). Omit `path` to open the workspace.
+`GET /api/files/download?path=ABSOLUTE_PATH` streams a regular file as an
+attachment, or a directory as a `.tar.gz`. Through the operator these routes
+are `/api/cells/:cell/files` and `/api/cells/:cell/files/download`. Both require
+the same origin and authentication as chat and run with the chat service's OS
+permissions. No sudo, host filesystem traversal, writes, or model calls are used.
+Local mode additionally confines paths and resolved symlinks to its workspace.
+
+Archives use the cell's Python 3 standard library. They contain regular files
+and directories, skipping symlinks, special files, and other filesystems.
+An unreadable or changing file fails the transfer; cancellation stops the archive
+process. Downloads are live reads, not atomic snapshots; stop writers first if
+you need a consistent multi-file snapshot. Responses are not cached, are forced
+to download, and are streamed through the gateway without staging on disk.
+The Files view requires the cell chat service to be available.
+
+Run `python3 cell/tests/file_archive.py` for archive tests and
+`node --test web/tests/files.test.mjs web/tests/hosted.test.mjs` after building
+the Rust server and frontend for endpoint and gateway tests. Set
+`KUGGIS_TEST_PLAYWRIGHT` as below to include the Files browser regression.
+
 ## Cell settings
 
 Providers use Pi's own sign-in infrastructure in an isolated cell-local

@@ -27,6 +27,7 @@ mod tests {
         crate::operator::creation::Creation::export_all(&config).unwrap();
         crate::operator::deletion::DeletionView::export_all(&config).unwrap();
         crate::chat::settings::SettingsView::export_all(&config).unwrap();
+        crate::chat::files::FileListing::export_all(&config).unwrap();
         crate::connection::SecretUpdate::export_all(&config).unwrap();
         crate::connection::ConnectionUpdate::export_all(&config).unwrap();
         crate::operator::Preview::export_all(&config).unwrap();

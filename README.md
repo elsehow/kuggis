@@ -206,3 +206,9 @@ Cell renaming uses [stable UUIDs with an additive legacy migration](docs/cell-id
 Enable it from the Cells sidebar after reviewing the existing VM/key bindings.
 Legacy runtime identifiers and signed history stay unchanged; rename changes
 only the label. New operator-created cells then use UUIDs from creation.
+
+## Cell files
+
+The **Files** tab browses the selected cell as its agent user. Download files or
+folders as streamed `.tar.gz` archives without SSH. Absolute file links in chat
+open Files in that same cell. Local mode stays inside its selected workspace.

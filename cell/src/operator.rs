@@ -396,9 +396,11 @@ async fn proxy(
     let name = op.resolve(&name)?;
     // Only the cell API is reachable. The caller cannot supply a remote path,
     // hostname, SSH command, or arbitrary VM target.
-    if !["pi/", "sessions/", "settings", "info"]
-        .iter()
-        .any(|p| tail.starts_with(p))
+    if tail != "files"
+        && tail != "files/download"
+        && !["pi/", "sessions/", "settings", "info"]
+            .iter()
+            .any(|p| tail.starts_with(p))
     {
         return Err(Error(StatusCode::NOT_FOUND, "No such API".into()));
     }

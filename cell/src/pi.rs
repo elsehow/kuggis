@@ -73,7 +73,7 @@ type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<CallResult<Value>>>>>;
 // Kuggis owns the host instructions; Pi supplies the loop, tools and providers.
 // Workspace context files still load normally. Pi's CLI-specific default prompt
 // can cause subscription requests to fail with an unrelated extra-usage error.
-const SYSTEM_PROMPT: &str = "You are an assistant working in this workspace. Use the available tools to carry out the user's requests. Follow the workspace instructions, keep changes focused, and verify your work.";
+const SYSTEM_PROMPT: &str = "You are an assistant working in this workspace. Use the available tools to carry out the user's requests. Follow the workspace instructions, keep changes focused, and verify your work. The cell UI has a read-only Files tab. To share a file or folder, use a Markdown link to its absolute path, for example [Download results](/home/agent/results). Paths with spaces can use angle brackets, for example [Results](</home/agent/my results>). These links open Files, where the user can download files or folders as .tar.gz archives. Verify that the path exists in this cell before linking it. Do not invent a host path or require SSH for downloads.";
 
 /// Pi 1.3 retains previous system sections in resumed request context. Upgrade
 /// only its identifiable stock instructions, keeping conversation bytes, entry

@@ -7,6 +7,7 @@ use crate::request::{Claim, Receipt, RequestJournal, SubmissionOutcome};
 use crate::session::StreamingBehavior;
 use crate::{RequestId, Session, SessionAction, SessionCommand, SessionId};
 mod config;
+pub(crate) mod files;
 pub use config::{Config, ExecutionMode};
 pub(crate) mod oauth;
 mod provider_check;
@@ -1169,6 +1170,8 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
                 Json(json!({"workspace":store.config.workspace,"cell":store.config.cell(),"mode":if store.config.declaration().is_some() { "cell" } else { "local" },"runtime":"Pi"}))
             }),
         )
+        .route("/api/files", get(files::list))
+        .route("/api/files/download", get(files::download))
         .route("/api/pi/threads", get(list).post(create))
         .route("/api/pi/threads/:id", get(snapshot).patch(rename))
         .route("/api/pi/threads/:id/events", get(events))
