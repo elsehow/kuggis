@@ -130,6 +130,8 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
   const [error, setError] = useState("");
   const [metadata, setMetadata] = useState<PiThreadMetadata[]>([]);
   const [models, setModels] = useState<PiModelInfo[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState("");
   const [changingModel, setChangingModel] = useState(false);
   const [archived, setArchived] = useState(false);
   const [settings, setSettings] = useState(new URLSearchParams(location.search).get("setup") === "1");
@@ -180,7 +182,12 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
     onError: (e) => setError(explain(e)),
     onThreadIdChange(id) { const url = new URL(location.href); if (id) url.searchParams.set("chat", id); else url.searchParams.delete("chat"); history.replaceState(null, "", url); setError(""); },
   });
-  const loadModels = () => client.getAvailableModels().then(setModels).catch((e) => setError(explain(e)));
+  const loadModels = async () => {
+    setModelsLoading(true); setModelsError("");
+    try { setModels(await client.getAvailableModels()); }
+    catch (e) { setModelsError(explain(e)); }
+    finally { setModelsLoading(false); }
+  };
   useEffect(() => { void loadModels(); }, [client]);
   useEffect(() => {
     let disposed = false;
@@ -200,7 +207,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
           <SortedChats />
           {archived && <><div className="section-label">Archived</div><SortedChats archived /></>}
         </ThreadListPrimitive.Root><label className="archive-toggle"><input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} />Archived</label></aside>
-      <main className="chat-main"><ChatHeader client={client} models={models} changingModel={changingModel} setChangingModel={setChangingModel} onError={setError} />
+      <main className="chat-main"><ChatHeader client={client} models={models} modelsLoading={modelsLoading} modelsError={modelsError} reloadModels={loadModels} openSettings={() => setSettings(true)} changingModel={changingModel} setChangingModel={setChangingModel} onError={setError} />
         {error && <div className="error-banner" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError("")}>×</button></div>}
         <Chat onError={setError} />
       </main>
@@ -252,7 +259,7 @@ function ArchiveIcon({ restore = false }: { restore?: boolean }) {
   </svg>;
 }
 
-function ChatHeader({ client, models, changingModel, setChangingModel, onError }: { client: ReturnType<typeof createPiHttpClient>; models: PiModelInfo[]; changingModel: boolean; setChangingModel: (busy: boolean) => void; onError: (e: string) => void }) {
+function ChatHeader({ client, models, modelsLoading, modelsError, reloadModels, openSettings, changingModel, setChangingModel, onError }: { client: ReturnType<typeof createPiHttpClient>; models: PiModelInfo[]; modelsLoading: boolean; modelsError: string; reloadModels: () => Promise<void>; openSettings: () => void; changingModel: boolean; setChangingModel: (busy: boolean) => void; onError: (e: string) => void }) {
   const aui = useAui();
   const session = usePiSession();
   const extras = usePiRuntimeExtras();
@@ -281,7 +288,7 @@ function ChatHeader({ client, models, changingModel, setChangingModel, onError }
     {editing ? <input autoFocus aria-label="Chat title" value={title} onChange={(e) => setTitle(e.target.value)} onBlur={() => void rename()} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") { setEditing(false); } }} />
       : <button className="chat-title" disabled={!attached} title="Rename chat" onClick={() => { setTitle(session?.title ?? ""); setEditing(true); }}>{attached ? session.title : "New chat"}</button>}
     <div className="header-controls">
-      <ModelPicker models={models} selection={selection} disabled={changingModel || extras.status === "running"} onSelect={(model) => {
+      <ModelPicker models={models} loading={modelsLoading} error={modelsError} onRetry={() => void reloadModels()} onConfigure={openSettings} selection={selection} disabled={changingModel || extras.status === "running"} onSelect={(model) => {
         void (async () => {
           setChangingModel(true);
           try {

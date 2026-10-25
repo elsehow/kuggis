@@ -57,6 +57,27 @@ parent-prefixed name; the Rust tree validates that their grants fit within the
 parent's. Connections and provider sign-in use the new cell's settings after
 its first chat opens. Credentials are never inherited from the parent.
 
+The new-cell form proposes editable host grants for browser testing: npm's
+`registry.npmjs.org`, `cdn.playwright.dev`, `storage.googleapis.com`,
+`playwright.download.prss.microsoft.com`, and the Ubuntu mirrors
+`archive.ubuntu.com`, `us.archive.ubuntu.com`, and `security.ubuntu.com`.
+Subcells default only to hosts already explicitly granted by their parent;
+the form explains when the parent lacks part of the browser installation set.
+These hosts appear in the creation review and can be removed before creation.
+CLI declarations and existing cells do not gain implicit network access.
+
+For an existing cell, add missing hosts in **Cell settings → Connections →
+Allowed hosts**, then review and apply. Grant missing hosts to ancestors first.
+Both the CDN and redirect destinations are needed: current Chromium downloads
+redirect to Google Storage, while FFmpeg and other Playwright artifacts use
+Microsoft's download service. The CONNECT proxy grants entire hostnames,
+including all of `storage.googleapis.com`, not individual buckets or URL paths.
+Custom download mirrors and the websites a browser visits need their own grants.
+After access is applied, retry `npx playwright install chromium`; install missing
+Linux libraries with `sudo -E npx playwright install-deps chromium`.
+See [Playwright's proxy guidance](https://playwright.dev/docs/browsers#install-behind-a-firewall-or-a-proxy)
+and [download registry](https://github.com/microsoft/playwright/blob/main/packages/playwright-core/src/server/registry/index.ts).
+
 Creation uses the same plan/apply reconciler as the CLI. It provisions the new
 VM, repository integrations and runtime, connects the parent's door, and opens
 one saved chat. It refuses existing VM names and unrelated pending parent
@@ -82,6 +103,10 @@ Saved credentials, account verification, and the latest model request are shown
 separately. Check asks Pi to resolve credentials and verifies the Claude account;
 it makes no model request. Account observations are dated and are invalidated
 when the saved credential changes.
+
+If a cell has no available models, **Choose model** explains the missing setup
+and opens provider settings. Enable and sign in to a provider, close settings,
+then select a model. Catalog failures offer a retry without losing the draft.
 
 Paper Instruments uses the same API-key form and Pi credential store. Granting
 it seeds `ultramarine-1-flash` in Pi's `models.json`, preserving existing custom
@@ -212,3 +237,5 @@ Set `KUGGIS_TEST_BROWSER` to a Chromium executable if it is outside Playwright's
 default installation. The test delays the model write to reproduce the
 new-chat race, then checks the header, draft, first response, reload, and
 failed model changes. It makes no provider requests.
+It also covers an empty catalog, opening provider settings, retrying a failed
+catalog request, and sending the first message without a default model.

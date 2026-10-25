@@ -69,6 +69,7 @@ impl State {
                 site.namespace.0, site.name
             ))
             .expect("site ID"),
+            external_account: None,
             kind: ResourceKind::Site,
             owner: ResourceOwner::Cell(CellIdentity(owner)),
             management: ResourceManagement::Managed,
@@ -204,6 +205,30 @@ impl State {
         {
             return Err(invalid("cannot transfer to a frozen identity"));
         }
+        if matches!(&plan.intent, ResourceIntent::Attach(a) if self.frozen.contains(&a.cell)) {
+            return Err(invalid("cannot attach a frozen identity"));
+        }
+        if plan.intent == ResourceIntent::RegisterExternal {
+            if plan.resource.provider != ProviderRef(self.audience)
+                || self.resources.contains_key(&plan.resource.id)
+            {
+                return Err(invalid(
+                    "external resource already registered or wrong registry",
+                ));
+            }
+            if self
+                .resources
+                .values()
+                .filter(|r| r.management == ResourceManagement::External)
+                .count()
+                >= 1024
+            {
+                return Err(invalid("external resource limit reached"));
+            }
+            self.resources
+                .insert(plan.resource.id, plan.resource.clone());
+            return self.check_resource_capacity();
+        }
         let current = self
             .resources
             .get(&plan.resource.id)
@@ -240,6 +265,8 @@ impl State {
             .get_mut(&plan.resource.id)
             .expect("checked resource");
         match &plan.intent {
+            ResourceIntent::RegisterExternal => unreachable!("handled registration"),
+            ResourceIntent::Attach(attachment) => record.attachments.push(attachment.clone()),
             ResourceIntent::Transfer { to, .. } => {
                 record.owner = *to;
                 record.attachments.clear();
@@ -249,6 +276,18 @@ impl State {
             ResourceIntent::Destroy => return Err(invalid("destruction is unsupported")),
         }
         self.sync_resource_states();
+        // Capacity limits must not prevent reducing access or cleaning up an
+        // older, larger registry. Only new metadata is admission-controlled.
+        if matches!(plan.intent, ResourceIntent::Attach(_)) {
+            self.check_resource_capacity()
+        } else {
+            Ok(())
+        }
+    }
+    fn check_resource_capacity(&self) -> Result<()> {
+        if crate::canon::bytes(&self.inventory()).len() > crate::resource_rpc::MAX_RPC_BYTES / 2 {
+            return Err(invalid("resource metadata capacity exceeded"));
+        }
         Ok(())
     }
     fn cleanup_plan(
@@ -309,8 +348,22 @@ impl Registry {
     pub fn resources(&self) -> Result<ResourceInventory> {
         self.transaction(|s| Ok((s.inventory(), false)))
     }
+    pub fn plan_external(&self, registration: ExternalRegistration) -> Result<ResourcePlan> {
+        self.transaction(|s| {
+            let record = registration.record(ProviderRef(s.audience));
+            if s.resources.contains_key(&record.id) {
+                return Err(invalid("external resource already registered"));
+            }
+            Ok((
+                ResourcePlan::new(record, ResourceIntent::RegisterExternal).map_err(invalid)?,
+                false,
+            ))
+        })
+    }
     pub fn plan_resource(&self, id: ResourceId, intent: ResourceIntent) -> Result<ResourcePlan> {
         self.transaction(|s| {
+            if intent==ResourceIntent::RegisterExternal { return Err(invalid("use external registration planning")); }
+            if matches!(&intent, ResourceIntent::Attach(a) if s.frozen.contains(&a.cell)) { return Err(invalid("cannot attach a frozen identity")); }
             if matches!(intent, ResourceIntent::Transfer { to: ResourceOwner::Cell(key), .. } if s.frozen.contains(&key)) { return Err(invalid("cannot transfer to a frozen identity")); }
             let r = s.resources.get(&id).ok_or(RegistryError::UnknownSite)?;
             Ok((
@@ -325,6 +378,15 @@ impl Registry {
         plan: &ResourcePlan,
         approval: Hash,
     ) -> Result<ResourceOperation> {
+        self.apply_resource_acknowledged(id, plan, approval, false)
+    }
+    pub fn apply_resource_acknowledged(
+        &self,
+        id: RequestId,
+        plan: &ResourcePlan,
+        approval: Hash,
+        acknowledge_manual: bool,
+    ) -> Result<ResourceOperation> {
         self.transaction(|s| {
             if plan.approval() != approval {
                 return Err(invalid("resource approval mismatch"));
@@ -334,6 +396,11 @@ impl Registry {
                     return Err(invalid("operation ID already used"));
                 }
                 return Ok((old.clone(), false));
+            }
+            if plan.resource.management == ResourceManagement::External && !acknowledge_manual {
+                return Err(invalid(
+                    "external provider obligations must be acknowledged",
+                ));
             }
             s.apply_resource_change(plan)?;
             let result = ResourceOperation {

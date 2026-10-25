@@ -238,14 +238,18 @@ fn cell_targets(op: &Operator) -> Result<Vec<ResourceCell>> {
     Ok(cells)
 }
 pub(super) fn validate_target(op: &Operator, intent: &ResourceIntent) -> Result<()> {
-    if let ResourceIntent::Transfer {
-        to: ResourceOwner::Cell(identity),
-        ..
-    } = intent
-    {
+    let identity = match intent {
+        ResourceIntent::Transfer {
+            to: ResourceOwner::Cell(identity),
+            ..
+        } => Some(identity),
+        ResourceIntent::Attach(attachment) => Some(&attachment.cell),
+        _ => None,
+    };
+    if let Some(identity) = identity {
         if !cell_targets(op)?.iter().any(|c| &c.identity == identity) {
             return Err(bad(
-                "Transfer target must be a currently pinned, non-deleting cell",
+                "Resource target must be a currently pinned, non-deleting cell",
             ));
         }
     }
@@ -384,7 +388,42 @@ pub(super) async fn plan(
     })
     .await
     .map_err(fail)??;
-    remember(&op, &backend)?;
+    save_plan(&op, backend, plan)
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RegistrationBody {
+    backend: Name,
+    registration: ExternalRegistration,
+}
+pub(super) async fn register_plan(
+    State(op): State<Arc<Operator>>,
+    Json(body): Json<RegistrationBody>,
+) -> Result<Json<ActionView>> {
+    let _lock = op
+        .applying
+        .try_lock()
+        .map_err(|_| bad("Another operator change is in progress"))?;
+    let backend = registered(&op)?
+        .into_iter()
+        .find(|b| b.name == body.backend)
+        .ok_or_else(|| bad("Unknown resource backend"))?;
+    let call = backend.clone();
+    let plan = tokio::task::spawn_blocking(move || {
+        call.inventory()?;
+        match call.rpc(Rpc::PlanExternal {
+            registration: body.registration,
+        })? {
+            Reply::Plan(plan) => Ok(plan),
+            _ => Err(fail("Unexpected registration plan response")),
+        }
+    })
+    .await
+    .map_err(fail)??;
+    save_plan(&op, backend, plan)
+}
+fn save_plan(op: &Operator, backend: Backend, plan: ResourcePlan) -> Result<Json<ActionView>> {
+    remember(op, &backend)?;
     plan.validate().map_err(bad)?;
     let action = Action {
         id: RequestId::generate(),
@@ -400,6 +439,8 @@ pub(super) async fn plan(
 #[serde(deny_unknown_fields)]
 pub(super) struct ApplyBody {
     approval: Hash,
+    #[serde(default)]
+    acknowledge_manual: bool,
 }
 pub(super) async fn get(
     State(op): State<Arc<Operator>>,
@@ -437,9 +478,15 @@ pub(super) async fn apply(
             _ => return Err(fail("Unexpected resource receipt response")),
         }
         validate_target(&worker, &plan.intent)?;
+        if plan.resource.management == ResourceManagement::External && !body.acknowledge_manual {
+            return Err(bad(
+                "Acknowledge operator verification and manual provider/access/billing obligations",
+            ));
+        }
         match backend.rpc(Rpc::Apply {
             operation: id,
             approval: plan.approval(),
+            acknowledge_manual: body.acknowledge_manual,
             plan,
         })? {
             Reply::Applied(receipt) => Ok(receipt),

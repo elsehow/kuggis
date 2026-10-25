@@ -271,7 +271,28 @@ async fn browser_resource_aware_deletion() {
     let script = r#"
 const {chromium}=require(process.argv[1]);
 (async()=>{const browser=await chromium.launch({headless:true});try{
- const page=await browser.newPage();await page.goto(process.argv[2]);
+ const page=await browser.newPage();const origin=new URL(process.argv[2]).origin;
+ await page.goto(origin+'/?view=resources');
+ await page.getByText('Register an external resource',{exact:true}).click();
+ await page.getByRole('textbox',{name:'External provider',exact:true}).fill('runpod');
+ await page.getByRole('textbox',{name:'External account',exact:true}).fill('account-a');
+ await page.getByRole('textbox',{name:'External resource ID',exact:true}).fill('pod-existing');
+ await page.getByRole('button',{name:'Review external registration…'}).click();
+ await page.getByRole('heading',{name:'Review resource operation'}).waitFor();await page.reload();
+ if(await page.getByRole('button',{name:'Apply resource operation'}).isEnabled())throw new Error('manual verification was not required');
+ const approve=async()=>{await page.getByRole('checkbox',{name:/I verified the provider/}).check();await page.getByRole('button',{name:'Apply resource operation'}).click();await page.getByText('Local metadata updated. Provider access, revocation, and billing remain unverified.').waitFor();};
+ await approve();
+ const external=page.getByRole('article',{name:'pod-existing',exact:true});
+ await external.getByRole('combobox',{name:'Attach pod-existing to'}).selectOption({label:'project-dev'});
+ await external.getByRole('textbox',{name:'Credential reference for pod-existing'}).fill('1234567890abcdef1234567890abcdef');
+ await external.getByRole('button',{name:'Review use attachment…'}).click();await approve();
+ await external.getByText('Access (1)',{exact:true}).click();
+ await external.getByRole('button',{name:'Review local detachment…'}).click();await approve();
+ await external.getByText('Access (0)',{exact:true}).waitFor();
+ await external.getByRole('combobox',{name:'Attach pod-existing to'}).selectOption({label:'project-dev'});
+ await external.getByRole('button',{name:'Review use attachment…'}).click();await approve();
+ const response=await page.request.post(origin+'/api/cells/project-dev/delete-plan',{data:{}});if(!response.ok())throw new Error(await response.text());
+ const deletion=await response.json();await page.goto(origin+'/?deletion='+deletion.id);
  await page.getByRole('heading',{name:'Delete project-dev?'}).waitFor();
  await page.getByRole('heading',{name:'Resource cleanup',exact:true}).waitFor();
  await page.getByText('Public access will stop.').waitFor();
@@ -283,11 +304,17 @@ const {chromium}=require(process.argv[1]);
  await select.selectOption('default');await page.getByRole('button',{name:'Review updated cleanup choices'}).click();
  await page.getByText('Public access will stop.').waitFor();await page.reload();
  await page.getByRole('textbox',{name:'Cell name to delete'}).fill('project-dev');
+ if(await page.getByRole('button',{name:'Delete cell',exact:true}).isEnabled())throw new Error('manual deletion obligations were not required');
+ await page.getByRole('checkbox',{name:/I accept responsibility for manual provider/}).check();
  await page.getByRole('button',{name:'Delete cell',exact:true}).click();
+ await page.getByText(/Provider cleanup is still manual/).waitFor();
+ await page.getByRole('button',{name:'Done — I’ll handle provider cleanup'}).click();
  await page.getByRole('heading',{name:'Delete project-dev?'}).waitFor({state:'hidden'});
  await page.getByRole('button',{name:'Resources',exact:true}).click();
- await page.getByText('Unpublished; data retained').waitFor();await page.getByRole('definition').filter({hasText:/^Operator$/}).waitFor();
- console.log('PASS: real HTTP/browser deletion review, changed choices, approval invalidation, reload, cleanup and retained resources');
+ await page.getByText('Unpublished; data retained').waitFor();await page.getByRole('definition').filter({hasText:/^Operator$/}).first().waitFor();
+ await page.getByRole('article',{name:'pod-existing',exact:true}).getByText('Access (0)',{exact:true}).waitFor();
+ await page.getByRole('article',{name:'pod-existing',exact:true}).getByText('Provider state unknown',{exact:true}).waitFor();
+ console.log('PASS: real HTTP/browser external registration, attachment, detachment, acknowledgements, deletion review, reload, cleanup and retained resources');
 }finally{await browser.close()}})().catch(e=>{console.error(e);process.exit(1)});
 "#;
     let result = tokio::time::timeout(
@@ -409,4 +436,71 @@ async fn deleting_a_delegate_only_removes_its_access() {
         .iter()
         .any(|a| a.cell == CellIdentity(f.secret.public())));
     assert_eq!(registry.public_file(&site, "index.html").unwrap(), b"hello");
+}
+
+#[tokio::test]
+async fn external_attachment_deletion_requires_manual_ack_and_preserves_other_access() {
+    use crate::resource::*;
+    let f = Fixture::new();
+    let (registry, _) = f.site("sites");
+    let registration = ExternalRegistration {
+        account: ExternalAccount {
+            provider: "runpod".to_string().try_into().unwrap(),
+            account: "account-a".to_string().try_into().unwrap(),
+        },
+        kind: ResourceKind::Compute,
+        external_id: "pod-existing".to_string().try_into().unwrap(),
+    };
+    let plan = registry.plan_external(registration).unwrap();
+    let id = plan.resource.id;
+    registry
+        .apply_resource_acknowledged(RequestId::generate(), &plan, plan.approval(), true)
+        .unwrap();
+    let other = CellIdentity(crate::Secret::generate().public());
+    for cell in [CellIdentity(f.secret.public()), other] {
+        let plan = registry
+            .plan_resource(
+                id,
+                ResourceIntent::Attach(ResourceAttachment {
+                    cell,
+                    scope: AccessScope::Use,
+                    credential: None,
+                }),
+            )
+            .unwrap();
+        registry
+            .apply_resource_acknowledged(RequestId::generate(), &plan, plan.approval(), true)
+            .unwrap();
+    }
+    let job = f.preview("project-dev").await.unwrap();
+    assert!(f.start(&job).await.is_err());
+    assert!(f.edge.calls.lock().unwrap().is_empty());
+    let _ = start(
+        State(f.op.clone()),
+        Path(job.id),
+        Json(Confirm {
+            name: job.cell().name.clone(),
+            approval: job.approval,
+            acknowledge_manual: true,
+        }),
+    )
+    .await
+    .unwrap();
+    let done = f.settled(job.id).await;
+    assert_eq!(done.phase, DeletionPhase::Deleted);
+    assert!(done
+        .resources_done
+        .values()
+        .any(|r| !r.manual_obligations.is_empty()));
+    let record = registry
+        .resources()
+        .unwrap()
+        .resources
+        .into_iter()
+        .find(|r| r.id == id)
+        .unwrap();
+    assert_eq!(record.owner, ResourceOwner::Operator);
+    assert_eq!(record.attachments.len(), 1);
+    assert_eq!(record.attachments[0].cell, other);
+    assert_eq!(record.state, ResourceState::Unknown);
 }
