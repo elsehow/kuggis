@@ -26,6 +26,7 @@ use tower_http::services::ServeDir;
 mod access;
 pub(crate) mod creation;
 pub(crate) mod deletion;
+pub(crate) mod health;
 pub use access::Access;
 
 #[derive(Serialize, ts_rs::TS)]
@@ -236,7 +237,9 @@ impl Operator {
         request
             .headers_mut()
             .insert(header::HOST, "cell.internal".parse().unwrap());
-        let response = sender.send_request(request).await.map_err(fail)?;
+        let response = sender.send_request(request).await.map_err(|_| {
+            fail("Chat service unavailable. Check the cell's chat health and recovery options.")
+        })?;
         let (parts, body) = response.into_parts();
         Ok(Response::from_parts(parts, Body::new(body)))
     }
@@ -561,6 +564,8 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
         .route("/api/creations/:id", get(creation::get))
         .route("/api/creations/:id/apply", post(creation::start))
         .route("/api/cells/:name/plan", post(preview))
+        .route("/api/cells/:name/health", get(health::get))
+        .route("/api/cells/:name/recovery", post(health::recover))
         .route("/api/cells/:name/delete-plan", post(deletion::preview))
         .route("/api/deletions/:id", get(deletion::get))
         .route("/api/deletions/:id/apply", post(deletion::start))

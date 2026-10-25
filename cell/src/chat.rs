@@ -513,7 +513,7 @@ fn update_config(view: &mut View, state: &RuntimeState) {
             source: SelectionSource::Session,
         },
         None => Readiness::MissingModel {
-            message: "Configure a model and credentials in Pi, then reopen this chat.",
+            message: "Choose a model above. If no models are available, enable a provider and sign in in Cell settings.",
         },
     });
 }

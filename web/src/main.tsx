@@ -18,6 +18,7 @@ import type { CellInfo, CellsView } from "./api-types";
 import { CreateCell, creationLabel } from "./create-cell";
 import { DeleteCell, deletionLabel } from "./delete-cell";
 import { ModelPicker } from "./model-picker";
+import { ChatHealthBoundary } from "./chat-health";
 import "./style.css";
 
 import { api, explain } from "./api";
@@ -82,28 +83,42 @@ function App() {
   const ancestors: CellInfo[] = [];
   let current: CellInfo | undefined = cell;
   while (current) { ancestors.unshift(current); current = cells.find((c) => c.name === current?.parent); }
-  return <><CellWorkspace key={cell.name} cell={cell} ancestors={ancestors} choose={choose} standalone={mode === "standalone"} local={mode !== "cells"} canApply={canApply} reload={load} onDelete={canDelete ? () => openDeletion(cell.name, cell.deletion?.id) : undefined} />{creation}{deletion}</>;
+  return <><ChatHealthBoundary key={cell.name} name={cell.name} standalone={mode === "standalone"} onBack={() => choose(null)}>{onUnavailable => <CellWorkspace cell={cell} ancestors={ancestors} choose={choose} standalone={mode === "standalone"} local={mode !== "cells"} canApply={canApply} reload={load} onUnavailable={onUnavailable} onDelete={canDelete ? () => openDeletion(cell.name, cell.deletion?.id) : undefined} />}</ChatHealthBoundary>{creation}{deletion}</>;
 }
 
-function CellWorkspace({ cell, ancestors, choose, standalone, local, canApply, reload, onDelete }: { cell: CellInfo; ancestors: CellInfo[]; choose: (n: string | null) => void; standalone: boolean; local: boolean; canApply: boolean; reload: () => Promise<void>; onDelete?: () => void }) {
+function CellWorkspace({ cell, ancestors, choose, standalone, local, canApply, reload, onDelete, onUnavailable }: { cell: CellInfo; ancestors: CellInfo[]; choose: (n: string | null) => void; standalone: boolean; local: boolean; canApply: boolean; reload: () => Promise<void>; onDelete?: () => void; onUnavailable: () => void }) {
   const [error, setError] = useState("");
   const [models, setModels] = useState<PiModelInfo[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState("");
   const [changingModel, setChangingModel] = useState(false);
   const [archived, setArchived] = useState(false);
   const [settings, setSettings] = useState(new URLSearchParams(location.search).get("setup") === "1");
   const base = standalone ? "/api" : `/api/cells/${cell.name}`;
-  const client = useMemo(() => createPiHttpClient({ baseUrl: `${base}/pi`, fetchImpl(input, init) {
+  const client = useMemo(() => createPiHttpClient({ baseUrl: `${base}/pi`, async fetchImpl(input, init) {
     const headers = new Headers(init?.headers);
     if (init?.method === "POST" && !headers.has("X-Request-ID")) headers.set("X-Request-ID", crypto.randomUUID().replaceAll("-", ""));
-    return fetch(input, { ...init, headers });
-  } }), [base]);
+    try {
+      const response = await fetch(input, { ...init, headers });
+      if (response.status >= 500) onUnavailable();
+      return response;
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) onUnavailable();
+      throw error;
+    }
+  } }), [base, onUnavailable]);
   const runtime = usePiRuntime({
     client, initialThreadId: new URLSearchParams(location.search).get("chat") ?? undefined, includeArchived: true,
     isSendDisabled: changingModel,
     onError: (e) => setError(explain(e)),
     onThreadIdChange(id) { const url = new URL(location.href); if (id) url.searchParams.set("chat", id); else url.searchParams.delete("chat"); history.replaceState(null, "", url); setError(""); },
   });
-  const loadModels = () => client.getAvailableModels().then(setModels).catch((e) => setError(explain(e)));
+  const loadModels = async () => {
+    setModelsLoading(true); setModelsError("");
+    try { setModels(await client.getAvailableModels()); }
+    catch (e) { setModelsError(explain(e)); }
+    finally { setModelsLoading(false); }
+  };
   useEffect(() => { void loadModels(); }, [client]);
   return <AssistantRuntimeProvider runtime={runtime}>
     <div className="workspace-shell">
@@ -116,7 +131,7 @@ function CellWorkspace({ cell, ancestors, choose, standalone, local, canApply, r
           <ThreadListPrimitive.Items components={{ ThreadListItem: ChatItem }} />
           {archived && <><div className="section-label">Archived</div><ThreadListPrimitive.Items archived components={{ ThreadListItem: ChatItem }} /></>}
         </ThreadListPrimitive.Root><label className="archive-toggle"><input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} />Archived</label></aside>
-        <main className="chat-main"><ChatHeader client={client} models={models} changingModel={changingModel} setChangingModel={setChangingModel} onError={setError} />
+        <main className="chat-main"><ChatHeader client={client} models={models} modelsLoading={modelsLoading} modelsError={modelsError} reloadModels={loadModels} openSettings={() => setSettings(true)} changingModel={changingModel} setChangingModel={setChangingModel} onError={setError} />
           {error && <div className="error-banner" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError("")}>×</button></div>}
           <Chat onError={setError} />
         </main>
@@ -144,7 +159,7 @@ function ArchiveIcon({ restore = false }: { restore?: boolean }) {
   </svg>;
 }
 
-function ChatHeader({ client, models, changingModel, setChangingModel, onError }: { client: ReturnType<typeof createPiHttpClient>; models: PiModelInfo[]; changingModel: boolean; setChangingModel: (busy: boolean) => void; onError: (e: string) => void }) {
+function ChatHeader({ client, models, modelsLoading, modelsError, reloadModels, openSettings, changingModel, setChangingModel, onError }: { client: ReturnType<typeof createPiHttpClient>; models: PiModelInfo[]; modelsLoading: boolean; modelsError: string; reloadModels: () => Promise<void>; openSettings: () => void; changingModel: boolean; setChangingModel: (busy: boolean) => void; onError: (e: string) => void }) {
   const aui = useAui();
   const session = usePiSession();
   const extras = usePiRuntimeExtras();
@@ -174,7 +189,7 @@ function ChatHeader({ client, models, changingModel, setChangingModel, onError }
       : <button className="chat-title" disabled={!attached} title="Rename chat" onClick={() => { setTitle(session?.title ?? ""); setEditing(true); }}>{attached ? session.title : "New chat"}</button>}
     <div className="header-controls">
       {extras.status === "running" && <span className="run-status" role="status">Working…</span>}
-      <ModelPicker models={models} selection={selection} disabled={changingModel || extras.status === "running"} onSelect={(model) => {
+      <ModelPicker models={models} loading={modelsLoading} error={modelsError} onRetry={() => void reloadModels()} onConfigure={openSettings} selection={selection} disabled={changingModel || extras.status === "running"} onSelect={(model) => {
         void (async () => {
           setChangingModel(true);
           try {

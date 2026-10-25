@@ -53,6 +53,16 @@ of which guest user or process makes a request. Closing the browser or stopping 
 operator UI leaves cell runs alive. A cell-service restart preserves transcripts
 and metadata but does not automatically repeat unfinished work.
 
+Opening a cell checks chat health independently of that socket. A cleanly
+stopped chat service starts automatically; healthy services and failed startup
+loops are not restarted by opening a page. Startup failures show a diagnosis
+and an explicit recovery action. Workspace repair restores the saved chat
+workspace, backs up the service unit, and leaves conversation files untouched.
+It refuses custom startup overrides or missing workspaces that need manual
+attention. Recovery never replays a prompt or restarts the cell container.
+Setup preserves an existing chat workspace when repository grants change, and
+newly configured chat services limit automatic starts to five within a minute.
+
 For access without a running laptop, use a dedicated
 [hosted supervisor](deploy/README.md) behind exe.dev's private authenticated HTTPS
 proxy. The supervisor owns deployment state; each cell retains its chats.

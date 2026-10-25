@@ -12,6 +12,7 @@ mod tests {
         crate::chat::oauth::LoginRequest::export_all(&config).unwrap();
         crate::chat::oauth::AuthReply::export_all(&config).unwrap();
         crate::operator::CellsView::export_all(&config).unwrap();
+        crate::operator::health::ChatHealth::export_all(&config).unwrap();
         crate::operator::creation::Creation::export_all(&config).unwrap();
         crate::operator::deletion::DeletionView::export_all(&config).unwrap();
         crate::chat::settings::SettingsView::export_all(&config).unwrap();

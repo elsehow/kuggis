@@ -20,7 +20,8 @@ try { messages = JSON.parse(readFileSync(path, "utf8")); } catch {}
 let running = false;
 let stopped = false;
 let steering = [], followUp = [];
-let model = { provider: process.env.KUGGIS_FIXTURE_PROVIDER ?? "fixture", id: "test-model", name: "Test model", reasoning: true };
+const defaultModel = { provider: process.env.KUGGIS_FIXTURE_PROVIDER ?? "fixture", id: "test-model", name: "Test model", reasoning: true };
+let model = process.env.KUGGIS_FIXTURE_NO_MODEL ? null : defaultModel;
 let thinkingLevel = "off";
 let timestamp = Date.now();
 const dialogs = new Map();
@@ -86,7 +87,7 @@ async function command(c) {
     case "get_state": return reply(c, { model, thinkingLevel, isStreaming: running, sessionId: id, sessionFile: path, messageCount: messages.length });
     case "get_messages": return reply(c, { messages });
     case "get_entries": return reply(c, { entries: messages.map((message, i) => ({ type: "message", id: String(i), parentId: i ? String(i - 1) : null, message })), leafId: messages.length ? String(messages.length - 1) : null });
-    case "get_available_models": return reply(c, { models: [model, { ...model, id: "second-model", name: "Second model" }] });
+    case "get_available_models": return reply(c, { models: [defaultModel, { ...defaultModel, id: "second-model", name: "Second model" }] });
     case "set_model": model = { ...model, provider: c.provider, id: c.modelId }; return reply(c, model);
     case "set_thinking_level": thinkingLevel = c.level; emit({ type: "thinking_level_changed", level: thinkingLevel }); return reply(c);
     case "clear_queue": { const cleared = { steering, followUp }; steering = []; followUp = []; queue(); return reply(c, cleared); }
