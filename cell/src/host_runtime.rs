@@ -60,7 +60,7 @@ impl Runtime {
         if !self.is_exe() {
             for grant in &cell.grants {
                 match grant {
-                    Grant::Provider(_) | Grant::Code { .. } => {},
+                    Grant::Provider(_) | Grant::Code { .. } | Grant::Publish(_) => {},
                     Grant::Host(host) if !host.as_str().ends_with(crate::grant::EDGE_SUFFIX) => {},
                     _ => return Err(format!("SSH hosts do not yet support grant {grant}; an explicit replacement for the exe.dev integration is required").into()),
                 }
@@ -97,7 +97,6 @@ mod tests {
         for grant in [
             r#"{"edge":"search"}"#,
             r#"{"host":"door-child.int.exe.xyz"}"#,
-            r#"{"publish":"private"}"#,
         ] {
             let cell: Cell =
                 serde_json::from_str(&format!(r#"{{"name":"worker","grants":[{grant}]}}"#))
@@ -105,7 +104,7 @@ mod tests {
             assert!(runtime.validate_cell(&cell).is_err(), "{grant}");
         }
         let cell: Cell = serde_json::from_str(
-            r#"{"name":"worker","grants":[{"provider":"openai"},{"host":"pypi.org"},{"code":{"repo":"example/project","write":false}}]}"#,
+            r#"{"name":"worker","grants":[{"provider":"openai"},{"host":"pypi.org"},{"code":{"repo":"example/project","write":false}},{"publish":"private"}]}"#,
         )
         .unwrap();
         runtime.validate_cell(&cell).unwrap();

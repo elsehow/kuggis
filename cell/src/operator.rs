@@ -746,7 +746,7 @@ async fn context_loop(op: Arc<Operator>) {
                             continue;
                         }
                     };
-                    context.publishing = if host.is_some() { None } else { publishing.as_ref().and_then(|all| all.get(&cell.name)).cloned() };
+                    context.publishing = publishing.as_ref().and_then(|all| all.get(&cell.name)).cloned();
                     let value = (vm.clone(), context.clone());
                     if sent
                         .get(&cell.name)
@@ -760,7 +760,10 @@ async fn context_loop(op: Arc<Operator>) {
                         let payload = crate::canon::bytes(&context);
                         let result = tokio::task::spawn_blocking(move || -> std::result::Result<(), String> {
                             use std::io::Write;
-                            let (mut command, _trust) = host.command(r#"sudo -n sh -c 'set -eu; mkdir -p /usr/local/lib/cell; t=$(mktemp /usr/local/lib/cell/.context.XXXXXX); trap "rm -f \"$t\"" EXIT; cat > "$t"; chmod 644 "$t"; mv -f "$t" /usr/local/lib/cell/context.json'"#).map_err(|e| e.to_string())?;
+                            // The same trusted installer provisions publishing and writes
+                            // context on both host backends; its key check precedes writes.
+                            let install = include_str!("publish/install.py").replace('\'', "'\\''");
+                            let (mut command, _trust) = host.command(&format!("sudo -n /usr/bin/python3 -c '{install}'")).map_err(|e| e.to_string())?;
                             let mut child = command.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
                             let mut input = child.stdin.take().unwrap();
                             let written = input.write_all(&payload); drop(input);
