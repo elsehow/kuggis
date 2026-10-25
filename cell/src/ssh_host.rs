@@ -73,7 +73,7 @@ impl Config {
 
     /// Ignore ambient SSH configuration, proxy commands, forwarding and TOFU.
     /// The known-hosts contents, not just their path, are part of the plan.
-    fn command(&self, remote: &str) -> Fallible<Command> {
+    pub(crate) fn command(&self, remote: &str) -> Fallible<Command> {
         self.validate()?;
         let mut command = Command::new("ssh");
         command.args([
@@ -121,7 +121,7 @@ impl Config {
         Ok(command)
     }
 
-    fn trust(&self) -> Fallible<Hash> {
+    pub(crate) fn trust(&self) -> Fallible<Hash> {
         let bytes = fs::read(&self.known_hosts)?;
         if bytes.is_empty() {
             return Err("known_hosts is empty; pin the server's SSH host key first".into());
@@ -165,7 +165,7 @@ impl Pin {
         }
     }
 
-    fn check(&self, before: &Observation, cell: &Cell) -> Fallible {
+    pub(crate) fn check(&self, before: &Observation, cell: &Cell) -> Fallible {
         if self.machine_id != before.machine_id
             || self.cell != cell.name
             || Some(self.key) != before.key
@@ -281,7 +281,7 @@ impl Plan {
     }
 }
 
-fn verified(
+pub(crate) fn verified(
     observed: &Observation,
     cell: &Cell,
     runtime: &Runtime,
@@ -333,12 +333,12 @@ pub struct Ssh;
 
 // Freeze reviewed SSH trust for the lifetime of each connection. Rechecking a
 // mutable known_hosts path before spawning ssh alone leaves a TOCTOU window.
-struct TrustSnapshot {
+pub(crate) struct TrustSnapshot {
     dir: PathBuf,
-    config: Config,
+    pub(crate) config: Config,
 }
 impl TrustSnapshot {
-    fn new(config: &Config, expected: Hash) -> Fallible<Self> {
+    pub(crate) fn new(config: &Config, expected: Hash) -> Fallible<Self> {
         use std::os::unix::fs::DirBuilderExt;
         let bytes = fs::read(&config.known_hosts)?;
         if Hash::of(&bytes) != expected {

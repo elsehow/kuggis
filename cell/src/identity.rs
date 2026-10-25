@@ -191,6 +191,7 @@ impl Registry {
         Ok(())
     }
     pub fn check_active(&self, root: &Path, tree: &crate::Tree) -> Fallible {
+        crate::host_binding::validate_tree(root, tree)?;
         let mut routes = BTreeSet::new();
         let mut labels = BTreeSet::new();
         for cell in tree.iter() {
@@ -245,7 +246,12 @@ pub fn observe(tree: &Path, vms: Option<&[Vm]>) -> Fallible<Vec<Observation>> {
     let bindings = vms.map(crate::exe::cell_vms).transpose()?;
     let mut out = Vec::new();
     for cell in cells.iter() {
-        let vm = match &bindings {
+        let vm = if crate::host_binding::Binding::load(tree, &cell.name)?.is_some() {
+            if bindings.as_ref().is_some_and(|b| b.contains_key(&cell.name)) {
+                return Err("external cell also has an exe.dev VM binding".into());
+            }
+            None
+        } else { match &bindings {
             Some(bindings) => {
                 let vm = bindings
                     .get(&cell.name)
@@ -260,7 +266,7 @@ pub fn observe(tree: &Path, vms: Option<&[Vm]>) -> Fallible<Vec<Observation>> {
                 })
             }
             None => None,
-        };
+        }};
         out.push(Observation {
             cell: cell.clone(),
             parent: cells.parent(&cell.name).map(|p| p.name.clone()),

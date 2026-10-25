@@ -15,6 +15,7 @@ pub mod exe;
 pub mod environment;
 pub mod grant;
 pub mod host_runtime;
+pub mod host_binding;
 pub mod identity;
 mod legacy;
 pub mod log;

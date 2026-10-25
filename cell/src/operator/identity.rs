@@ -6,12 +6,9 @@ use crate::CellId;
 
 pub(super) fn revision(op: &Operator) -> Result<Option<Hash>> {
     let registry = op.identities()?;
-    Ok(op
-        .config
-        .tree
-        .join(".identities.json")
-        .exists()
-        .then(|| registry.revision()))
+    if !op.config.tree.join(".identities.json").exists() { return Ok(None); }
+    let hosts = crate::host_binding::revision(&op.config.tree).map_err(bad)?;
+    Ok(Some(if hosts.is_zero() { registry.revision() } else { Hash::of(&crate::canon::bytes(&(registry.revision(), hosts))) }))
 }
 pub(super) fn check_revision(op: &Operator, reviewed: Option<Hash>) -> Result<()> {
     if revision(op)? != reviewed {
@@ -55,6 +52,9 @@ async fn observe(op: &Operator) -> Result<Vec<Observation>> {
         let observed =
             crate::identity::observe(&tree, vms.as_deref()).map_err(|e| e.to_string())?;
         for cell in &observed {
+            if let Some(binding) = crate::host_binding::Binding::load(&tree, &cell.cell.name).map_err(|e| e.to_string())? {
+                binding.observe(&cell.cell).map_err(|e| e.to_string())?;
+            }
             if let Some(vm) = &cell.vm {
                 let (key, statements) = edge
                     .log(&vm.name)

@@ -81,29 +81,12 @@ async fn inspect(op: &Operator, name: &Name, action: &str) -> Result<ChatHealth>
             },
         );
     }
-    let vm = op.vm_for(name).await?;
     let command = format!(
         "sudo -n /usr/bin/python3 -c '{}' {action}",
         HOST.replace('\'', "'\\''")
     );
-    let command = match op.identities()?.by_binding(name) {
-        Some(identity) => format!("test \"$(cat /etc/cell/key.pub)\" = '{}' && {command}", identity.key),
-        None => command,
-    };
-    let mut child = Command::new("ssh")
-        .args([
-            "-T",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=10",
-            "-o",
-            "ServerAliveInterval=5",
-            "-o",
-            "ServerAliveCountMax=2",
-        ])
-        .arg(format!("{vm}.exe.xyz"))
-        .arg(command)
+    let (mut command, _trust) = op.remote_command(name, &command).await?;
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

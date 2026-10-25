@@ -7,13 +7,15 @@ is needed. The bootstrap passed [live acceptance on an OVH dedicated host](../be
 including boundary checks, reapply, and a full reboot. Migration of an existing
 cell remains separate from bootstrapping a new cell.
 
-This is a bootstrap CLI, not yet a second backend for the operator tree. It does
-not register the host in the browser UI, move an existing cell, provision/delete
-servers, or implement parent–child doors. Provider, public-host, and repository
-code grants work. [Scoped Git](scoped-git.md) uses the same broker on every host;
+The supervisor can register a bootstrapped host as a standalone root cell and
+route chat, streaming, provider settings, health/recovery, display-name changes,
+and reviewed configuration changes over pinned SSH. It does not move an existing
+cell, provision/delete external servers, or implement cross-provider parent–child
+doors. Provider, public-host, and repository code grants work.
+[Scoped Git](scoped-git.md) uses the same broker on every host;
 private reads and writes require host-held repository credentials. Integration
 and publishing grants still depend on exe.dev and are refused before connecting.
-Migrating an existing cell still requires supervisor/identity integration.
+Migrating an existing cell still requires a separate state-preserving cutover.
 
 ## Configuration
 
@@ -96,6 +98,53 @@ refused: inspect and recover the deployment record explicitly. The CLI does not
 erase partial environments or replace keys. Failed bootstrap staging remains in
 `/var/tmp/kuggis-host-*` for diagnosis.
 
+## Registering with a supervisor
+
+Generate a dedicated SSH key on the trusted supervisor and authorize only its
+public key on the host. Use `restrict` in `authorized_keys` to disable forwarding
+and PTYs; the account still needs passwordless sudo for host administration.
+Keep the private key on the supervisor. Copy the previously verified known-hosts
+entry and `host-pin.json` receipt through a trusted channel. The supervisor's
+`host.json` must use absolute paths to its own key and known-hosts files.
+
+Use a separate supervisor tree and state directory for canary acceptance first.
+For a registered tree, run the following as the supervisor service user:
+
+```sh
+cell host register /private/worker.json /private/host.json \
+  --receipt /private/host-pin.json --tree /private/tree --state /private/operator
+
+# Review the cell, host, machine ID, signing key and passing signed check.
+# Stop the supervisor using this state directory before applying registration.
+cell host register /private/worker.json /private/host.json \
+  --receipt /private/host-pin.json --tree /private/tree --state /private/operator \
+  --approve HASH
+```
+
+Registration adds a new root cell with a stable UUID, its existing signing-key
+pin, and a private `.hosts/NAME.json` binding. The cell name must be new: this
+command cannot adopt or replace an existing exe.dev cell. Existing cells must
+already have identity records. The approval binds the observed host, declaration,
+SSH trust contents and current supervisor tree. The state lock prevents
+registration while that supervisor is running. The declaration is written last;
+interrupted registration remains unavailable and requires explicit repair.
+
+Start the supervisor and the new cell appears in its normal cell list. Chat and
+provider settings use the same APIs and frontend as exe.dev cells. Each SSH
+connection checks the pinned machine, cell name and signing key before running
+its command; known-hosts contents are frozen for the connection. A missing or
+invalid binding never falls back to exe.dev routing. Configuration approvals
+include the full host plan, and apply refuses running chats or changed identity,
+host, binary, trust or observation. Failed setup is not automatically retried.
+
+External servers remain operator-owned. The UI hides deletion and subcell
+creation for them, and the backend refuses those operations. Unsupported grants
+fail before connecting. The exe.dev CLI planner also refuses external targets;
+use the supervisor's reviewed settings flow or `cell host plan/apply` instead.
+Back up `.hosts`, `.pins`, `.identities.json`, declarations and operator state
+together. Do not run two supervisors against the same active cell outside a
+controlled canary acceptance run.
+
 ## Remaining work before a migration
 
 1. Provision repository credentials for production cells and retire existing
@@ -103,8 +152,8 @@ erase partial environments or replace keys. Failed bootstrap staging remains in
    passed live private clone/fetch, read-only enforcement, and authenticated
    dry-run push [acceptance](../bench/environment/GIT-REPORT.md). Preserve grant
    semantics throughout the rollout.
-2. Route supervisor chat, health, settings, and lifecycle operations through an
-   explicit host binding; external hosts must never inherit exe.dev deletion.
+2. Validate the registered canary through the supervisor, including streaming,
+   active-run refusal, grant changes, host/service restarts and failed connections.
 3. Add a reviewed migration that preserves cell identity, signed logs, chats,
    credentials, workspaces, and imported data, with one active instance and a
    rollback procedure.

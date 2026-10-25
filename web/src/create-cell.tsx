@@ -36,7 +36,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
   const [loading, setLoading] = useState(!!id);
   const delivered = useRef(false);
   const parentCell = cells.find((c) => cellId(c) === parent || cellBinding(c) === parent);
-  const available = cells.filter((c) => c.lifecycle.state === "available");
+  const available = cells.filter((c) => c.lifecycle.state === "available" && !c.external_host);
   const parentName = parentCell?.name ?? parent;
   const fullName = parent && !name.startsWith(parentName + "-") ? `${parentName}-${name}` : name;
   useEffect(() => { dialog.current?.showModal(); nameInput.current?.focus(); }, []);

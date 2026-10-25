@@ -21,6 +21,8 @@ const USAGE: &str = "\
 usage:
   cell git credential OWNER/REPO  as host root: store a repository token from stdin
   cell host inspect HOSTFILE      inspect an existing Ubuntu host through pinned SSH
+  cell host register CELLFILE HOSTFILE --receipt PINFILE --tree TREE --state OPSTATE [--approve HASH]
+                                  review/register a new standalone host in the supervisor
   cell host plan CELLFILE HOSTFILE --bin LINUX_CELL --state DIR
                                   review bootstrap on a dedicated existing host
   cell host apply CELLFILE HOSTFILE --bin LINUX_CELL --state DIR --approve HASH
@@ -291,6 +293,35 @@ fn arg<'a>(args: &'a [String], i: usize, what: &str) -> Fallible<&'a str> {
 fn host(args: &[String]) -> Fallible {
     use cell::ssh_host;
     let action = arg(args, 0, "inspect|plan|apply")?;
+    if action == "register" {
+        let declaration = load_cell(arg(args, 1, "CELLFILE")?)?;
+        let config = ssh_host::Config::load(Path::new(arg(args, 2, "HOSTFILE")?))?;
+        let mut options = BTreeMap::new();
+        let mut rest = args[3..].chunks_exact(2);
+        for pair in &mut rest {
+            if !["--receipt", "--tree", "--state", "--approve"].contains(&pair[0].as_str()) || options.insert(pair[0].as_str(), pair[1].as_str()).is_some() {
+                return Err("unknown or repeated host registration option".into());
+            }
+        }
+        if !rest.remainder().is_empty() { return Err("host registration option requires a value".into()); }
+        let required = |name| options.get(name).copied().ok_or_else(|| format!("host register requires {name}"));
+        let root = Path::new(required("--tree")?);
+        let state = Path::new(required("--state")?);
+        let pin = serde_json::from_slice(&fs::read(required("--receipt")?)?)?;
+        let binding = cell::host_binding::Binding::new(config, pin)?;
+        let approval: Option<Hash> = options.get("--approve").map(|s| s.parse()).transpose()?;
+        fs::create_dir_all(state)?;
+        let lock = fs::OpenOptions::new().write(true).create(true).truncate(false).open(state.join("lock"))?;
+        if approval.is_some() { lock.try_lock().map_err(|_| "stop the supervisor before registering a host")?; }
+        let plan = cell::host_binding::registration(root, declaration, binding)?;
+        if let Some(approval) = approval {
+            println!("registered {}", cell::host_binding::register(root, plan, approval)?);
+        } else {
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+            eprintln!("approve with {}", plan.hash());
+        }
+        return Ok(());
+    }
     if action == "inspect" {
         if args.len() != 2 {
             return Err("usage: cell host inspect HOSTFILE".into());

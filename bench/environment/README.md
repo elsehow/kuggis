@@ -186,3 +186,42 @@ and after. It makes no remote changes; it does not validate actual ref updates
 or server-side update hooks. The original seed and an ungranted
 `octocat/spoon-knife` repository are required. Keep logs in private deployment
 storage and verify the final signed observation through `cell host plan`.
+
+### Supervisor connection
+
+Register the canary in a **separate** supervisor tree/state directory using
+`cell host register`, then run a candidate `cell ui` service on loopback port
+18080 as `kuggis-ovh-acceptance.service`. Use the production supervisor's service
+user and sandbox settings, a dedicated SSH key, and the pinned host receipt.
+Do not attach the test instance to the production tree.
+
+First verify real Pi health, provider credential prompting/cancellation without
+submitting a credential, and refusal of stale approvals, deletion, child doors
+and unsupported grants. For deterministic streaming acceptance, run
+`ssh_supervisor_fixture.py CELL-CANARY install` as root on the disposable host,
+passing a JSON map of the repository's `web/tests/fake-pi.mjs` and `fake-auth.mjs`
+source on stdin. It refuses existing model credentials and installs a separate
+guest systemd drop-in; it never reads the host's Git credentials.
+
+On the supervisor, with permission to restart only the acceptance service, run:
+
+```sh
+python3 supervisor_ssh_acceptance.py http://127.0.0.1:18080 test-canary /private/acceptance.json
+```
+
+This exercises real SSH relay and SSE, refuses applying configuration during a
+running chat, restarts the supervisor while the chat continues, and checks for
+duplicate messages. It renames/archives/unarchives the test chat, adds and removes
+the `example.com` host grant through reviewed plans, checks a no-op apply, and
+verifies preservation of existing chat metadata and test history. It requires a
+canary-only inventory and leaves one archived test chat. No model calls occur.
+
+Also verify failed SSH connections, changed machine identity and changed SSH
+trust using the isolated binding, restoring it in `finally`. Stop only the
+canary's guest chat service and exercise health/start recovery through the
+supervisor. After an authorized canary reboot, require a changed boot ID, passing
+signed boundary checks, and preserved chats/workspace. Run
+`ssh_supervisor_fixture.py CELL-CANARY restore` afterward and check real Pi health
+again. Stop the acceptance supervisor before registering the canary with the
+production supervisor. Keep receipts, screenshots, host configuration and keys
+outside tracked source.

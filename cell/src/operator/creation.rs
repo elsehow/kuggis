@@ -204,6 +204,9 @@ pub(super) async fn preview(
     let cell = Cell::new(binding, input.grants);
     super::deletion::ensure_available(&op.config.state, &cell.name)?;
     if let Some(parent) = &input.parent {
+        if crate::host_binding::Binding::load(&op.config.tree, parent).map_err(bad)?.is_some() {
+            return Err(bad("Subcell doors on external hosts are not supported yet"));
+        }
         super::deletion::ensure_available(&op.config.state, parent)?;
     }
     if before.get(&cell.name).is_some()

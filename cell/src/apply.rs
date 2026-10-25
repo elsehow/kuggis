@@ -154,6 +154,9 @@ fn plan_one(
     // Recheck even when the signed configuration is cached: a reused VM name
     // must never inherit an existing identity or a reviewed setup operation.
     if let Some(root) = pins.parent() {
+        if crate::host_binding::Binding::load(root, name)?.is_some() {
+            return Err("external hosts must be applied through their registered supervisor connection or cell host apply".into());
+        }
         let registry = crate::identity::Registry::load(root)?;
         registry.check_pin(root, name)?;
         registry.check_vm(name, vm_of(vms, name))?;
