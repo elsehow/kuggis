@@ -1,6 +1,7 @@
 # Environment autonomy bench
 
 Production integration: [migration acceptance results](PRODUCTION-REPORT.md).
+Standalone SSH hosting: [dedicated-host acceptance results](SSH-REPORT.md).
 
 Architecture experiment result: [22/22 cases passed on exe.dev](REPORT.md), including a
 full VM reboot. The report also records an intermittent existing auth-test failure.
@@ -106,3 +107,36 @@ real registry builds, host authority, reapplication and missing-wall recovery.
 Run it only on a disposable VM; reboot that VM and run `cell check` plus the
 preservation/tool version checks afterward. Use `run.py`'s ownership receipt
 checks when deleting the VM. Never seed synthetic credentials on a real cell.
+
+## Standalone SSH host acceptance
+
+`ssh_acceptance.py` exercises the production runtime on a disposable cell whose
+name ends in `-canary`, bootstrapped with the [SSH host CLI](../../deploy/ssh-hosts.md).
+The declaration needs Ubuntu package mirror grants (`us.archive.ubuntu.com` and
+`security.ubuntu.com`). It refuses other grant types besides public hosts and
+providers. Run each phase as host root, passing the exact cell name:
+
+```sh
+python3 ssh_acceptance.py test-canary seed
+python3 ssh_acceptance.py test-canary boundary
+python3 ssh_acceptance.py test-canary verify
+python3 ssh_acceptance.py test-canary fail-closed
+```
+
+The seed requires an empty chat list and no provider credentials. It installs
+`jq` through the guest proxy, writes workspace and guest configuration markers,
+starts an idle Pi chat without calling a model, and records host identity hashes
+in a private host receipt. Boundary tests flush only the guest firewall and
+exercise an alternate guest UID. The fail-closed test temporarily hides the
+approved firewall snapshot and checks that guest startup refuses; the actual
+host firewall stays loaded, protecting the public proxy listener throughout.
+
+Separately review and apply an unchanged CLI plan, which must contain no setup
+actions, then run `verify`. To exercise actual reinstallation, run
+`cell setup /etc/cell/cell.json --host-runtime /etc/cell/host.json` on the host
+and verify again. Run `verify` after restarting `cell-agent`; after an explicitly
+authorized host reboot, run `post-reboot`, which requires a changed boot ID.
+These phases check identity, configuration, workspace, installed software,
+idle chat, Pi startup, and a fresh signed boundary check. Verify the resulting
+signed check and pinned identity with `cell host plan` from the operator machine.
+Keep raw logs and deployment receipts in ignored private storage.

@@ -3,8 +3,9 @@
 The first portable-host milestone bootstraps a new, standalone cell on a
 dedicated **x86_64 Ubuntu 24.04 host with systemd**. The host can be a cloud VM
 or a physical server from any provider. No provider API or nested virtualization
-is needed. This code has local automated coverage; it still needs a live Linux
-acceptance run before production use.
+is needed. The bootstrap passed [live acceptance on an OVH dedicated host](../bench/environment/SSH-REPORT.md),
+including boundary checks, reapply, and a full reboot. Migration of an existing
+cell remains separate from bootstrapping a new cell.
 
 This is a bootstrap CLI, not yet a second backend for the operator tree. It does
 not register the host in the browser UI, move an existing cell, provision/delete
@@ -97,12 +98,17 @@ erase partial environments or replace keys. Failed bootstrap staging remains in
 
 ## Remaining work before a migration
 
-1. Implement repository-scoped Git access independently of exe.dev, with tests
-   for read-only grants, forks, and credential isolation.
+1. Implement one provider-neutral repository-scoped Git access path, with tests
+   for read-only grants, forks, and credential isolation. Validate it on the
+   canary, then use it for both exe.dev and SSH hosts and retire the existing
+   exe.dev Git path. Hosting backends must not select separate permanent Git
+   implementations. Preserve grant semantics throughout the rollout; never
+   broaden access to make migration work.
 2. Route supervisor chat, health, settings, and lifecycle operations through an
    explicit host binding; external hosts must never inherit exe.dev deletion.
 3. Add a reviewed migration that preserves cell identity, signed logs, chats,
    credentials, workspaces, and imported data, with one active instance and a
    rollback procedure.
-4. Run the boundary, reapply, reboot, and migration acceptance checks on the
-   selected server. Cross-provider subcell doors remain a separate capability.
+4. Repeat boundary, reapply, and reboot acceptance after Git and supervisor
+   integration, then run the migration acceptance checks. Cross-provider subcell
+   doors remain a separate capability.
