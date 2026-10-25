@@ -254,7 +254,6 @@ fn tree_allow_plan_and_observe() {
             "chatgpt.com",
             "claude.ai",
             "files.pythonhosted.org",
-            "github.int.exe.xyz",
             "platform.claude.com",
             "pypi.org"
         ]
@@ -291,7 +290,7 @@ fn tree_allow_plan_and_observe() {
     let plan: serde_json::Value = serde_json::from_str(&out(&p)).unwrap();
     assert_eq!(
         plan["widget"]["actions"],
-        serde_json::json!([{"detach":{"edge":"codex"}}, "setup"]),
+        serde_json::json!(["setup", {"detach":{"code":{"repo":"example/widget","write":true}}}, {"detach":{"code":{"repo":"upstream/widget","write":false}}}, {"detach":{"edge":"codex"}}]),
         "replace the legacy Codex edge with cell-local Pi sign-in: {plan}"
     );
     let approval = err(&p).rsplit(' ').next().unwrap().to_string();
@@ -304,7 +303,7 @@ fn tree_allow_plan_and_observe() {
     let plan: serde_json::Value = serde_json::from_str(&out(&p)).unwrap();
     assert_eq!(
         plan["widget"]["actions"],
-        serde_json::json!([{"detach":{"edge":"codex"}}, {"close": "widget-scratch"}, "setup"]),
+        serde_json::json!(["setup", {"detach":{"code":{"repo":"example/widget","write":true}}}, {"detach":{"code":{"repo":"upstream/widget","write":false}}}, {"detach":{"edge":"codex"}}, {"close": "widget-scratch"}]),
         "{plan}"
     );
     assert_ne!(err(&p).rsplit(' ').next().unwrap(), approval);
@@ -329,7 +328,7 @@ fn tree_allow_plan_and_observe() {
     assert_eq!(plan["coordinator"]["actions"][0], "create");
     assert_eq!(
         plan["widget"]["actions"],
-        serde_json::json!([{"detach":{"edge":"codex"}}, {"close": "widget-scratch"}, "setup"])
+        serde_json::json!(["setup", {"detach":{"code":{"repo":"example/widget","write":true}}}, {"detach":{"code":{"repo":"upstream/widget","write":false}}}, {"detach":{"edge":"codex"}}, {"close": "widget-scratch"}])
     );
 
     let p = run(&["apply", dir, "--approve", "00"], "");

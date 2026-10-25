@@ -115,7 +115,6 @@ mod tests {
                 "brave.int.exe.xyz",
                 "chatgpt.com",
                 "claude.ai",
-                "github.int.exe.xyz",
                 "platform.claude.com",
                 "pypi.org"
             ]

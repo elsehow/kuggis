@@ -14,7 +14,7 @@ use crate::cell::{Cell, TAG_PREFIX};
 use crate::exe::{self, door_name, vm_of, Integration, Observed, Vm};
 use crate::grant::Grant;
 use crate::plan::{Action, Approved, Plan};
-use crate::prim::{Hash, Name, Repo};
+use crate::prim::{Hash, Name};
 use crate::said::{Key, Said, Statement};
 use crate::tree::Tree;
 use std::collections::BTreeMap;
@@ -162,6 +162,9 @@ fn plan_one(
         .get(name)
         .ok_or_else(|| format!("{name}: not in the tree"))?;
     let children = tree.children(name).map(|c| c.name.clone()).collect();
+    if boxes.bin.is_none() && seen.of(name).is_some_and(|(cell, _)| cell.grants.iter().any(|g| matches!(g, Grant::Code { .. }))) {
+        return Err("retiring legacy Git attachments requires --bin for a reviewed broker runtime".into());
+    }
     let proved = match boxes.proved.get(name) {
         Some(h) => *h,
         None => {
@@ -251,7 +254,7 @@ pub fn apply_with_progress(
         progress(&name, &action)?;
         writeln!(out, "{name}: {action}")?;
         let cell = tree.get(&name).expect("planned, so in the tree");
-        perform(edge, &vms, &ints, cell, &action, out)?;
+        perform(edge, pins, &vms, &ints, cell, &action, out)?;
         if action == Action::Setup {
             boxes.proved.remove(&name);
         }
@@ -261,6 +264,7 @@ pub fn apply_with_progress(
 
 fn perform(
     edge: &dyn Edge,
+    pins: &Path,
     vms: &[Vm],
     ints: &[Integration],
     cell: &Cell,
@@ -286,6 +290,16 @@ fn perform(
         Action::Attach(g) => attach(edge, ints, name, &tag, g)?,
         Action::Detach(g) => {
             let me = me()?;
+            if matches!(g, Grant::Code { .. }) {
+                let verified = pull(edge, pins, name, &me.vm_name)?.unwrap_or_default();
+                let broker_ok = verified.iter().rev().find_map(|(_, said)| match said {
+                    Said::Checked { ok, report, .. } => Some(*ok && report.lines().any(|line| line == crate::environment::SCOPED_GIT_CHECK)),
+                    _ => None,
+                }).unwrap_or(false);
+                if !broker_ok {
+                    return Err("legacy Git attachment retained: the pinned cell has not proved a working scoped Git broker".into());
+                }
+            }
             let carrying = ints
                 .iter()
                 .filter(|i| i.door().is_none() && i.attached_to(me) && i.grants().contains(g));
@@ -355,9 +369,12 @@ fn ours<'a>(spec: &'a str, me: &Vm, cell: &Name, int: &str) -> Fallible<Option<&
     }
 }
 
-/// Attach exactly one integration that is exactly this grant. A repository
-/// gets one made in its name if none exists; anything else must already.
+/// Attach an existing platform integration that exactly matches this grant.
+/// Git is host-enforced and must never create or attach a platform Git path.
 fn attach(edge: &dyn Edge, ints: &[Integration], cell: &Name, tag: &str, g: &Grant) -> Fallible {
+    if matches!(g, Grant::Code { .. }) {
+        return Err("Git grants are enforced by the host broker, not platform integrations".into());
+    }
     let exact = ints
         .iter()
         .find(|i| i.door().is_none() && i.grants() == [g.clone()]);
@@ -365,44 +382,7 @@ fn attach(edge: &dyn Edge, ints: &[Integration], cell: &Name, tag: &str, g: &Gra
         edge.run(&["integrations", "attach", &i.name, tag])?;
         return Ok(());
     }
-    let Grant::Code { repo, write, .. } = g else {
-        return Err(format!(
-            "{cell}: no exe.dev integration is exactly {g}; add one, then apply again"
-        )
-        .into());
-    };
-    let (flag, suffix) = if *write {
-        (None, "")
-    } else {
-        (Some("--readonly"), "-ro")
-    };
-    let mut args = vec![
-        "integrations".to_string(),
-        "add".into(),
-        "github".into(),
-        format!("--name={}", github_name(repo, suffix)),
-        format!("--repository={repo}"),
-    ];
-    args.extend(flag.map(str::to_string));
-    args.push(format!("--attach={tag}"));
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    edge.run(&args)?;
-    Ok(())
-}
-
-/// `gh-<owner>-<repo>` and a suffix, in the characters a name allows.
-fn github_name(repo: &Repo, suffix: &str) -> String {
-    let mut name = String::from("gh-");
-    for c in repo.as_str().chars() {
-        if c.is_ascii_alphanumeric() {
-            name.push(c.to_ascii_lowercase());
-        } else if !name.ends_with('-') {
-            name.push('-');
-        }
-    }
-    let mut name = name.trim_end_matches('-').to_string();
-    name.push_str(suffix);
-    name.chars().take(63).collect()
+    Err(format!("{cell}: no exe.dev integration is exactly {g}; add one, then apply again").into())
 }
 
 #[cfg(test)]
@@ -415,7 +395,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// exe.dev and every box, in memory.
-    #[derive(Default)]
     struct Fake {
         vms: RefCell<Vec<Vm>>,
         ints: RefCell<Vec<Integration>>,
@@ -425,6 +404,14 @@ mod tests {
         bin: RefCell<Option<Hash>>,
         contexts: RefCell<BTreeMap<String, crate::context::Context>>,
         fail_context: std::cell::Cell<bool>,
+    }
+
+    impl Default for Fake {
+        fn default() -> Self {
+            Self { vms: Default::default(), ints: Default::default(), boxes: Default::default(),
+                inboxes: Default::default(), calls: Default::default(), contexts: Default::default(),
+                fail_context: Default::default(), bin: RefCell::new(Some(Hash::of(b"current-runtime"))) }
+        }
     }
 
     fn opt<'a>(args: &'a [&str], key: &str) -> Option<&'a str> {
@@ -564,7 +551,7 @@ mod tests {
                 Said::Checked {
                     cell: cell.hash(),
                     ok: true,
-                    report: String::new(),
+                    report: crate::environment::SCOPED_GIT_CHECK.into(),
                     binary: self.bin.borrow().unwrap_or(Hash::ZERO),
                     signed: BTreeSet::new(),
                 },
@@ -619,7 +606,7 @@ mod tests {
         let approved = approve(&f, &pins, &t);
         let mut out = Vec::new();
         let n = apply(&f, &pins, &t, &approved, &mut out).unwrap();
-        assert_eq!(n, 6);
+        assert_eq!(n, 5);
         let a: Cell = serde_json::from_str(A).unwrap();
         let b: Cell = serde_json::from_str(B).unwrap();
         assert_eq!(
@@ -628,7 +615,6 @@ mod tests {
                 "new --name=cell-b --tag=cell-b --no-email".to_string(),
                 format!("setup cell-b {}", b.hash()),
                 "new --name=cell-a --tag=cell-a --no-email".into(),
-                "integrations add github --name=gh-example-x --repository=example/x --attach=tag:cell-a".into(),
                 "integrations add http-proxy --name=door-b --target=https://cell-b.exe.xyz/ --peer --attach=tag:cell-a".into(),
                 format!("setup cell-a {}", a.hash()),
             ]
@@ -693,13 +679,8 @@ mod tests {
         let t = tree(&[("", p), ("p", c)]);
         apply(&f, &pins, &t, &approve(&f, &pins, &t), &mut Vec::new()).unwrap();
         let calls = f.calls();
-        for call in [
-            "integrations add github --name=gh-cells-x --repository=cells/x --attach=tag:cell-c",
-            "integrations attach gh-cells-x tag:cell-p",
-            "integrations add github --name=gh-example-x --repository=example/x --attach=tag:cell-p",
-        ] {
-            assert!(calls.contains(&call.to_string()), "{call}\n{calls:?}");
-        }
+        assert!(!calls.iter().any(|c| c.contains("github") || c.contains("gh-")));
+        assert!(calls.iter().filter(|c| c.starts_with("setup ")).count() == 2);
         assert!(approve(&f, &pins, &t).plans().values().all(Plan::is_empty));
     }
 
@@ -759,40 +740,20 @@ mod tests {
     }
 
     #[test]
-    fn a_shared_integration_comes_off_whole_and_the_rest_waits_for_approval() {
+    fn legacy_git_is_removed_without_recreating_it_or_touching_other_vms() {
         let f = Fake::default();
         let pins = pins();
         let t = tree(&[("", A)]);
         f.vm("a", &["cell-a"]);
-        f.int(
-            "gh-both",
-            "github",
-            &["tag:cell-a", "vm:other"],
-            serde_json::json!({"repositories": ["example/x", "o/y"]}),
-        );
-        f.setup("a", t.get(&"a".parse().unwrap()).unwrap()).unwrap();
+        f.int("gh-both", "github", &["tag:cell-a", "vm:other"],
+              serde_json::json!({"repositories": ["example/x", "o/y"]}));
         let approved = approve(&f, &pins, &t);
-        let a: Name = "a".parse().unwrap();
-        assert_eq!(
-            approved.plans()[&a].actions,
-            [Action::Detach(Grant::Code {
-                repo: "o/y".parse().unwrap(),
-                write: true,
-                via: None
-            })]
-        );
-        let e = apply(&f, &pins, &t, &approved, &mut Vec::new())
-            .unwrap_err()
-            .to_string();
-        assert!(
-            e.contains("{\"attach\":{\"code\":{\"repo\":\"example/x\""),
-            "{e}"
-        );
-        assert_eq!(
-            f.calls().last().unwrap(),
-            "integrations detach gh-both tag:cell-a"
-        );
-        assert_eq!(f.attachments("gh-both"), ["vm:other"], "other VMs keep it");
+        assert_eq!(approved.plans()[&"a".parse().unwrap()].actions[0], Action::Setup);
+        apply(&f, &pins, &t, &approved, &mut Vec::new()).unwrap();
+        assert!(f.calls()[0].starts_with("setup a "), "setup precedes detach");
+        assert_eq!(f.calls()[1], "integrations detach gh-both tag:cell-a");
+        assert_eq!(f.attachments("gh-both"), ["vm:other"]);
+        assert!(approve(&f, &pins, &t).plans().values().all(Plan::is_empty));
     }
 
     #[test]
@@ -820,7 +781,8 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("tag:shared") && e.contains("by hand"), "{e}");
-        assert_eq!(f.calls().len(), before);
+        assert_eq!(f.calls().len(), before + 1);
+        assert_eq!(f.attachments("gh-z"), ["tag:shared"]);
     }
 
     #[test]
@@ -847,7 +809,7 @@ mod tests {
         }
         let approved = approve(&f, &pins, &t);
         let n = apply(&f, &pins, &t, &approved, &mut Vec::new()).unwrap();
-        assert_eq!(n, 1);
+        assert_eq!(n, 2);
         assert_eq!(
             f.calls().last().unwrap(),
             "integrations detach door-b tag:cell-a"
@@ -886,7 +848,7 @@ mod tests {
             f.setup(c.name.as_str(), c).unwrap();
         }
         let approved = approve(&f, &pins, &t);
-        assert_eq!(apply(&f, &pins, &t, &approved, &mut Vec::new()).unwrap(), 1);
+        assert_eq!(apply(&f, &pins, &t, &approved, &mut Vec::new()).unwrap(), 2);
         assert_eq!(
             f.calls().last().unwrap(),
             "integrations attach door-b tag:cell-a"
@@ -997,10 +959,38 @@ mod tests {
     }
 
     #[test]
-    fn github_integration_names() {
-        let n = |r: &str, s| github_name(&r.parse().unwrap(), s);
-        assert_eq!(n("example/widget", ""), "gh-example-widget");
-        assert_eq!(n("example/widget", "-ro"), "gh-example-widget-ro");
-        assert_eq!(n("Some-Org/my.repo_x", ""), "gh-some-org-my-repo-x");
+    fn legacy_git_requires_a_reviewed_binary() {
+        let f = Fake::default();
+        *f.bin.borrow_mut() = None;
+        f.vm("a", &["cell-a"]);
+        f.int("legacy", "github", &["tag:cell-a"], serde_json::json!({"repositories":["example/x"]}));
+        let t = tree(&[("", A)]);
+        assert!(plans(&f, &pins(), &t, &all(&t)).unwrap_err().to_string().contains("requires --bin"));
+        assert!(f.calls().is_empty());
+    }
+
+    #[test]
+    fn legacy_git_is_retained_without_signed_broker_evidence() {
+        let f = Fake::default();
+        let pins = pins();
+        let t = tree(&[("", A)]);
+        f.vm("a", &["cell-a"]);
+        f.int("legacy", "github", &["tag:cell-a"], serde_json::json!({"repositories":["example/x"]}));
+        let cell = t.get(&"a".parse().unwrap()).unwrap();
+        f.setup("a", cell).unwrap();
+        {
+            let mut boxes = f.boxes.borrow_mut();
+            let (key, log) = boxes.get_mut("a").unwrap();
+            log[0] = Statement::sign(key, cell.name.clone(), 1, Said::Checked {
+                cell: cell.hash(), ok: true, report: "old runtime".into(),
+                binary: f.bin.borrow().unwrap(), signed: BTreeSet::new(),
+            });
+        }
+        let approved = approve(&f, &pins, &t);
+        let before = f.calls().len();
+        let error = apply(&f, &pins, &t, &approved, &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("attachment retained"));
+        assert_eq!(f.calls().len(), before);
+        assert_eq!(f.attachments("legacy"), ["tag:cell-a"]);
     }
 }

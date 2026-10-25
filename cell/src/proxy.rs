@@ -30,6 +30,8 @@ pub const GATEWAY: Ipv4Addr = Ipv4Addr::new(169, 254, 169, 254);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Policy {
+    /// Only exe.dev has an authenticated platform gateway for implicit doors.
+    pub allow_doors: bool,
     pub hosts: BTreeSet<Host>,
     /// The subset of `hosts` that are exe.dev's edge, expected at [`GATEWAY`].
     pub edge: BTreeSet<Host>,
@@ -48,6 +50,7 @@ impl Policy {
             .flat_map(Grant::hosts)
             .collect();
         Policy {
+            allow_doors: true,
             hosts: cell.allowlist(),
             edge,
             ports: [443, 8443].into(),
@@ -57,7 +60,7 @@ impl Policy {
 
     /// A host on the allowlist, or a door.
     pub fn allows(&self, host: &Host) -> bool {
-        self.hosts.contains(host) || door_of_host(host).is_some()
+        self.hosts.contains(host) || (self.allow_doors && door_of_host(host).is_some())
     }
 
     /// A host expected at the gateway.
