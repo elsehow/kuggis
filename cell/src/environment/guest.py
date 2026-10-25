@@ -83,6 +83,8 @@ workspace = workspace.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%
 write('/etc/systemd/system/cell-chat.service', f'''[Unit]
 Description=Cell persistent Pi sessions
 After=cell-network.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
 [Service]
 User=agent
 Group=agent

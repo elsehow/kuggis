@@ -23,6 +23,7 @@ import type { AttachmentAdapter } from "@assistant-ui/core";
 import { CreateCell, creationLabel } from "./create-cell";
 import { DeleteCell, deletionLabel } from "./delete-cell";
 import { ModelPicker } from "./model-picker";
+import { ChatHealthBoundary } from "./chat-health";
 import "./style.css";
 
 import { api, explain } from "./api";
@@ -123,12 +124,12 @@ function App() {
     <nav className="cell-tree">{!loaded ? <p className="pane-note">Loading…</p> : cells.length === 0 ? <p className="pane-note">No cells yet.</p> : branch(null)}</nav>
   </aside>;
   const content = resources && !standalone ? <Resources /> : cell
-    ? <CellWorkspace key={cell.name} cell={cell} standalone={standalone} local={mode !== "cells"} canApply={canApply} reload={load} onDelete={canDelete ? () => openDeletion(cell.name, cell.deletion?.id) : undefined} />
+    ? <ChatHealthBoundary key={cell.name} name={cell.name} standalone={standalone}>{onUnavailable => <CellWorkspace onUnavailable={onUnavailable} cell={cell} standalone={standalone} local={mode !== "cells"} canApply={canApply} reload={load} onDelete={canDelete ? () => openDeletion(cell.name, cell.deletion?.id) : undefined} />}</ChatHealthBoundary>
     : <main className="empty-main">{!loaded ? "" : cells.length === 0 ? (canCreate ? "No cells yet. Create one with ＋ Cell." : "No cells are declared.") : "No cell is available. Choose one from the list to see its status."}</main>;
   return <><div className={standalone || cellsHidden ? "shell standalone" : "shell"}>{cellsPane}{content}{!standalone && <button className="cell-menu" aria-label={cellsHidden ? "Show cells" : "Hide cells"} aria-expanded={!cellsHidden} onClick={() => setCellsHidden(!cellsHidden)}>☰</button>}</div>{creation}{deletion}</>;
 }
 
-function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: { cell: CellInfo; standalone: boolean; local: boolean; canApply: boolean; reload: () => Promise<void>; onDelete?: () => void }) {
+function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, onUnavailable }: { cell: CellInfo; standalone: boolean; local: boolean; canApply: boolean; reload: () => Promise<void>; onDelete?: () => void; onUnavailable: () => void }) {
   const [error, setError] = useState("");
   const [metadata, setMetadata] = useState<PiThreadMetadata[]>([]);
   const [models, setModels] = useState<PiModelInfo[]>([]);
@@ -140,14 +141,21 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
   const [settings, setSettings] = useState(new URLSearchParams(location.search).get("setup") === "1");
   const base = standalone ? "/api" : `/api/cells/${cell.name}`;
   const client = useMemo(() => {
-    const transport = createPiHttpClient({ baseUrl: `${base}/pi`, fetchImpl(input, init) {
+    const transport = createPiHttpClient({ baseUrl: `${base}/pi`, async fetchImpl(input, init) {
     const headers = new Headers(init?.headers);
     if (init?.method === "POST" && !headers.has("X-Request-ID")) headers.set("X-Request-ID", crypto.randomUUID().replaceAll("-", ""));
     // Reject oversized bodies before the server does (413) so the error is explainable.
     if (typeof init?.body === "string" && utf8Length(init.body) > MAX_MESSAGE_BODY_BYTES) {
       return Promise.reject(new Error(`Message too large (${mib(utf8Length(init.body))} MiB, limit ${mib(MAX_MESSAGE_BODY_BYTES)} MiB). Remove some images and retry.`));
     }
-    return fetch(input, { ...init, headers });
+    try {
+      const response = await fetch(input, { ...init, headers });
+      if (response.status >= 500) onUnavailable();
+      return response;
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) onUnavailable();
+      throw error;
+    }
   } });
     const key = `kuggis:model:${base}`;
     const remember = (model: { provider: string; modelId: string }) => { try { localStorage.setItem(key, JSON.stringify(model)); } catch {} };
@@ -177,7 +185,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete }: 
         return snapshot;
       },
     };
-  }, [base]);
+  }, [base, onUnavailable]);
   const runtime = usePiRuntime({
     client, initialThreadId: new URLSearchParams(location.search).get("chat") ?? undefined, includeArchived: true,
     isSendDisabled: changingModel,
