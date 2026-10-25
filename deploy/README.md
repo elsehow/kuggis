@@ -1,8 +1,9 @@
 # Hosted supervisor
 
-Run the operator on a dedicated trusted exe.dev VM. Cells remain separate VMs;
+Run the operator on a dedicated trusted exe.dev VM. Cells remain on separate hosts;
 the supervisor holds the private tree, identity pins, operation receipts and an
 operator SSH key. Chats, workspaces and provider credentials stay in their cells.
+[Existing Ubuntu hosts](ssh-hosts.md) can be registered through pinned SSH.
 Do not run agents or untrusted workloads on the supervisor: local processes can
 impersonate its trusted ingress, and its SSH key can manage the exe.dev account.
 Keeping that key off a laptop does not isolate it from a laptop agent that can
@@ -62,7 +63,8 @@ supervisor. For an image with Shelley, disable both `shelley.socket` and
    temporary probe. Verify that a caller-supplied user ID is overwritten. Save
    the allowlist at `/etc/kuggis-supervisor/access.json`, root-owned and readable
    only by the supervisor group (0640). Stop the probe before starting the UI.
-4. Stop the old operator. Back up and copy only its tree (including `.pins`) and
+4. Stop the old operator. Back up and copy only its tree (including `.pins`,
+   `.hosts` and `.identities.json`) and
    operator state to the new home. Keep directory permissions 0700 and files
    0600, owned by the service user. Do not copy an entire checkout's `.kuggis/`:
    it can contain unrelated private backups and evidence. Run only one active

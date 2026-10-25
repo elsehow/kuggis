@@ -16,6 +16,8 @@ doors. Provider, public-host, and repository code grants work.
 private reads and writes require host-held repository credentials. Integration
 and publishing grants still depend on exe.dev and are refused before connecting.
 Migrating an existing cell still requires a separate state-preserving cutover.
+See the [supervisor acceptance results](../bench/environment/SUPERVISOR-SSH-REPORT.md)
+for tested flows and remaining limits.
 
 ## Configuration
 
