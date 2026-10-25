@@ -53,7 +53,7 @@ test("hosted ingress protects every route and removes credentials before cell re
   assert.match(log, /Kuggis UI: https:\/\/supervisor.example/);
   const base = `http://127.0.0.1:${port}`;
   const good = { Host: "supervisor.example", "X-Forwarded-Host": "supervisor.example", "X-Forwarded-Proto": "https", "X-ExeDev-UserID": "usr_fixture", Origin: "https://supervisor.example" };
-  for (const [path, method] of [["/", "GET"], ["/api/cells", "GET"], ["/api/cells/plan", "POST"], ["/api/cells/project/events", "GET"]]) {
+  for (const [path, method] of [["/", "GET"], ["/api/cells", "GET"], ["/api/cells/plan", "POST"], ["/api/cells/project/events", "GET"], ["/api/cells/project/files?path=%2Fhome%2Fagent", "GET"], ["/api/cells/project/files/download?path=%2Fhome%2Fagent%2Fresults", "GET"]]) {
     for (const headers of [{}, { ...good, "X-ExeDev-UserID": "usr_other" }, { ...good, Origin: "https://evil.example" }]) {
       const r = await fetch(base + path, { method, headers });
       assert.equal(r.status, 403, `${method} ${path}`);
@@ -78,6 +78,14 @@ test("hosted ingress protects every route and removes credentials before cell re
   for (const key of Object.keys(relayed.headers)) {
     assert.ok(!/^(cookie|authorization|origin|x-exedev-|x-forwarded-|sec-fetch-)/.test(key), key);
   }
+  for (const path of ["files", "files/download"]) {
+    const query = "?path=%2Fhome%2Fagent%2Fround+25";
+    const response = await fetch(`${base}/api/cells/project/${path}${query}`, { headers: good });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).path, `/api/${path}${query}`);
+  }
+  assert.equal((await fetch(`${base}/api/cells/project/files/exec`, { headers: good })).status, 404);
+  assert.equal((await fetch(`${base}/api/cells/missing/files`, { headers: good })).status, 404);
 });
 
 test("an incomplete hosted option cannot fall back to local access", async () => {

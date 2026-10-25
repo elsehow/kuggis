@@ -12,7 +12,7 @@ import {
   usePiHostUiRequests, type PiHostUiRequest, type PiHostUiResponse,
   type PiModelInfo, type PiThreadMetadata, type PiThinkingLevel,
 } from "@assistant-ui/react-pi";
-import Markdown from "react-markdown";
+import Markdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MAX_IMAGE_BYTES, MAX_MESSAGE_BODY_BYTES, mib, utf8Length } from "./attachment-limits.mjs";
 import { activityTime, baseline, isUnread, loadSeen, saveSeen, type Seen } from "./unread.mjs";
@@ -26,12 +26,15 @@ import { CreateCell, creationLabel } from "./create-cell";
 import { DeleteCell, deletionLabel } from "./delete-cell";
 import { ModelPicker } from "./model-picker";
 import { ChatHealthBoundary } from "./chat-health";
+import { Files } from "./files";
+import { cellFilePath, fileViewUrl } from "./file-links";
 import "./style.css";
 
 import { api, explain } from "./api";
 import { presentationClient } from "./presentation-client.mjs";
 
 function label(cell: CellInfo) { return cell.name; }
+const FileNavigation = createContext<(path: string) => void>(() => {});
 
 // Image attachments wrapped in a size guard: providers reject image blocks over
 // 5 MiB (see attachment-limits.mjs for the derivation), and a clear client-side
@@ -142,6 +145,11 @@ function App() {
 }
 
 function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, onUnavailable }: { cell: CellInfo; standalone: boolean; local: boolean; canApply: boolean; reload: () => Promise<void>; onDelete?: () => void; onUnavailable: () => void }) {
+  const [view, setView] = useState(new URLSearchParams(location.search).get("view") === "files" ? "files" : "chat");
+  const [filePath, setFilePath] = useState(new URLSearchParams(location.search).get("path") ?? "");
+  const navigateFiles = (path: string) => { history.pushState(null, "", fileViewUrl(path)); setFilePath(path); setView("files"); };
+  const showChat = () => { const url = new URL(location.href); url.searchParams.delete("view"); url.searchParams.delete("path"); history.pushState(null, "", url); setView("chat"); };
+  useEffect(() => { const pop = () => { const params = new URLSearchParams(location.search); setView(params.get("view") === "files" ? "files" : "chat"); setFilePath(params.get("path") ?? ""); }; window.addEventListener("popstate", pop); return () => window.removeEventListener("popstate", pop); }, []);
   const [error, setError] = useState("");
   const [metadata, setMetadata] = useState<PiThreadMetadata[]>([]);
   const [models, setModels] = useState<PiModelInfo[]>([]);
@@ -228,25 +236,27 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, on
     pollNow.current = () => void poll();
     return () => { disposed = true; clearInterval(timer); pollNow.current = () => {}; };
   }, [client]);
-  return <AssistantRuntimeProvider runtime={runtime}><ChatMetadata.Provider value={metadata}><SeenChats.Provider value={seenChats}>
+  return <AssistantRuntimeProvider runtime={runtime}><ChatMetadata.Provider value={metadata}><SeenChats.Provider value={seenChats}><FileNavigation.Provider value={navigateFiles}>
     <div className="workspace">
       <aside className="sidebar" aria-label="Chats">
         <header className="sidebar-header"><span className="sidebar-cell" title={cell.name}>{label(cell)}</span>
           {local && <span className="local-badge">Local</span>}
           <button className="gear" aria-label="Cell settings" title="Cell settings" disabled={cell.lifecycle.state !== "available"} onClick={() => setSettings(true)}>⚙</button>
         </header>
+        <nav className="cell-file-tabs" aria-label="Cell views"><button aria-current={view === "chat" ? "page" : undefined} onClick={showChat}>Chat</button><button aria-current={view === "files" ? "page" : undefined} onClick={() => navigateFiles(filePath)}>Files</button></nav>
         <ThreadListPrimitive.Root className="thread-list">
           <ThreadListPrimitive.New className="new-chat">＋ New chat</ThreadListPrimitive.New>
           <SortedChats />
           {archived && <><div className="section-label">Archived</div><SortedChats archived /></>}
         </ThreadListPrimitive.Root><label className="archive-toggle"><input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} />Archived</label></aside>
-      <main className="chat-main"><ChatHeader client={client} models={models} modelsLoading={modelsLoading} modelsError={modelsError} reloadModels={loadModels} openSettings={() => setSettings(true)} changingModel={changingModel} setChangingModel={setChangingModel} onError={setError} />
+      {view === "files" && <Files base={base} path={filePath} navigate={navigateFiles} />}
+      <main className="chat-main" hidden={view !== "chat"}><ChatHeader client={client} models={models} modelsLoading={modelsLoading} modelsError={modelsError} reloadModels={loadModels} openSettings={() => setSettings(true)} changingModel={changingModel} setChangingModel={setChangingModel} onError={setError} />
         {error && <div className="error-banner" role="alert"><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError("")}>×</button></div>}
         <Chat onError={setError} />
       </main>
     </div>
     {settings && <Settings cell={cell} base={base} canApply={canApply} onClose={() => { setSettings(false); const url = new URL(location.href); url.searchParams.delete("setup"); history.replaceState(null, "", url); void loadModels(); }} onApplied={reload} onDelete={onDelete ? () => { setSettings(false); onDelete(); } : undefined} />}
-  </SeenChats.Provider></ChatMetadata.Provider></AssistantRuntimeProvider>;
+  </FileNavigation.Provider></SeenChats.Provider></ChatMetadata.Provider></AssistantRuntimeProvider>;
 }
 
 function SortedChats({ archived = false }: { archived?: boolean }) {
@@ -410,7 +420,11 @@ function AssistantMessage() {
   </MessagePrimitive.Root>;
 }
 function MarkdownText({ text }: TextMessagePartProps) {
-  return <div className="markdown"><Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown></div>;
+  const navigate = useContext(FileNavigation);
+  return <div className="markdown"><Markdown remarkPlugins={[remarkGfm]} urlTransform={(url, key) => key === "href" && cellFilePath(url) ? url : defaultUrlTransform(url)} components={{ a: ({ href, children }) => {
+    const path = href ? cellFilePath(href) : null;
+    return path ? <a href={fileViewUrl(path)} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); navigate(path); } }}>{children}</a> : <a href={href} rel="noreferrer">{children}</a>;
+  } }}>{text}</Markdown></div>;
 }
 function Reasoning({ text }: ReasoningMessagePartProps) {
   return <details className="reasoning"><summary>Reasoning</summary><Markdown>{text}</Markdown></details>;
