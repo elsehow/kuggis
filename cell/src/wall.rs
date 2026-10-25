@@ -350,8 +350,28 @@ pub fn prepare_pi(cell: &Cell) -> Fallible<PathBuf> {
         })
         .next()
         .unwrap_or(work);
+    let primary = chat_workspace(&state, &primary)?;
     crate::migration::import_claude(cell, Path::new(AGENT_HOME), &primary, &state)?;
     Ok(primary)
+}
+
+// Repository grants may change after chats have been created. Their workspace
+// identity must not change implicitly when setup regenerates the service unit.
+fn chat_workspace(state: &Path, proposed: &Path) -> Fallible<PathBuf> {
+    let binding = state.join("workspace.json");
+    match fs::read(&binding) {
+        Ok(bytes) => {
+            let saved: PathBuf = serde_json::from_slice(&bytes)?;
+            if !saved.is_absolute() || !saved.is_dir() || saved.canonicalize()? != saved {
+                return Err(
+                    "saved chat workspace is unavailable; restore it before applying setup".into(),
+                );
+            }
+            Ok(saved)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(proposed.to_path_buf()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn say_unit() -> String {
@@ -1076,6 +1096,41 @@ fn signed_in() -> BTreeSet<Provider> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_preserves_chat_workspace_when_repository_grants_change() {
+        let root =
+            std::env::temp_dir().join(format!("cell-workspace-{}", crate::RequestId::generate()));
+        fs::create_dir_all(root.join("work/new-repo")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let state = root.join("state");
+        fs::create_dir(&state).unwrap();
+        let previous = root.join("work");
+        let proposed = previous.join("new-repo");
+        assert_eq!(chat_workspace(&state, &proposed).unwrap(), proposed);
+        let binding = serde_json::to_vec(&previous).unwrap();
+        fs::write(state.join("workspace.json"), &binding).unwrap();
+        assert_eq!(chat_workspace(&state, &proposed).unwrap(), previous);
+        assert_eq!(fs::read(state.join("workspace.json")).unwrap(), binding);
+        fs::write(state.join("workspace.json"), b"invalid").unwrap();
+        assert!(chat_workspace(&state, &proposed).is_err());
+        fs::write(
+            state.join("workspace.json"),
+            serde_json::to_vec(&root.join("missing")).unwrap(),
+        )
+        .unwrap();
+        assert!(chat_workspace(&state, &proposed).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn guest_chat_health_and_recovery() {
+        let status = std::process::Command::new("python3")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/chat_health.py"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
 
     #[test]
     fn publish_bridge_serves_the_guest_agent_from_the_bound_directory() {

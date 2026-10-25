@@ -1,7 +1,8 @@
 export const explain = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   try {
-    const detail = JSON.parse(message.replace(/^\d{3}\s+/, ""));
+    const detail = JSON.parse(message.slice(message.indexOf("{")));
+    if (typeof detail.error === "string") return detail.error;
     if (typeof detail.error?.message === "string") return detail.error.message;
   } catch { /* Plain text errors are already suitable for display. */ }
   return message;
