@@ -66,10 +66,12 @@ chat IDs, health, assets and access controls.
 
 External hosts support standalone chat, streaming, provider settings,
 health/recovery, renaming and reviewed grant updates. Provider-owned server
-creation/deletion, cross-provider child doors, and exe.dev integration/publishing
-grants remain unsupported and are refused. Migrating an existing production cell
-still requires a separate cutover preserving its identity, credentials, signed
-history, chats, workspace and installed software.
+creation/deletion, cross-provider child doors, and exe.dev integration grants
+remain unsupported and are refused. Subsequent work enabled the shared publishing
+bridge on SSH hosts and passed private publish/verify/status/unpublish acceptance.
+Migrating an existing production cell uses a [separate cutover](../../deploy/migration.md)
+preserving its identity, credentials, signed history, chats, workspace and installed
+software; registration still cannot replace an existing identity.
 
 See [registration instructions](../../deploy/ssh-hosts.md#registering-with-a-supervisor)
 and [reproduction steps](README.md#supervisor-connection). Raw identifiers,

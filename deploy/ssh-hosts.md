@@ -149,18 +149,17 @@ Back up `.hosts`, `.pins`, `.identities.json`, declarations and operator state
 together. Do not run two supervisors against the same active cell outside a
 controlled canary acceptance run.
 
-## Remaining work before a migration
+## Migrating an existing cell
 
-1. Provision repository credentials for production cells and retire existing
-   exe.dev Git attachments through reviewed upgrades. The shared broker has
-   passed live private clone/fetch, read-only enforcement, and authenticated
-   dry-run push [acceptance](../bench/environment/GIT-REPORT.md). Preserve grant
-   semantics throughout the rollout.
-2. Validate the registered canary through the supervisor, including streaming,
-   active-run refusal, grant changes, host/service restarts and failed connections.
-3. Add a reviewed migration that preserves cell identity, signed logs, chats,
-   credentials, workspaces, and imported data, with one active instance and a
-   rollback procedure.
-4. Repeat boundary, reapply, and reboot acceptance after Git and supervisor
-   integration, then run the migration acceptance checks. Cross-provider subcell
-   doors remain a separate capability.
+Use the separate [migration procedure](migration.md), including an isolated
+restore rehearsal, a fresh final snapshot, source fencing, and verification
+before restoring supervisor routing. Registration is deliberately unable to
+perform this operation. The source VM and destination canary remain private
+rollback backups; moving the latest state back is required after new writes.
+
+Repository credentials must be provisioned on the destination before cutover.
+The shared broker has passed live private clone/fetch, read-only enforcement,
+and authenticated dry-run push [acceptance](../bench/environment/GIT-REPORT.md).
+Preserve existing grant semantics, including independently granted public hosts.
+Cross-provider subcell doors and provider-owned server lifecycle operations
+remain separate capabilities.
