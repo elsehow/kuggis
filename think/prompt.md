@@ -65,6 +65,11 @@ session that wrote the PR.
   on their laptop the next time they use kuggis: review those line by line,
   and call out anything touching sudo, the room, keys or the network.
 - One review per file; for a re-review, write a new file with the new head.
+- PRs can depend on each other: one stacked on another's branch (`branch X
+  into Y` in `inbox/status.md`), or two touching the same code. Read them
+  together, a stack from the bottom up, but keep one review per PR, and say in
+  each what it depends on or conflicts with. kuggis merges only a PR whose
+  base is the default branch, so a stack merges from the bottom.
 
 ## Your inbox
 
