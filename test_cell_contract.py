@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from cells import adoption, control, policy
-from web.cells import project as dashboard
+from cells.display import project as dashboard
 
 ROOT = Path(__file__).resolve().parent
 

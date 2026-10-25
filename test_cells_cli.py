@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
-from web.cells import project, resolve
+from cells.display import project, resolve
 
 ROOT = Path(__file__).resolve().parent
 

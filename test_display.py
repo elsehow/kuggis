@@ -1,18 +1,13 @@
-"""Cell dashboard projection and real HTTP/CLI boundary tests. No live services."""
+"""The cell grouping the home screen and the room share, and the snapshot behind it. No live services."""
 import copy
-import http.client
 import json
 import os
 from pathlib import Path
-import runpy
 import subprocess
 import tempfile
-import threading
 import unittest
-from http.server import ThreadingHTTPServer
-from unittest.mock import patch
 
-from web.cells import project
+from cells.display import project
 
 ROOT = Path(__file__).resolve().parent
 SNAPSHOT = {
@@ -26,7 +21,8 @@ SNAPSHOT = {
         {"project": "kuggis", "name": "dashboard", "state": "idle", "age": "3m"},
         {"project": "other", "name": "-", "state": "no sessions", "age": "-"},
     ],
-    "briefs": [{"id": "task.md", "project": "airo", "session": "task", "since": 1000}],
+    "requests": [{"id": "a" * 64, "kind": "brief", "cell": "", "project": "airo", "session": "task",
+                  "url": "", "since": 1000, "held": True}],
 }
 
 
@@ -101,7 +97,7 @@ class Cells(unittest.TestCase):
 
     def test_stopped_needs_help_but_idle_and_running_do_not(self):
         data = copy.deepcopy(SNAPSHOT)
-        data["briefs"] = []
+        data["requests"] = []
         data["sessions"][0]["state"] = "stopped (codex)"
         data["sessions"][1]["state"] = "running (codex)"
         cell = project(data, self.config)["cells"][1]
@@ -111,70 +107,12 @@ class Cells(unittest.TestCase):
     def test_all_runtime_suffixes_preserve_attention_and_attach_command(self):
         for agent in ("claude", "codex", "pi"):
             data = copy.deepcopy(SNAPSHOT)
-            data["briefs"] = []
+            data["requests"] = []
             data["sessions"][0]["state"] = f"waiting on you (blocked) ({agent})"
             data["sessions"][1]["state"] = f"idle ({agent})"
             cell = project(data, self.config)["cells"][1]
             self.assertEqual(cell["needs_you"], 1)
             self.assertTrue(cell["rows"][0]["command"].startswith("kuggis forecasting "))
-
-
-class HTTP(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.config = Path(self.tmp.name)
-        self.env = patch.dict(os.environ, {"KUGGIS_CONFIG": str(self.config)})
-        self.env.start()
-        self.addCleanup(self.env.stop)
-        stub = self.config / "kuggis"
-        stub.write_text("#!/usr/bin/env python3\nimport json, sys\nassert sys.argv[1:] == ['_web', 'cells']\nprint(" + repr(json.dumps(SNAPSHOT)) + ")\n")
-        stub.chmod(0o700)
-        handler = runpy.run_path(str(ROOT / "web/server.py"))["Handler"]
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        self.server.token = "a" * 48
-        self.server.kuggis = str(stub)
-        self.server.hosts = {f"127.0.0.1:{self.server.server_port}"}
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-        self.addCleanup(self.stop)
-
-    def stop(self):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join()
-
-    def get(self, path, token=True, host=None):
-        conn = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
-        headers = {"X-Kuggis-Token": self.server.token} if token else {}
-        if host:
-            headers["Host"] = host
-        conn.request("GET", path, headers=headers)
-        response = conn.getresponse()
-        body = response.read()
-        conn.close()
-        return response.status, body
-
-    def test_cells_api_requires_token_and_local_host(self):
-        self.assertEqual(self.get("/api/cells", token=False)[0], 403)
-        self.assertEqual(self.get("/api/cells", host="attacker.example")[0], 403)
-        status, body = self.get("/api/cells")
-        self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body)["cells"][1]["name"], "forecasting")
-
-    def test_both_pages_and_shared_assets_are_served(self):
-        for path, marker in [("/", b"/cells.js"), ("/reviews", b"/app.js"),
-                             ("/common.js", b"function visible"), ("/cells.css", b".needs-you")]:
-            status, body = self.get(path, token=False)
-            self.assertEqual(status, 200, path)
-            self.assertIn(marker, body)
-
-    def test_invalid_definition_returns_error_not_empty_success(self):
-        (self.config / "cells").mkdir()
-        (self.config / "cells/forecasting.json").write_text("{")
-        status, body = self.get("/api/cells")
-        self.assertEqual(status, 409)
-        self.assertIn("Cell definitions", json.loads(body)["error"])
 
 
 class CLI(unittest.TestCase):
@@ -196,16 +134,16 @@ class CLI(unittest.TestCase):
                 f.chmod(0o700)
             env = dict(os.environ, KUGGIS_CONFIG=tmp, KUGGIS_OUTBOX=str(root / "outbox"),
                        PATH=str(root / "bin") + os.pathsep + os.environ["PATH"])
-            result = subprocess.run([str(ROOT / "kuggis"), "_web", "cells"], env=env,
+            result = subprocess.run([str(ROOT / "kuggis"), "_snapshot"], env=env,
                                     text=True, capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertNotIn("unexpected", result.stderr)
             data = json.loads(result.stdout)
             self.assertEqual(data["sessions"][0]["name"], "sample")
             self.assertEqual(data["projects"], [{"name": "airo", "profile": "airo"}])
-            self.assertEqual(len(data["briefs"]), 1)
-            self.assertEqual(data["briefs"][0]["session"], "sample")
-            self.assertIsInstance(data["briefs"][0]["since"], int)
+            self.assertEqual(len(data["requests"]), 1)
+            self.assertEqual(data["requests"][0]["session"], "sample")
+            self.assertIsInstance(data["requests"][0]["since"], int)
             self.assertNotIn("NOT_FOR_DASHBOARD", result.stdout)
 
 
