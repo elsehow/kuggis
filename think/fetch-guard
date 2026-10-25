@@ -14,17 +14,18 @@ Links inside fetched pages don't count: WebFetch's result is a model's summary
 written to the model's own prompt, so it can echo whatever the model asks.
 Anything unexpected refuses: the guard fails closed.
 """
-import ipaddress
 import json
+import os
 import re
-import socket
 import sys
 from urllib.parse import urlsplit
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from door import public_host, system_resolve  # noqa: E402  the one URL rule, shared with the door
 
 URL_RE = re.compile(r"https?://[^\s<>\"'`\])}]+")
 TRAILING = ".,;:!?*_~"
 BIGBRAIN = "mcp__bigbrain__"
-BLOCKED_SUFFIXES = (".localhost", ".local", ".internal", ".home.arpa", ".lan")
 
 
 def urls_in(text):
@@ -91,24 +92,6 @@ def allowed_urls(lines):
                 elif name.startswith(BIGBRAIN):
                     outside |= {u for t in texts(b.get("content")) for u in urls_in(t)} - sent_to_bigbrain
     return outside
-
-
-def public_host(host, resolve):
-    host = host.lower().rstrip(".")
-    if not host or host == "localhost" or host.endswith(BLOCKED_SUFFIXES):
-        return False
-    try:
-        addrs = [ipaddress.ip_address(host.strip("[]"))]
-    except ValueError:
-        try:
-            addrs = [ipaddress.ip_address(a) for a in resolve(host)]
-        except (OSError, ValueError):
-            return False
-    return bool(addrs) and all(a.is_global for a in addrs)
-
-
-def system_resolve(host):
-    return {info[4][0].split("%")[0] for info in socket.getaddrinfo(host, None)}
 
 
 def verdict(event, resolve=system_resolve):

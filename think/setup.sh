@@ -32,9 +32,17 @@ install -d -o root -g wheel -m 755 "$room"
 install -o root -g wheel -m 755 "$bin" "$room/claude"
 install -o root -g wheel -m 755 "$here/check.sh" "$room/check"
 for f in launch fetch-guard; do install -o root -g wheel -m 755 "$here/$f" "$room/$f"; done
-for f in settings.json prompt.md check-prompt.md; do install -o root -g wheel -m 644 "$here/$f" "$room/$f"; done
-# mcp.json carries the BigBrain door once it's connected; don't overwrite it.
+for f in settings.json prompt.md check-prompt.md door.py; do install -o root -g wheel -m 644 "$here/$f" "$room/$f"; done
+# mcp.json: the kuggis door (think/door.py) always; BigBrain's door is added by
+# hand once it's connected, so an existing file keeps its other entries.
 [ -f "$room/mcp.json" ] || install -o root -g wheel -m 644 "$here/mcp.json" "$room/mcp.json"
+/usr/bin/python3 -I - "$room/mcp.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path))
+data.setdefault("mcpServers", {})["kuggis"] = {"command": "/usr/bin/python3", "args": ["-I", "/opt/kuggis-thinker/door.py", "serve"]}
+json.dump(data, open(path, "w"), indent=2)
+PY
 echo "room: $room ($("$room/claude" --version 2>/dev/null | head -1))"
 
 # 4. Its home: a workspace with an outbox the owner can read, its token, and

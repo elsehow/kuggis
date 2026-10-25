@@ -45,6 +45,18 @@ status() {
   done
 }
 
+# status, then `--`, then each live session's last 40 screen lines, base64 on
+# one line: everything kuggis watch wants from a VM, in one ssh.
+snapshot() {
+  status
+  echo "--"
+  local name
+  for name in $(tmux list-sessions -F '#{session_name}' 2>/dev/null); do
+    [ -f "$STATE/$name" ] || continue
+    printf '%s\t%s\n' "$name" "$(tmux capture-pane -p -t "=$name:" 2>/dev/null | tail -n 40 | base64 -w0)"
+  done
+}
+
 new_worktree() {
   local name=$1 wt=$2 base
   git -C "$REPO" fetch -q --prune origin
@@ -150,8 +162,9 @@ finish() {
 
 case ${1:-} in
   status) status ;;
+  snapshot) snapshot ;;
   attach) attach "$2" "${3:-}" ;;
   deliver) deliver "$2" "$3" "$4" ;;
   done) finish "$2" "${3:-}" ;;
-  *) die "usage: session.sh status | attach <name> [claude|codex|pi] | deliver <name> <claude|codex|pi> <brief> | done <name> [--force]" ;;
+  *) die "usage: session.sh status | snapshot | attach <name> [claude|codex|pi] | deliver <name> <claude|codex|pi> <brief> | done <name> [--force]" ;;
 esac
