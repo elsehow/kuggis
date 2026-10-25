@@ -13,8 +13,10 @@ and reviewed configuration changes over pinned SSH. It does not move an existing
 cell, provision/delete external servers, or implement cross-provider parent–child
 doors. Provider, public-host, and repository code grants work.
 [Scoped Git](scoped-git.md) uses the same broker on every host;
-private reads and writes require host-held repository credentials. Integration
-and publishing grants still depend on exe.dev and are refused before connecting.
+private reads and writes require host-held repository credentials. Publishing
+uses the same operator-configured publisher and host signing bridge on either
+backend. Private publishing has passed live SSH canary acceptance. exe.dev
+integration grants and private door hostnames are refused before connecting.
 Migrating an existing cell still requires a separate state-preserving cutover.
 See the [supervisor acceptance results](../bench/environment/SUPERVISOR-SSH-REPORT.md)
 for tested flows and remaining limits.
