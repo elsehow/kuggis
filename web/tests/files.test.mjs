@@ -61,7 +61,7 @@ test("read-only files, local workspace boundary, and streamed archives", { timeo
   assert.equal((await (await fetch(files(join(workspace, "round-link")))).json()).path, join(workspace, "round 25"));
 
   for (const download of [false, true]) {
-    for (const path of [join(dir, "outside.txt"), join(workspace, "outside-link"), `${workspace}/../outside.txt`]) {
+    for (const path of [join(dir, "outside.txt"), join(dir, "missing.txt"), join(workspace, "outside-link"), `${workspace}/../outside.txt`]) {
       assert.equal((await fetch(files(path, download))).status, 403, path);
     }
     assert.equal((await fetch(files("relative.txt", download))).status, 400);

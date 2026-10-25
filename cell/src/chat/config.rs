@@ -24,6 +24,8 @@ pub enum ExecutionMode {
 pub struct Config {
     pub mode: ExecutionMode,
     pub workspace: PathBuf,
+    /// The only folder the Files API can read: what the agent shares with the user.
+    pub shared: PathBuf,
     pub state: PathBuf,
     pub assets: PathBuf,
     pub pi: PathBuf,

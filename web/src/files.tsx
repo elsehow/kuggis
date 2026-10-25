@@ -32,9 +32,9 @@ export function Files({ base, path, navigate }: { base: string; path: string; na
   const download = (value: string, label: string) => <a className="file-download" href={fileDownloadUrl(base, value)} download>{label}</a>;
   const entries = listing?.entries.filter(entry => entry.name.toLowerCase().includes(filter.toLowerCase())) ?? [];
   return <main className="files-main" aria-label="Cell files">
-    <header className="files-heading"><div><h1>Files</h1><p>Browse and download files from this cell.</p></div><button onClick={() => setRefresh(v => v + 1)} disabled={loading}>Refresh</button></header>
-    <form className="file-location" onSubmit={submit}><label htmlFor="file-path">Path</label><input id="file-path" value={input} placeholder="Workspace" onChange={e => setInput(e.target.value)} spellCheck={false} /><button type="submit">Go</button></form>
-    <nav className="file-shortcuts" aria-label="File locations"><button onClick={() => navigate("")}>Workspace</button>{listing && <><button onClick={() => navigate(listing.root)}>{listing.root === "/" ? "Filesystem" : "Workspace root"}</button><button disabled={!listing.parent} onClick={() => listing.parent && navigate(listing.parent)}>↑ Parent folder</button></>}</nav>
+    <header className="files-heading"><div><h1>Files</h1><p>{listing ? <>Files the agent shared in <code>{listing.root}</code>.</> : "Files the agent shared from this cell."}</p></div><button onClick={() => setRefresh(v => v + 1)} disabled={loading}>Refresh</button></header>
+    <form className="file-location" onSubmit={submit}><label htmlFor="file-path">Path</label><input id="file-path" value={input} placeholder="Shared folder" onChange={e => setInput(e.target.value)} spellCheck={false} /><button type="submit">Go</button></form>
+    <nav className="file-shortcuts" aria-label="File locations"><button onClick={() => navigate("")}>Shared folder</button>{listing && <button disabled={!listing.parent} onClick={() => listing.parent && navigate(listing.parent)}>↑ Parent folder</button>}</nav>
     {loading && <p role="status">Loading files…</p>}
     {error && <div role="alert" className="inline-error">{error}<button onClick={() => setRefresh(v => v + 1)}>Retry</button></div>}
     {listing && <>
@@ -44,7 +44,7 @@ export function Files({ base, path, navigate }: { base: string; path: string; na
         <div className="file-table-scroll"><table className="file-table"><thead><tr><th>Name</th><th>Size</th><th>Modified</th><th><span className="sr-only">Download</span></th></tr></thead><tbody>
           {entries.map(entry => <tr key={entry.name}><td><button className="file-name" disabled={entry.kind === "unavailable" || entry.kind === "other"} onClick={() => navigate(entry.path)}><span aria-hidden="true">{entry.kind === "directory" ? "▱" : "·"}</span><span>{entry.name}{entry.kind === "directory" ? "/" : ""}</span></button>{entry.symlink && <small>Link</small>}{entry.kind === "unavailable" && <small>Unavailable</small>}{entry.kind === "other" && <small>Special file</small>}</td><td>{size(entry.size)}</td><td>{entry.modified === null ? "—" : new Date(entry.modified * 1000).toLocaleString()}</td><td>{(entry.kind === "file" || entry.kind === "directory") && <a href={fileDownloadUrl(base, entry.path)} download aria-label={`Download ${entry.name}`}>{entry.kind === "directory" ? ".tar.gz ↓" : "Download ↓"}</a>}</td></tr>)}
         </tbody></table></div>
-        {!entries.length && <p className="files-empty">{listing.entries.length ? "No matching files." : "This folder is empty."}</p>}
+        {!entries.length && <p className="files-empty">{listing.entries.length ? "No matching files." : listing.path === listing.root ? "Nothing shared yet. Ask the agent to copy files here." : "This folder is empty."}</p>}
         {listing.truncated && <p role="status">Showing the first 10,000 entries. Enter a specific path to browse further.</p>}
         <p className="files-note">Folder downloads include regular files and folders. Symbolic links, special files, and other mounted filesystems are skipped.</p>
       </>}

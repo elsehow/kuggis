@@ -372,6 +372,7 @@ impl Store {
         let (rpc, mut events) = Rpc::spawn(
             &self.config.pi,
             &self.config.workspace,
+            &self.config.shared,
             &self.config.state.join("pi"),
             &id.to_string(),
             self.config.agent_dir(),
@@ -930,6 +931,7 @@ async fn models(State(store): State<Arc<Store>>) -> ApiResult<Json<Vec<ModelInfo
     let (rpc, mut events) = Rpc::spawn(
         &store.config.pi,
         &store.config.workspace,
+        &store.config.shared,
         &store.config.state.join("pi"),
         "catalog",
         store.config.agent_dir(),
@@ -1045,6 +1047,8 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
     if !config.workspace.is_dir() {
         return Err("workspace must be a directory".into());
     }
+    fs::create_dir_all(&config.shared)?;
+    config.shared = config.shared.canonicalize()?;
     fs::create_dir_all(&config.state)?;
     config.state = config.state.canonicalize()?;
     fs::set_permissions(&config.state, fs::Permissions::from_mode(0o700))?;

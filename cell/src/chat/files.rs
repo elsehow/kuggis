@@ -1,6 +1,8 @@
-//! Read-only files from the chat process's own filesystem and OS identity.
-//! The operator only relays bytes; it never resolves guest paths on the host.
-use super::{error, ApiError, ApiResult, Config, ExecutionMode, Store};
+//! Read-only access to the folder the agent shares with the user, using the
+//! chat process's own OS identity. Nothing outside it is listed or downloaded,
+//! so agent credentials and chat state stay private. The operator only relays
+//! bytes; it never resolves guest paths on the host.
+use super::{error, ApiError, ApiResult, Config, Store};
 use axum::{
     body::Body,
     extract::{Query, State},
@@ -59,7 +61,6 @@ pub(crate) struct FileListing {
     path: String,
     parent: Option<String>,
     root: String,
-    workspace: String,
     kind: FileKind,
     size: Option<u64>,
     entries: Vec<FileEntry>,
@@ -77,24 +78,27 @@ fn io_error(e: io::Error) -> ApiError {
     )
 }
 
-fn root(config: &Config) -> &Path {
-    match &config.mode {
-        ExecutionMode::Local { .. } => &config.workspace,
-        ExecutionMode::Cell { .. } => Path::new("/"),
-    }
-}
-
 fn resolve(config: &Config, value: Option<&str>) -> ApiResult<PathBuf> {
-    let path = value.map(Path::new).unwrap_or(&config.workspace);
+    let path = value.map(Path::new).unwrap_or(&config.shared);
     if !path.is_absolute() || path.as_os_str().as_bytes().contains(&0) {
         return Err(super::bad("Use an absolute path in this cell"));
     }
-    let path = path.canonicalize().map_err(io_error)?;
-    if !path.starts_with(root(config)) {
-        return Err(error(
+    let outside = || {
+        error(
             StatusCode::FORBIDDEN,
-            "Local files must stay inside the workspace".into(),
-        ));
+            format!(
+                "Only the shared folder {} can be browsed. Ask the agent to copy this there.",
+                config.shared.display()
+            ),
+        )
+    };
+    // Refuse before resolving, so a 404 cannot reveal what exists elsewhere.
+    if !path.starts_with(&config.shared) || path.components().any(|c| c == Component::ParentDir) {
+        return Err(outside());
+    }
+    let path = path.canonicalize().map_err(io_error)?;
+    if !path.starts_with(&config.shared) {
+        return Err(outside());
     }
     Ok(path)
 }
@@ -111,10 +115,10 @@ fn open(config: &Config, path: &Path) -> ApiResult<File> {
     let mut file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(root(config))
+        .open(&config.shared)
         .map_err(io_error)?;
     let components: Vec<_> = path
-        .strip_prefix(root(config))
+        .strip_prefix(&config.shared)
         .map_err(|_| super::bad("Invalid path"))?
         .components()
         .collect();
@@ -242,11 +246,10 @@ fn listing(config: &Config, value: Option<&str>) -> ApiResult<FileListing> {
     Ok(FileListing {
         parent: path
             .parent()
-            .filter(|p| p.starts_with(root(config)))
+            .filter(|p| p.starts_with(&config.shared))
             .map(|p| p.to_string_lossy().into_owned()),
         path: path.to_string_lossy().into_owned(),
-        root: root(config).to_string_lossy().into_owned(),
-        workspace: config.workspace.to_string_lossy().into_owned(),
+        root: config.shared.to_string_lossy().into_owned(),
         kind: kind(&metadata),
         size: metadata.is_file().then(|| metadata.len()),
         entries,
@@ -389,6 +392,7 @@ pub(super) async fn download(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::ExecutionMode;
     use std::os::unix::fs::symlink;
 
     struct Fixture {
@@ -400,15 +404,18 @@ mod tests {
         fn new() -> Self {
             let directory =
                 std::env::temp_dir().join(format!("cell-files-{}", crate::RequestId::generate()));
-            fs::create_dir_all(directory.join("work/sub")).unwrap();
+            fs::create_dir_all(directory.join("shared/sub")).unwrap();
+            fs::create_dir_all(directory.join("workspace")).unwrap();
             let directory = directory.canonicalize().unwrap();
             fs::write(directory.join("private"), "outside").unwrap();
-            fs::write(directory.join("work/sub/results.csv"), "inside").unwrap();
+            fs::write(directory.join("workspace/notes.md"), "unshared work").unwrap();
+            fs::write(directory.join("shared/sub/results.csv"), "inside").unwrap();
             let config = Config {
                 mode: ExecutionMode::Local {
                     listen: "127.0.0.1:0".parse().unwrap(),
                 },
-                workspace: directory.join("work"),
+                workspace: directory.join("workspace"),
+                shared: directory.join("shared"),
                 state: directory.join("state"),
                 assets: directory.join("assets"),
                 pi: "pi".into(),
@@ -424,35 +431,39 @@ mod tests {
     }
 
     #[test]
-    fn local_links_and_parent_paths_cannot_escape_the_workspace() {
+    fn links_and_parent_paths_cannot_escape_the_shared_folder() {
         let f = Fixture::new();
-        symlink(
-            f.directory.join("private"),
-            f.config.workspace.join("outside"),
-        )
-        .unwrap();
-        symlink(
-            f.config.workspace.join("sub"),
-            f.config.workspace.join("inside"),
-        )
-        .unwrap();
+        let shared = &f.config.shared;
+        symlink(f.directory.join("private"), shared.join("outside")).unwrap();
+        symlink(shared.join("sub"), shared.join("inside")).unwrap();
         for path in [
             f.directory.join("private"),
-            f.config.workspace.join("../private"),
-            f.config.workspace.join("outside"),
+            f.config.workspace.join("notes.md"),
+            shared.join("../private"),
+            shared.join("outside"),
+            // Missing paths elsewhere are refused rather than reported missing.
+            f.directory.join("missing"),
+            shared.join("../missing"),
         ] {
             assert_eq!(
                 resolve(&f.config, path.to_str()).err().unwrap().status,
-                StatusCode::FORBIDDEN
+                StatusCode::FORBIDDEN,
+                "{}",
+                path.display()
             );
         }
-        let path = resolve(
-            &f.config,
-            f.config.workspace.join("inside/results.csv").to_str(),
-        )
-        .unwrap_or_else(|e| panic!("{}", e.message));
-        assert_eq!(path, f.config.workspace.join("sub/results.csv"));
+        assert_eq!(
+            resolve(&f.config, shared.join("missing").to_str())
+                .err()
+                .unwrap()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+        let path = resolve(&f.config, shared.join("inside/results.csv").to_str())
+            .unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(path, shared.join("sub/results.csv"));
         let list = listing(&f.config, None).unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(list.path, shared.to_string_lossy());
         assert!(list.parent.is_none());
         assert!(list
             .entries
@@ -463,24 +474,14 @@ mod tests {
     #[test]
     fn replacement_symlink_is_not_followed_after_resolution() {
         let f = Fixture::new();
-        let path = resolve(
-            &f.config,
-            f.config.workspace.join("sub/results.csv").to_str(),
-        )
-        .unwrap_or_else(|e| panic!("{}", e.message));
-        fs::rename(
-            f.config.workspace.join("sub"),
-            f.config.workspace.join("saved"),
-        )
-        .unwrap();
-        symlink(
-            f.config.workspace.join("saved"),
-            f.config.workspace.join("sub"),
-        )
-        .unwrap();
+        let shared = &f.config.shared;
+        let path = resolve(&f.config, shared.join("sub/results.csv").to_str())
+            .unwrap_or_else(|e| panic!("{}", e.message));
+        fs::rename(shared.join("sub"), shared.join("saved")).unwrap();
+        symlink(shared.join("saved"), shared.join("sub")).unwrap();
         assert!(
             open(&f.config, &path).is_err(),
-            "even a replacement link inside the workspace must be reopened explicitly"
+            "even a replacement link inside the shared folder must be reopened explicitly"
         );
     }
 

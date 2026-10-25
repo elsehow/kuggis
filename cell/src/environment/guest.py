@@ -94,7 +94,7 @@ Environment=PATH=/home/agent/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/
 Environment=HTTPS_PROXY={PROXY} HTTP_PROXY={PROXY} https_proxy={PROXY} http_proxy={PROXY}
 Environment=NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1
 Environment=GH_HOST=github.int.exe.xyz
-ExecStart=/usr/local/bin/cell chat --cell /etc/cell/cell.json --workspace "{workspace}" --state /home/agent/.kuggis/chat --socket /run/cell-chat/api.sock --agent-dir /home/agent/.pi/agent --pi /usr/local/lib/cell/pi-1.3.0-node-24.22.1/pi --inbox /var/lib/cell/inbox --outbox /var/lib/cell/outbox
+ExecStart=/usr/local/bin/cell chat --cell /etc/cell/cell.json --workspace "{workspace}" --state /home/agent/.kuggis/chat --socket /run/cell-chat/api.sock --agent-dir /home/agent/.pi/agent --pi /usr/local/lib/cell/pi-1.3.0-node-24.22.1/pi --inbox /var/lib/cell/inbox --outbox /var/lib/cell/outbox --shared /home/agent/shared
 Restart=always
 RestartSec=2
 UMask=0077

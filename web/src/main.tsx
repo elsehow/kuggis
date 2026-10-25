@@ -36,6 +36,8 @@ import { presentationClient } from "./presentation-client.mjs";
 
 function label(cell: CellInfo) { return cell.name; }
 const FileNavigation = createContext<(path: string) => void>(() => {});
+// Choosing a chat in the sidebar leaves Files for that chat.
+const ShowChat = createContext<() => void>(() => {});
 
 // Image attachments wrapped in a size guard: providers reject image blocks over
 // 5 MiB (see attachment-limits.mjs for the derivation), and a clear client-side
@@ -149,7 +151,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, on
   const [view, setView] = useState(new URLSearchParams(location.search).get("view") === "files" ? "files" : "chat");
   const [filePath, setFilePath] = useState(new URLSearchParams(location.search).get("path") ?? "");
   const navigateFiles = (path: string) => { history.pushState(null, "", fileViewUrl(path)); setFilePath(path); setView("files"); };
-  const showChat = () => { const url = new URL(location.href); url.searchParams.delete("view"); url.searchParams.delete("path"); history.pushState(null, "", url); setView("chat"); };
+  const showChat = () => { if (view === "chat") return; const url = new URL(location.href); url.searchParams.delete("view"); url.searchParams.delete("path"); history.pushState(null, "", url); setView("chat"); };
   useEffect(() => { const pop = () => { const params = new URLSearchParams(location.search); setView(params.get("view") === "files" ? "files" : "chat"); setFilePath(params.get("path") ?? ""); }; window.addEventListener("popstate", pop); return () => window.removeEventListener("popstate", pop); }, []);
   const [error, setError] = useState("");
   const [metadata, setMetadata] = useState<PiThreadMetadata[]>([]);
@@ -245,7 +247,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, on
     pollNow.current = () => void poll();
     return () => { disposed = true; clearInterval(timer); pollNow.current = () => {}; };
   }, [client]);
-  return <AssistantRuntimeProvider runtime={runtime}><ChatMetadata.Provider value={metadata}><SeenChats.Provider value={seenChats}><FileNavigation.Provider value={navigateFiles}>
+  return <AssistantRuntimeProvider runtime={runtime}><ChatMetadata.Provider value={metadata}><SeenChats.Provider value={seenChats}><FileNavigation.Provider value={navigateFiles}><ShowChat.Provider value={showChat}>
     <div className="workspace">
       <aside className="sidebar" aria-label="Chats">
         <header className="sidebar-header"><span className="sidebar-cell" title={cell.name}>{label(cell)}</span>
@@ -254,7 +256,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, on
         </header>
         <nav className="cell-file-tabs" aria-label="Cell views"><button aria-current={view === "chat" ? "page" : undefined} onClick={showChat}>Chat</button><button aria-current={view === "files" ? "page" : undefined} onClick={() => navigateFiles(filePath)}>Files</button></nav>
         <ThreadListPrimitive.Root className="thread-list">
-          <ThreadListPrimitive.New className="new-chat">＋ New chat</ThreadListPrimitive.New>
+          <ThreadListPrimitive.New className="new-chat" onClick={showChat}>＋ New chat</ThreadListPrimitive.New>
           <ChatList archived={archived} error={listError} />
         </ThreadListPrimitive.Root><label className="archive-toggle"><input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} />Archived</label></aside>
       {view === "files" && <Files base={base} path={filePath} navigate={navigateFiles} />}
@@ -264,7 +266,7 @@ function CellWorkspace({ cell, standalone, local, canApply, reload, onDelete, on
       </main>
     </div>
     {settings && <Settings cell={cell} base={base} canApply={canApply} onClose={() => { setSettings(false); const url = new URL(location.href); url.searchParams.delete("setup"); history.replaceState(null, "", url); void loadModels(); }} onApplied={reload} onDelete={onDelete ? () => { setSettings(false); onDelete(); } : undefined} />}
-  </FileNavigation.Provider></SeenChats.Provider></ChatMetadata.Provider></AssistantRuntimeProvider>;
+  </ShowChat.Provider></FileNavigation.Provider></SeenChats.Provider></ChatMetadata.Provider></AssistantRuntimeProvider>;
 }
 
 function ChatList({ archived, error }: { archived: boolean; error: string }) {
@@ -314,6 +316,7 @@ function ChatItem() {
   const row = rows.find((r) => r.id === remoteId);
   const extras = usePiRuntimeExtras();
   const { seen, markSeen } = useContext(SeenChats);
+  const showChat = useContext(ShowChat);
   const current = session?.id === remoteId;
   // The open chat's own stream reports run status and end time before the next
   // list poll does; whatever it reports while open counts as seen.
@@ -323,7 +326,7 @@ function ChatItem() {
   const state = current && extras.allHostUiRequests.length > 0 ? "waiting" : running ? "running" : !current && row && isUnread(row, seen) ? "unread" : "idle";
   const label = { waiting: "Input needed", running: "Working", unread: "Unread", idle: undefined }[state];
   return <ThreadListItemPrimitive.Root className="chat-item">
-    <ThreadListItemPrimitive.Trigger className="chat-link"><span className={state === "running" ? "chat-glyph spinner" : "chat-glyph"} data-state={state} title={label ?? "Chat"} aria-label={label}>{state === "idle" && "◌"}</span><span>{session && session.id === remoteId ? session.title ?? "New chat" : <ThreadListItemPrimitive.Title fallback="New chat" />}</span></ThreadListItemPrimitive.Trigger>
+    <ThreadListItemPrimitive.Trigger className="chat-link" onClick={showChat}><span className={state === "running" ? "chat-glyph spinner" : "chat-glyph"} data-state={state} title={label ?? "Chat"} aria-label={label}>{state === "idle" && "◌"}</span><span>{session && session.id === remoteId ? session.title ?? "New chat" : <ThreadListItemPrimitive.Title fallback="New chat" />}</span></ThreadListItemPrimitive.Trigger>
     {archived ? <ThreadListItemPrimitive.Unarchive className="item-action" title="Restore chat" aria-label="Restore chat"><ArchiveIcon restore /></ThreadListItemPrimitive.Unarchive>
       : <ThreadListItemPrimitive.Archive className="item-action" title="Archive chat" aria-label="Archive chat"><ArchiveIcon /></ThreadListItemPrimitive.Archive>}
   </ThreadListItemPrimitive.Root>;

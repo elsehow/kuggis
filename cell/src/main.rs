@@ -88,7 +88,7 @@ usage:
   cell login DIR NAME             open Pi on NAME's box as the agent, to sign in
   cell ui TREE [--bin LINUX_CELL] [--listen 127.0.0.1:8080] [--exe-proxy FILE]
                                   browse cells and their chats over SSH
-  cell chat --local DIR [--listen 127.0.0.1:8080] [--state DIR] [--assets DIR] [--pi PATH]
+  cell chat --local DIR [--listen 127.0.0.1:8080] [--state DIR] [--shared DIR] [--assets DIR] [--pi PATH]
                                   serve the React chat UI with persistent local Pi sessions
 ";
 
@@ -288,7 +288,7 @@ fn chat(args: &[String]) -> Fallible {
             .ok_or_else(|| format!("cell chat requires {flag_name} PATH"))
     };
     let declaration = flag(args, "--cell").map(load_cell).transpose()?;
-    let (mode, workspace) = if let Some(declaration) = declaration {
+    let (mode, workspace, shared) = if let Some(declaration) = declaration {
         if flag(args, "--local").is_some() || flag(args, "--listen").is_some() {
             return Err("cell chat uses --workspace and a private --socket; --local/--listen are local-only".into());
         }
@@ -304,6 +304,7 @@ fn chat(args: &[String]) -> Fallible {
                 outbox: required("--outbox")?,
             },
             required("--workspace")?,
+            Some(required("--shared")?),
         )
     } else {
         for name in [
@@ -326,14 +327,18 @@ fn chat(args: &[String]) -> Fallible {
                 flag(args, "--local")
                     .ok_or("chat requires --local DIR or --cell FILE --workspace DIR")?,
             ),
+            flag(args, "--shared").map(PathBuf::from),
         )
     };
+    // Local mode runs on the user's own machine, so its workspace is shared.
+    let shared = shared.unwrap_or_else(|| workspace.clone());
     let state = flag(args, "--state")
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace.join(".kuggis/chat"));
     let config = cell::chat::Config {
         mode,
         workspace,
+        shared,
         state,
         assets: flag(args, "--assets").unwrap_or("web/dist").into(),
         pi: flag(args, "--pi").unwrap_or("pi").into(),

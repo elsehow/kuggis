@@ -73,18 +73,27 @@ type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<CallResult<Value>>>>>;
 // Kuggis owns the host instructions; Pi supplies the loop, tools and providers.
 // Workspace context files still load normally. Pi's CLI-specific default prompt
 // can cause subscription requests to fail with an unrelated extra-usage error.
-const SYSTEM_PROMPT: &str = "You are an assistant working in this workspace. Use the available tools to carry out the user's requests. Follow the workspace instructions, keep changes focused, and verify your work. The cell UI has a read-only Files tab. To share a file or folder, use a Markdown link to its absolute path, for example [Download results](/home/agent/results). Paths with spaces can use angle brackets, for example [Results](</home/agent/my results>). These links open Files, where the user can download files or folders as .tar.gz archives. Verify that the path exists in this cell before linking it. Do not invent a host path or require SSH for downloads.";
-
-// The Kuggis prompt before Files existed. Exact matches let resumed sessions
-// adopt the new instructions without touching conversation bytes.
-const LEGACY_SYSTEM_PROMPT: &str = "You are an assistant working in this workspace. Use the available tools to carry out the user's requests. Follow the workspace instructions, keep changes focused, and verify your work.";
+// Every Kuggis prompt starts with SYSTEM_PROMPT, which marks a resumed
+// session's system section as ours to bring up to date.
+const SYSTEM_PROMPT: &str = "You are an assistant working in this workspace. Use the available tools to carry out the user's requests. Follow the workspace instructions, keep changes focused, and verify your work.";
 const GUEST_PROMPT_SUFFIX: &str = "You control this persistent Linux environment and have passwordless sudo. You may install toolchains and packages, change system configuration, and run local services. Use the configured HTTPS proxy for external downloads; the host enforces network grants. Changes survive restarts. The host signing key and authority controls are outside your environment.";
 
-/// Pi 1.3 retains previous system sections in resumed request context. Upgrade
-/// only its identifiable stock instructions, keeping conversation bytes, entry
-/// IDs, branches and tool definitions intact. Called before the child starts,
-/// under the chat server's state lock and the session's process lock.
-fn upgrade_instructions(sessions: &Path, id: &str) -> std::io::Result<()> {
+fn instructions(shared: &Path, guest: bool) -> String {
+    let shared = shared.display();
+    let prompt = format!("{SYSTEM_PROMPT} To give the user a file or folder, copy it into {shared} and link its absolute path in Markdown, for example [Results]({shared}/results). Paths with spaces can use angle brackets, for example [Results](<{shared}/my results>). These links open the cell UI's read-only Files tab, which shows only {shared}; the user downloads files there, and folders as .tar.gz archives. Copy rather than symlink, because links leading out of {shared} cannot be downloaded. Verify that the path exists before linking it. Do not invent a host path or require SSH for downloads.");
+    if guest {
+        format!("{prompt} {GUEST_PROMPT_SUFFIX}")
+    } else {
+        prompt
+    }
+}
+
+/// Pi 1.3 retains previous system sections in resumed request context. Replace
+/// only its identifiable stock instructions and earlier Kuggis instructions with
+/// `prompt`, keeping conversation bytes, entry IDs, branches and tool
+/// definitions intact. Called before the child starts, under the chat server's
+/// state lock and the session's process lock.
+fn upgrade_instructions(sessions: &Path, id: &str, prompt: &str) -> std::io::Result<()> {
     if id.parse::<crate::SessionId>().is_err() {
         return Ok(());
     }
@@ -119,15 +128,14 @@ fn upgrade_instructions(sessions: &Path, id: &str) -> std::io::Result<()> {
             }
             let mut record: Value = serde_json::from_str(line)?;
             let message = &mut record["message"];
-            let stock = message["role"] == "system"
-                && message["sections"]["preamble"].as_str().is_some_and(|s| s.starts_with("You are an expert coding assistant operating inside pi, a coding agent harness."))
+            let system = message["role"] == "system";
+            let preamble = message["sections"]["preamble"].as_str().unwrap_or_default();
+            let stock = system
+                && preamble.starts_with("You are an expert coding assistant operating inside pi, a coding agent harness.")
                 && message["sections"]["docs"].as_str().is_some_and(|s| s.starts_with("<docs>\nPi documentation (read only when the user asks about pi itself"));
-            let legacy = message["role"] == "system"
-                && (message["sections"]["preamble"].as_str() == Some(LEGACY_SYSTEM_PROMPT)
-                    || message["sections"]["preamble"].as_str()
-                        == Some(&format!("{LEGACY_SYSTEM_PROMPT} {GUEST_PROMPT_SUFFIX}")));
-            if stock || legacy {
-                message["sections"]["preamble"] = json!(SYSTEM_PROMPT);
+            let outdated = system && preamble.starts_with(SYSTEM_PROMPT) && preamble != prompt;
+            if stock || outdated {
+                message["sections"]["preamble"] = json!(prompt);
                 if stock {
                     message["sections"]["docs"] = Value::Null;
                 }
@@ -193,20 +201,21 @@ impl Rpc {
     pub fn spawn(
         bin: &Path,
         workspace: &Path,
+        shared: &Path,
         sessions: &Path,
         id: &str,
         agent_dir: Option<&Path>,
     ) -> Result<(Arc<Self>, mpsc::Receiver<Value>)> {
-        upgrade_instructions(sessions, id).map_err(|e| format!("prepare Pi instructions: {e}"))?;
+        let system_prompt = instructions(
+            shared,
+            Path::new("/run/cell-runtime/environment-guest.py").exists(),
+        );
+        upgrade_instructions(sessions, id, &system_prompt)
+            .map_err(|e| format!("prepare Pi instructions: {e}"))?;
         let mut command = Command::new(bin);
         if let Some(dir) = agent_dir {
             command.env("PI_CODING_AGENT_DIR", dir);
         }
-        let system_prompt = if Path::new("/run/cell-runtime/environment-guest.py").exists() {
-            format!("{SYSTEM_PROMPT} {GUEST_PROMPT_SUFFIX}")
-        } else {
-            SYSTEM_PROMPT.to_string()
-        };
         let mut child = command
             .args(["--system-prompt", &system_prompt])
             .args(["--mode", "rpc", "--session-id", id, "--session-dir"])
@@ -535,7 +544,8 @@ mod tests {
         let user = r#"{ "type": "message", "id": "user-1", "parentId": "system-1", "message": {"role":"user","content":"Pi documentation: docs/extensions.md"} }"#;
         let original = format!("{header}\n{system}\n{user}\n");
         fs::write(&path, &original).unwrap();
-        upgrade_instructions(&directory, &id).unwrap();
+        let prompt = instructions(Path::new("/home/agent/shared"), false);
+        upgrade_instructions(&directory, &id, &prompt).unwrap();
         let updated = fs::read_to_string(&path).unwrap();
         assert!(
             updated.ends_with(&format!("{user}\n")),
@@ -548,14 +558,14 @@ mod tests {
             system["message"]["toolsAdded"]
         );
         assert_eq!(changed["message"]["sections"]["cwd"], "fixture workspace");
-        assert_eq!(changed["message"]["sections"]["preamble"], SYSTEM_PROMPT);
+        assert_eq!(changed["message"]["sections"]["preamble"], prompt);
         assert!(changed["message"]["sections"]["docs"].is_null());
         let backup = path.with_extension(format!(
             "jsonl.before-workspace-prompt-{}",
             crate::Hash::of(original.as_bytes())
         ));
         assert_eq!(fs::read_to_string(backup).unwrap(), original);
-        upgrade_instructions(&directory, &id).unwrap();
+        upgrade_instructions(&directory, &id, &prompt).unwrap();
         assert_eq!(
             fs::read_to_string(&path).unwrap(),
             updated,
@@ -565,24 +575,42 @@ mod tests {
     }
 
     #[test]
-    fn resumed_sessions_migrate_the_pre_files_kuggis_prompt() {
+    fn resumed_sessions_adopt_the_current_kuggis_instructions() {
         let directory =
             std::env::temp_dir().join(format!("cell-prompt-{}", crate::RequestId::generate()));
         fs::create_dir(&directory).unwrap();
-        for suffix in ["", &format!(" {GUEST_PROMPT_SUFFIX}")] {
+        let shared = Path::new("/home/agent/shared");
+        let custom = "A preamble Kuggis did not write.";
+        for (before, guest) in [
+            // Before Files existed, without and with the environment suffix.
+            (SYSTEM_PROMPT.to_string(), false),
+            (format!("{SYSTEM_PROMPT} {GUEST_PROMPT_SUFFIX}"), true),
+            // A different shared folder.
+            (instructions(Path::new("/srv/old"), true), true),
+            (custom.to_string(), true),
+        ] {
             let id = crate::SessionId::generate().to_string();
             let path = directory.join(format!("fixture_{id}.jsonl"));
             let header = json!({"type":"session","id":id,"version":3});
-            let original_preamble = format!("{LEGACY_SYSTEM_PROMPT}{suffix}");
             let system = json!({"type":"message","id":"system-1","parentId":null,"message":{
-                "role":"system","content":"","sections":{"preamble":original_preamble,"cwd":"fixture workspace"},
+                "role":"system","content":"","sections":{"preamble":before,"cwd":"fixture workspace"},
                 "toolsAdded":[{"name":"read","description":"fixture tool"}]}});
             let original = format!("{header}\n{system}\n");
             fs::write(&path, &original).unwrap();
-            upgrade_instructions(&directory, &id).unwrap();
+            let prompt = instructions(shared, guest);
+            upgrade_instructions(&directory, &id, &prompt).unwrap();
             let updated = fs::read_to_string(&path).unwrap();
+            if before == custom {
+                assert_eq!(updated, original, "other instructions stay untouched");
+                continue;
+            }
             let changed: Value = serde_json::from_str(updated.lines().nth(1).unwrap()).unwrap();
-            assert_eq!(changed["message"]["sections"]["preamble"], SYSTEM_PROMPT);
+            assert_eq!(changed["message"]["sections"]["preamble"], prompt);
+            assert_eq!(
+                prompt.ends_with(GUEST_PROMPT_SUFFIX),
+                guest,
+                "environment instructions survive the upgrade"
+            );
             assert_eq!(
                 changed["message"]["sections"]["cwd"], "fixture workspace",
                 "only the preamble changes"
@@ -599,7 +627,7 @@ mod tests {
                 crate::Hash::of(original.as_bytes())
             ));
             assert_eq!(fs::read_to_string(backup).unwrap(), original);
-            upgrade_instructions(&directory, &id).unwrap();
+            upgrade_instructions(&directory, &id, &prompt).unwrap();
             assert_eq!(
                 fs::read_to_string(&path).unwrap(),
                 updated,

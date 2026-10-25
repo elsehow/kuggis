@@ -2,4 +2,4 @@
 import type { FileEntry } from "./FileEntry";
 import type { FileKind } from "./FileKind";
 
-export type FileListing = { path: string, parent: string | null, root: string, workspace: string, kind: FileKind, size: number | null, entries: Array<FileEntry>, truncated: boolean, };
+export type FileListing = { path: string, parent: string | null, root: string, kind: FileKind, size: number | null, entries: Array<FileEntry>, truncated: boolean, };
