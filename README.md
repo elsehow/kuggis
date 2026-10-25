@@ -57,12 +57,15 @@ VM). Click a row, or focus it and press Enter, to copy its command. Session
 commands use the cell name, adding `--project` when needed. Operator and
 unassigned sessions retain their project commands.
 
-The Thinker appears under trusted when installed or when briefs are pending.
-Pending briefs appear in their destination's cell with their waiting age;
-clicking one copies `kuggis dispatch`. Unknown destinations appear under
-unassigned. The Thinker row copies `kuggis think`. Opening this overview only
-reads session state and brief metadata: it never starts a review or queries
-GitHub. A failed refresh keeps the last snapshot visibly marked as stale.
+The Thinker appears under trusted when installed or when it has requests
+waiting. A brief waiting for you appears in its destination's cell with its
+waiting age; clicking one copies `kuggis dispatch`. Unknown destinations
+appear under unassigned. The Thinker row copies `kuggis think`. Opening this
+overview only reads session state and request metadata: it never starts a
+review or queries GitHub. A failed refresh keeps the last snapshot visibly
+marked as stale. `kuggis think` is a tmux cockpit: the Thinker's chat, this
+home screen one window over, and `kuggis watch` carrying the Thinker's
+requests (think/README.md).
 
 The **PRs** link opens the existing review tools at `/reviews`: ask for a
 Thinker review (T), merge (M), send a review to its session (S), or close a

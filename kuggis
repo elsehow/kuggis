@@ -14,8 +14,11 @@
 #   kuggis prs                       the existing PR review and merge tools
 #   kuggis web                       cells and sessions in your browser;
 #                                    PR tools live on /reviews
-#   kuggis dispatch [--status]       review the Thinker's briefs one by one;
-#                                    --status only refreshes what it can read
+#   kuggis dispatch [--status]       decide the Thinker's waiting requests one
+#                                    by one; --status only refreshes its inbox
+#   kuggis watch [--once]            carry the Thinker's requests and keep its
+#                                    inbox fresh (kuggis think runs this for you)
+#   kuggis url <link>                vouch for a URL so the Thinker may fetch it
 #   kuggis <cell> [name] [--agent claude|codex|pi] [--project NAME]
 #                                    attach to a session, starting it if needed;
 #                                    --agent chooses the runtime (default: Claude; existing sessions remember)
@@ -36,8 +39,9 @@
 #   kuggis sh <cell> [--project NAME] [cmd...]
 #                                    plain ssh to a project's VM
 #   kuggis token                     mint a Claude token into the keychain
-#   kuggis think [--setup|--check]   the Thinker: Claude Code in a contained room
-#                                    on this laptop (think/README.md)
+#   kuggis think [--setup|--check|--agent claude|codex|pi]
+#                                    the Thinker: an agent in a contained room on
+#                                    this laptop, with kuggis watch (think/README.md)
 #
 # Existing project names still work. A cell with multiple projects requires
 # --project NAME. Cell names route commands; they do not enforce isolation.
@@ -93,8 +97,8 @@ sessions_tsv() {
 
 cmd_ls() {
   [ $# -le 1 ] || die "usage: kuggis ls [cell]"
-  if [ -t 1 ]; then web_cells_snapshot | cell_tool list "$@" --color
-  else web_cells_snapshot | cell_tool list "$@"; fi
+  if [ -t 1 ]; then snapshot | cell_tool list "$@" --color
+  else snapshot | cell_tool list "$@"; fi
 }
 
 cmd_attach() {
@@ -247,7 +251,7 @@ cmd_new() {
   done
   [ -n "$p" ] && [ -n "$repo" ] || die "usage: kuggis new <project> <owner/repo> [--vm NAME] [--profile NAME]"
   [[ $p =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "project names are lowercase letters, digits and -"
-  case $p in home | ls | cells | cell | prs | web | dispatch | think | new | sync | sh | put | done | token | help | onboard | reconcile | audit | adopt) die "'$p' is a kuggis command" ;; esac
+  case $p in home | ls | cells | cell | prs | web | dispatch | watch | url | think | new | sync | sh | put | done | token | help | onboard | reconcile | audit | adopt) die "'$p' is a kuggis command" ;; esac
   [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "repo must be owner/name"
   [ -z "$(row "$p")" ] || die "$p already exists in $MAP"
   vm=${vm:-$p}
@@ -370,18 +374,27 @@ cmd_token() {
   echo "kuggis: stored. Push it to your VMs with: kuggis sync"
 }
 
-# ── Briefs from the Thinker ──────────────────────────────────────────────────
-# The Thinker (kuggis think) can't reach a VM: it writes briefs to its outbox,
-# and you dispatch them. A brief is the one way anything leaves its room, so
-# each is shown in full before it goes. Every decision is logged with the
-# brief's hash; a brief that changes after you saw it shows up again.
+# ── The door ─────────────────────────────────────────────────────────────────
+# The Thinker's room (kuggis think) has one way out: requests it writes to its
+# outbox, each with a front-matter `kind`. kuggis carries them by kind:
+#   brief   waits for you, then goes into a session (kuggis dispatch)
+#   search  goes; the URLs it returns become known
+#   fetch   goes if its URL is known (a search returned it, or you gave it
+#           with kuggis url); otherwise waits for you
+# The answer is a reply in the room's inbox named by the request's hash, and
+# every decision is logged with that hash, so a request that changes after
+# you saw it shows up again. think/door.py defines the format and serves the
+# room's side of it as MCP tools; kuggis watch is the carrier.
 OUTBOX=${KUGGIS_OUTBOX:-/Users/thinker/workspace/outbox}
 ROOM_INBOX=${KUGGIS_ROOM_INBOX:-/Users/thinker/workspace/inbox}
-DLOG=$CONF/dispatch.log # time, decision, sha256, brief, project/session/agent
+DLOG=$CONF/dispatch.log # time, decision, sha256, request, target
+KNOWN_URLS=$CONF/known-urls
+# The search backend's key lives with the other per-place secrets.
+door() { (set -a; [ ! -f "$CONF/secrets/thinker.env" ] || . "$CONF/secrets/thinker.env"; set +a; exec python3 -I "$HERE/think/door.py" "$@"); }
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
-# Text from the room or a VM (briefs, reviews, run logs, PR titles), made safe
+# Text from the room or a VM (requests, reviews, run logs, PR titles), made safe
 # to print: control characters other than tab and newline, C1 included, show
 # as \xNN, so nothing in it can recolour, hide or overwrite what you're
 # reading. Bytes, not characters: invalid UTF-8 can't cut the text short.
@@ -396,16 +409,17 @@ ask() {
   printf '%s' "$k"
 }
 
-# A key from the brief's front matter (between --- lines at the top).
-brief_field() {
+# A key from a request's front matter (between --- lines at the top).
+field() {
   awk -v k="$2" 'NR == 1 { if ($0 != "---") exit; next } $0 == "---" { exit }
     { i = index($0, ":"); if (i && substr($0, 1, i - 1) == k) {
       v = substr($0, i + 1); gsub(/^[ \t]+|[ \t\r]+$/, "", v); print v; exit } }' "$1"
 }
+request_kind() { local k; k=$(field "$1" kind); echo "${k:-brief}"; } # a hand-written brief has no kind
 
-# What in a brief could be data on its way out: URLs, long opaque strings,
+# What in a request could be data on its way out: URLs, long opaque strings,
 # invisible characters, an odd size. A guide for your read, not a verdict.
-brief_flags() {
+request_flags() {
   perl -CSD -ne '
     while (m{(https?://[^\s<>")\]]+)}g) { print "url     line $.: $1\n" }
     (my $l = $_) =~ s{https?://\S+}{}g;
@@ -416,26 +430,66 @@ brief_flags() {
       if /[\x00-\x08\x0b-\x1f\x7f-\x9f]/;
   ' "$1" 2>/dev/null || echo "unreadable as UTF-8"
   local n; n=$(wc -c <"$1" | tr -d ' ')
-  [ "$n" -le 20000 ] || echo "size    $n bytes: long for a brief"
+  [ "$n" -le 20000 ] || echo "size    $n bytes: long for a request"
 }
 
-# Briefs not yet dispatched or rejected, oldest first. A name that isn't plain
-# is skipped: it came from the Thinker, so it's data, not a path to trust.
-pending_briefs() {
+# Requests not yet decided, oldest first, optionally of one kind. A name that
+# isn't plain is skipped: it came from the Thinker, so it's data, not a path.
+pending_requests() { # pending_requests [kind]
   [ -d "$OUTBOX" ] || return 0
   local f
   ls -tr "$OUTBOX" 2>/dev/null | while IFS= read -r f; do
     [[ $f =~ ^[A-Za-z0-9._-]+\.md$ ]] && [ -f "$OUTBOX/$f" ] || continue
-    [ -z "$(brief_field "$OUTBOX/$f" review)" ] || continue # a PR review, not a brief
+    [ -z "$(field "$OUTBOX/$f" review)" ] || continue # a PR review, not a request
+    [ -z "${1:-}" ] || [ "$(request_kind "$OUTBOX/$f")" = "$1" ] || continue
     grep -q "$(sha "$OUTBOX/$f")" "$DLOG" 2>/dev/null || echo "$OUTBOX/$f"
   done
 }
 
-log_brief() { # log_brief <decision> <brief> <target>
-  [ -z "${KUGGIS_DRY_RUN:-}" ] || return 0
-  mkdir -p "$CONF"
-  printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$(sha "$2")" "$(basename "$2")" "$3" >>"$DLOG"
+url_known() { [ -n "$1" ] && grep -qxF -- "$1" "$KNOWN_URLS" 2>/dev/null; }
+
+# Is this request yours to decide? Briefs always; a fetch nothing vouched for.
+held() { # held <request>
+  case $(request_kind "$1") in
+    brief) return 0 ;;
+    fetch) ! url_known "$(field "$1" url)" ;;
+    *) return 1 ;;
+  esac
 }
+held_requests() { local f; for f in $(pending_requests); do ! held "$f" || echo "$f"; done; }
+
+# Record a decision: a line in the log, and the reply the room reads.
+decide() { # decide <status> <request> <target> [<body file>]
+  [ -z "${KUGGIS_DRY_RUN:-}" ] || return 0
+  local id now
+  id=$(sha "$2") now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  mkdir -p "$CONF"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$now" "$1" "$id" "$(basename "$2")" "$3" >>"$DLOG"
+  [[ $2 == "$OUTBOX"/* ]] && [ -w "$ROOM_INBOX" ] || return 0
+  mkdir -p "$ROOM_INBOX/replies"
+  {
+    printf -- '---\nstatus: %s\nrequest: %s\nat: %s\n---\n' "${1%% *}" "$(basename "$2")" "$now"
+    [ -z "${4:-}" ] || cat "$4"
+  } >"$ROOM_INBOX/replies/.$id.tmp"
+  chmod a+r "$ROOM_INBOX/replies/.$id.tmp"
+  mv "$ROOM_INBOX/replies/.$id.tmp" "$ROOM_INBOX/replies/$id.md"
+}
+
+# Where a brief goes: "project<tab>session<tab>agent", resolving a cell to its
+# project; or the problem, on stderr.
+brief_target() {
+  local c p s a
+  c=$(field "$1" cell) p=$(field "$1" project) s=$(field "$1" session) a=$(field "$1" agent)
+  a=${a:-claude}
+  if [ -n "$c" ]; then p=$(resolve_project "$c" "$p") || return 1
+  elif [ -z "$p" ] || [ -z "$(row "$p")" ]; then
+    echo "project '$p' isn't one of yours: $(projects | tr '\n' ' ')" >&2; return 1
+  fi
+  [[ $s =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || { echo "session '$s' isn't a valid name" >&2; return 1; }
+  case $a in claude | codex | pi) ;; *) echo "agent '$a' isn't claude, codex or pi" >&2; return 1 ;; esac
+  printf '%s\t%s\t%s\n' "$p" "$s" "$a"
+}
+brief_problem() { brief_target "$1" 2>&1 >/dev/null || true; }
 
 # Hand a brief to its session: upload it and have the VM start the session with
 # it, or type it into the session if it's already running.
@@ -443,57 +497,89 @@ dispatch_brief() { # dispatch_brief <file> <project> <session> <agent>
   local host dest
   host=$(host_of "$2")
   python3 -I "$HERE/cellctl.py" guard "$2" "$3" || return
-  # </dev/null throughout: ssh would otherwise read the keys meant for the next brief.
+  # </dev/null throughout: ssh would otherwise read the keys meant for the next request.
   remote "$host" 'grep -q "^  deliver)" ~/.box/session.sh' </dev/null ||
     die "$2's VM predates dispatch: kuggis sync $2"
   dest=$(upload "$host" "$1")
   remote "$host" "~/.box/session.sh deliver $3 $4 $dest" </dev/null
 }
 
-# Why a brief can't be dispatched, or nothing.
-brief_problem() {
-  local p s a
-  p=$(brief_field "$1" project) s=$(brief_field "$1" session) a=$(brief_field "$1" agent)
-  if [ -z "$p" ] || [ -z "$(row "$p")" ]; then echo "project '$p' isn't one of yours: $(projects | tr '\n' ' ')"
-  elif ! [[ $s =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then echo "session '$s' isn't a valid name"
-  else case ${a:-claude} in claude | codex | pi) ;; *) echo "agent '$a' isn't claude, codex or pi" ;; esac
-  fi
+# Carry one request: a brief into its session, a search to the backend, a fetch
+# to its page. <edited> is your copy of a brief, when you made one. The reply
+# carries the answer, or why it was refused.
+carry_one() { # carry_one <request> [<edited copy>]
+  local orig=$1 f=${2:-$1} kind target p s a out err rc=0
+  kind=$(request_kind "$orig") out=$(mktemp) err=$(mktemp)
+  case $kind in
+    brief)
+      if target=$(brief_target "$f" 2>"$err"); then
+        IFS=$'\t' read -r p s a <<<"$target"
+        if dispatch_brief "$f" "$p" "$s" "$a"; then
+          echo "attach with: kuggis $p $s" | tee "$out"
+          decide "$([ "$f" = "$orig" ] && echo sent || echo edited)" "$orig" "$p/$s/$a" "$out"
+        else rc=1; fi
+      else echo "can't dispatch: $(cat "$err"). [e]dit it first."; rc=1; fi ;;
+    search)
+      if door search "$(field "$orig" query)" --remember "$KNOWN_URLS" >"$out" 2>"$err"; then decide done "$orig" search "$out"
+      else decide refused "$orig" search "$err"; fi ;;
+    fetch)
+      if door fetch "$(field "$orig" url)" >"$out" 2>"$err"; then decide done "$orig" "$(field "$orig" url)" "$out"
+      else decide refused "$orig" "$(field "$orig" url)" "$err"; fi ;;
+    *) echo "unknown kind '$kind'" >"$err"; decide refused "$orig" "$kind" "$err" ;;
+  esac
+  rm -f "$out" "$err"
+  return $rc
 }
 
-# A brief as you review it: where it goes, what to look at, then all of it.
-brief_view() { # brief_view <file> [<original, if this is your edit>]
-  local f=$1 orig=${2:-$1} problem a
-  problem=$(brief_problem "$f") a=$(brief_field "$f" agent)
-  echo "brief    $(basename "$orig")$([ "$f" = "$orig" ] || echo '  (your edit)')"
-  echo "goes to  $(brief_field "$f" project) / $(brief_field "$f" session) (${a:-claude})"
-  [ -z "$problem" ] || echo "PROBLEM  $problem"
+# The rule, applied: open requests go now; held ones wait for you.
+carry() {
+  local f
+  for f in $(pending_requests); do
+    held "$f" && continue
+    echo "$(date +%H:%M:%S) $(request_kind "$f") $(basename "$f")"
+    carry_one "$f" >/dev/null || true
+  done
+}
+
+# A request as you review it: where it goes, what to look at, then all of it.
+request_view() { # request_view <file> [<original, if this is your edit>]
+  local f=$1 orig=${2:-$1} kind target
+  kind=$(request_kind "$f")
+  echo "$(printf '%-8s' "$kind") $(basename "$orig")$([ "$f" = "$orig" ] || echo '  (your edit)')"
+  case $kind in
+    brief)
+      if target=$(brief_target "$f" 2>/dev/null); then
+        echo "goes to  $(cut -f1 <<<"$target") / $(cut -f2 <<<"$target") ($(cut -f3 <<<"$target"))"
+      else echo "PROBLEM  $(brief_problem "$f")"; fi ;;
+    fetch)
+      echo "fetches  $(field "$f" url | room_text)"
+      echo "         no search here returned this URL, so it waits for you" ;;
+    *) echo "PROBLEM  unknown kind '$kind'" ;;
+  esac
   echo "look at  (anything that could carry data out)"
-  brief_flags "$f" | sed 's/^/  /' | grep . || echo "  nothing unusual"
+  request_flags "$f" | sed 's/^/  /' | grep . || echo "  nothing unusual"
   echo "────────────────────────────────────────────────────────────"
   room_text "$f"
 }
 
-# Show a brief, then [d]ispatch, [e]dit, [s]kip or [r]eject it. Returns 1 to quit.
-review_brief() {
-  local orig=$1 f=$1 key p s a problem view
+# Show a held request, then decide: a brief is [d]ispatched, [e]dited, [s]kipped
+# or [r]ejected; a fetch is [d]one now, [s]kipped or [r]ejected. Returns 1 to quit.
+review_request() {
+  local orig=$1 f=$1 key kind view
+  kind=$(request_kind "$orig")
   while :; do
-    p=$(brief_field "$f" project) s=$(brief_field "$f" session) a=$(brief_field "$f" agent)
-    a=${a:-claude} problem=$(brief_problem "$f")
     view=$(mktemp)
-    brief_view "$f" "$orig" >"$view"
+    request_view "$f" "$orig" >"$view"
     if [ -t 1 ]; then ${KUGGIS_PAGER:-less -RFX} "$view"; else cat "$view"; fi
     rm -f "$view"
-    printf '\n[d]ispatch  [e]dit  [s]kip  [r]eject  [q]uit: '
+    if [ "$kind" = brief ]; then printf '\n[d]ispatch  [e]dit  [s]kip  [r]eject  [q]uit: '
+    else printf '\n[d]o it  [s]kip  [r]eject  [q]uit: '; fi
     key=$(ask)
     echo "$key"
     case $key in
-      d)
-        if [ -n "$problem" ]; then echo "can't dispatch: $problem. [e]dit it first."; continue; fi
-        dispatch_brief "$f" "$p" "$s" "$a"
-        log_brief "dispatched$([ "$f" = "$orig" ] || echo ' (edited)')" "$orig" "$p/$s/$a"
-        echo "attach with: kuggis $p $s"
-        return 0 ;;
+      d) carry_one "$orig" "$f" && return 0 ;;
       e)
+        [ "$kind" = brief ] || continue
         if [ "$f" = "$orig" ]; then
           mkdir -p "$CONF/dispatch"
           f=$CONF/dispatch/$(date +%Y%m%d-%H%M%S)-$(basename "$orig")
@@ -501,46 +587,114 @@ review_brief() {
         fi
         ${EDITOR:-vi} "$f" </dev/tty >/dev/tty ;;
       s) return 0 ;;
-      r) log_brief rejected "$orig" "$p/$s/$a"; echo "rejected"; return 0 ;;
+      r) decide rejected "$orig" "$kind"; echo "rejected"; return 0 ;;
       *) return 1 ;;
     esac
   done
 }
 
-# What the Thinker can read about your sessions and PRs: its inbox gets
-# status.md and each open PR's diff under prs/. Best effort.
-room_status() {
-  [ -d "$ROOM_INBOX" ] && [ -w "$ROOM_INBOX" ] || return 0
-  local p repo n tmp
+# ── One picture of everything ────────────────────────────────────────────────
+# Projects, every session with its last screen, the room's pending requests
+# and (when the carrier gathers it) open PRs, as JSON for cells/display.py.
+# Cached for 20s in $CONF/snapshot.json so the home screen and the watcher share
+# one round of ssh. The home never asks GitHub: opening it must cost nothing.
+snapshot() { # snapshot [--fresh]
+  local cache=$CONF/snapshot.json
+  if [ "${1:-}" != --fresh ] && [ -f "$cache" ] && [ $(($(date +%s) - $(stat -f %m "$cache"))) -lt 20 ]; then
+    cat "$cache"
+    return
+  fi
+  mkdir -p "$CONF"
+  gather_snapshot "${1:-}" >"$cache.tmp" && mv "$cache.tmp" "$cache"
+  cat "$cache"
+}
+
+gather_snapshot() { # gather_snapshot [--fresh: ask GitHub for PRs too]
+  local p tmp f
   tmp=$(mktemp -d)
-  mkdir "$tmp/prs"
+  for p in $(projects); do
+    (remote "$(host_of "$p")" '~/.box/session.sh snapshot 2>/dev/null || ~/.box/session.sh status' >"$tmp/$p" 2>/dev/null ||
+      printf -- '-\tunreachable\t-\n' >"$tmp/$p") &
+  done
+  wait
   {
-    echo "# Sessions and PRs, $(date '+%Y-%m-%d %H:%M')"
-    echo
-    echo "Written by kuggis on the laptop. PR text and diffs are written by VM sessions."
-    echo
-    echo '```'
-    { printf 'PROJECT\tSESSION\tSTATE\tAGE\n'; sessions_tsv; } | column -t -s "$(printf '\t')"
-    echo '```'
+    [ ! -f "$MAP" ] || awk 'NF && $1 !~ /^#/ { print "project\t" $1 "\t" $4 }' "$MAP"
     for p in $(projects); do
-      repo=$(row "$p" | awk '{ print $3 }')
-      echo
-      echo "## $p ($repo): open PRs"
-      echo
-      gh pr list -R "$repo" --state open --limit 20 \
-        --json number,title,headRefName,headRefOid,baseRefName,author,updatedAt,statusCheckRollup \
-        --jq ".[] | \"- #\\(.number) \\(.title) (branch \\(.headRefName) into \\(.baseRefName), head \\(.headRefOid[:12]), checks \\($CHECKS_JQ), by \\(.author.login), updated \\(.updatedAt[:16]))\"" \
-        2>/dev/null || echo "(couldn't list PRs)"
-      for n in $(gh pr list -R "$repo" --state open --limit 20 --json number --jq '.[].number' 2>/dev/null); do
-        gh pr diff "$n" -R "$repo" 2>/dev/null | head -c 300000 >"$tmp/prs/${repo//\//-}-$n.diff" || true
-      done
+      # status rows until `--`, then each session's screen, base64 on one line
+      awk -F'\t' -v p="$p" 'BEGIN { OFS = "\t" } /^--$/ { s = 1; next } !s { print "session", p, $0 } s { print "screen", p, $1, $2 }' "$tmp/$p"
+      [ -s "$tmp/$p" ] || printf 'session\t%s\t-\tno sessions\t-\n' "$p"
     done
-  } >"$tmp/status.md"
-  chmod -R a+rX "$tmp"
-  rm -rf "$ROOM_INBOX/prs"
-  mv "$tmp/prs" "$ROOM_INBOX/prs"
-  mv "$tmp/status.md" "$ROOM_INBOX/status.md"
+    [ "${1:-}" != --fresh ] || prs_tsv | awk -F'\t' 'BEGIN { OFS = "\t" } { print "pr", $1, $2, $3, $4, $8, $9 }'
+    for f in $(pending_requests); do
+      printf 'request\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(sha "$f")" "$(request_kind "$f")" "$(field "$f" cell)" \
+        "$(field "$f" project)" "$(field "$f" session)" "$(field "$f" url)" "$(stat -f %m "$f")" "$(held "$f" && echo 1 || echo 0)"
+    done
+    [ ! -x /opt/kuggis-thinker/launch ] || printf 'thinker\n'
+    true
+  } | room_text | jq -Rn '[inputs | split("\t")] as $rows
+    | ($rows | map(select(.[0] == "screen") | {key: (.[1] + "/" + .[2]), value: (try (.[3] | @base64d) catch "")}) | from_entries) as $screens
+    | {projects: [$rows[] | select(.[0] == "project") | {name: .[1], profile: .[2]}],
+       sessions: [$rows[] | select(.[0] == "session") | {project: .[1], name: .[2], state: .[3], age: .[4], screen: ($screens[.[1] + "/" + .[2]] // "")}],
+       prs: [$rows[] | select(.[0] == "pr") | {project: .[1], repo: .[2], n: (.[3] | tonumber), branch: .[4], checks: .[5], title: .[6]}],
+       requests: [$rows[] | select(.[0] == "request") | {id: .[1], kind: .[2], cell: .[3], project: .[4], session: .[5], url: .[6], since: (.[7] | tonumber), held: (.[8] == "1")}],
+       thinker_installed: any($rows[]; .[0] == "thinker"), now: (now | floor)}'
   rm -rf "$tmp"
+}
+
+# What the room may know, written to its inbox as state.json: the snapshot,
+# grouped by cell, with the open PRs.
+room_state() {
+  [ -d "$ROOM_INBOX" ] && [ -w "$ROOM_INBOX" ] || return 0
+  snapshot --fresh | cell_tool json >"$ROOM_INBOX/.state.json.tmp" || { rm -f "$ROOM_INBOX/.state.json.tmp"; return 0; }
+  chmod a+r "$ROOM_INBOX/.state.json.tmp"
+  mv "$ROOM_INBOX/.state.json.tmp" "$ROOM_INBOX/state.json"
+}
+
+# The room's only road out: a CONNECT proxy on loopback that tunnels to the
+# hosts in think/hosts (plus ~/.config/kuggis/thinker-hosts) and refuses the
+# rest. Started here so the room has a road exactly while kuggis watches.
+PROXY_PORT=${KUGGIS_PROXY_PORT:-4749}
+start_proxy() {
+  ! nc -z 127.0.0.1 "$PROXY_PORT" 2>/dev/null || return 0
+  python3 -I "$HERE/think/proxy.py" "$PROXY_PORT" "$HERE/think/hosts" "$CONF/thinker-hosts" &
+  # shellcheck disable=SC2064 # expand now
+  trap "kill $! 2>/dev/null" EXIT
+}
+
+# kuggis watch: keep the room's inbox fresh and carry its requests, every few
+# seconds, until stopped. The cockpit (kuggis think) runs it for you.
+cmd_watch() {
+  case ${1:-} in '' | --once) ;; *) die "usage: kuggis watch [--once]" ;; esac
+  [ "${1:-}" = --once ] || start_proxy
+  while :; do
+    room_state
+    carry
+    [ "${1:-}" != --once ] || return 0
+    sleep "${KUGGIS_WATCH_INTERVAL:-10}"
+  done
+}
+
+# kuggis url <link>: vouch for a URL yourself, so the room's next fetch of it goes.
+cmd_url() {
+  [ $# -eq 1 ] && [[ $1 =~ ^https?://[^[:space:]]+$ ]] || die "usage: kuggis url <http(s) link>"
+  mkdir -p "$CONF"
+  url_known "$1" || printf '%s\n' "$1" >>"$KNOWN_URLS"
+  echo "known: $1"
+}
+
+cmd_dispatch() {
+  case ${1:-} in
+    --status) room_state; echo "kuggis: wrote $ROOM_INBOX/state.json"; return ;;
+    '') ;;
+    *) die "usage: kuggis dispatch [--status]" ;;
+  esac
+  local f n=0
+  for f in $(held_requests); do
+    n=$((n + 1))
+    review_request "$f" || break
+  done
+  [ "$n" -gt 0 ] || echo "kuggis: nothing waiting for you in $OUTBOX"
+  room_state
 }
 
 # ── Pull requests ────────────────────────────────────────────────────────────
@@ -576,7 +730,7 @@ review_for() {
   want=$(tr '[:upper:]' '[:lower:]' <<<"$1#$2")
   ls -t "$OUTBOX" 2>/dev/null | while IFS= read -r f; do
     [[ $f =~ ^[A-Za-z0-9._-]+\.md$ ]] && [ -f "$OUTBOX/$f" ] || continue
-    if [ "$(brief_field "$OUTBOX/$f" review | tr '[:upper:]' '[:lower:]')" = "$want" ]; then
+    if [ "$(field "$OUTBOX/$f" review | tr '[:upper:]' '[:lower:]')" = "$want" ]; then
       echo "$OUTBOX/$f"
       break
     fi
@@ -617,9 +771,9 @@ send_review() { # send_review <project> <repo> <n> <head-branch> <review-file>
   } >"$f"
   if [ -n "${KUGGIS_DRY_RUN:-}" ]; then echo "would send to $1/$4:"; cat "$f"; return 0; fi
   dispatch_brief "$f" "$1" "$4" "$(remote "$(host_of "$1")" "cat ~/.box/agent/$4 2>/dev/null || echo claude" </dev/null)"
-  log_brief "review sent" "$5" "$1/$4 for $2#$3"
+  decide "review sent" "$5" "$1/$4 for $2#$3"
   mkdir -p "$THINKING"
-  brief_field "$5" head >"$THINKING/$(ask_key "$2" "$3").sent" # for auto_rereview
+  field "$5" head >"$THINKING/$(ask_key "$2" "$3").sent" # for auto_rereview
 }
 
 # A review you sent back gets the Thinker again once the worker has pushed
@@ -642,7 +796,7 @@ review_body() { awk 'NR == 1 && $0 == "---" { fm = 1; next } fm && $0 == "---" {
 
 # Why the Thinker's review of a PR no longer applies, or nothing.
 review_stale() { # review_stale <review> <head commit>
-  local h; h=$(brief_field "$1" head)
+  local h; h=$(field "$1" head)
   [ -n "$h" ] && [[ $2 == "$h"* ]] || echo "reviewed ${h:-an unknown commit}; the PR has moved on"
 }
 
@@ -705,7 +859,7 @@ thinker_badge() { # thinker_badge <repo> <n> <head commit> <review|"">
   if thinker_came_back_empty "$1" "$2" "$3" "$4"; then
     i=✗ w='no review' c=$'\e[31m'
   elif [ -n "$4" ]; then
-    v=$(brief_field "$4" verdict | room_text)
+    v=$(field "$4" verdict | room_text)
     case $v in
       merge) i=✓ c=$'\e[32m' ;;
       changes) i=✎ c=$'\e[33m' ;;
@@ -825,9 +979,9 @@ pr_view() { # pr_view <tsv row>
   echo "────────────────────────────────────────────────────────────"
   if [ -n "$rev" ]; then
     stale=$(review_stale "$rev" "$sha")
-    echo "The Thinker: $(brief_field "$rev" verdict | room_text)${stale:+  STALE: $stale}"
+    echo "The Thinker: $(field "$rev" verdict | room_text)${stale:+  STALE: $stale}"
     echo "look at  (anything that could carry data out, if you send it on)"
-    brief_flags "$rev" | sed 's/^/  /' | grep . || echo "  nothing unusual"
+    request_flags "$rev" | sed 's/^/  /' | grep . || echo "  nothing unusual"
     echo
     review_body "$rev" | room_text
   elif [ -z "$t0" ]; then
@@ -865,7 +1019,7 @@ pr_screen() { # pr_screen <tsv row>
           echo
           continue
         fi
-        log_brief merged "${rev:-/dev/null}" "$repo#$n at ${sha:0:12}"
+        decide merged "${rev:-/dev/null}" "$repo#$n at ${sha:0:12}"
         # Its session (named for the branch) is usually finished now.
         if [ -n "$(row "$p")" ] &&
           remote "$(host_of "$p")" '~/.box/session.sh status' </dev/null 2>/dev/null | cut -f1 | grep -qxF -- "$head"; then
@@ -887,21 +1041,6 @@ pr_screen() { # pr_screen <tsv row>
       *) return 0 ;;
     esac
   done
-}
-
-cmd_dispatch() {
-  case ${1:-} in
-    --status) room_status; echo "kuggis: wrote $ROOM_INBOX/status.md"; return ;;
-    '') ;;
-    *) die "usage: kuggis dispatch [--status]" ;;
-  esac
-  local f n=0
-  for f in $(pending_briefs); do
-    n=$((n + 1))
-    review_brief "$f" || break
-  done
-  [ "$n" -gt 0 ] || echo "kuggis: no briefs waiting in $OUTBOX"
-  room_status
 }
 
 # ── The home screen with fzf ─────────────────────────────────────────────────
@@ -955,9 +1094,9 @@ home_items() {
   order() { local q k=0; for q in $ps; do [ "$q" != "$1" ] || { echo "$k"; return; }; k=$((k + 1)); done; echo 99; }
   tag() { printf '\e[1;38;5;16;48;5;%sm %-*s \e[0m' "$(project_colour "$1")" "$w" "$1"; }
   {
-    for f in $(pending_briefs); do
-      p=$(brief_field "$f" project | room_text) a=$(brief_field "$f" agent)
-      echo "$(order "$p")${T}0${T}brief${T}$(tag "$p") ${B}✉ $(printf '%-12s' "→ $(brief_field "$f" session | room_text)")${N} brief for ${a:-claude}${T}$f"
+    for f in $(pending_requests); do
+      p=$(field "$f" project | room_text) a=$(field "$f" agent)
+      echo "$(order "$p")${T}0${T}brief${T}$(tag "$p") ${B}✉ $(printf '%-12s' "→ $(field "$f" session | room_text)")${N} brief for ${a:-claude}${T}$f"
     done
     prs_tsv | while IFS=$'\t' read -r p repo n head sha base author checks title; do
       rev=$(review_for "$repo" "$n")
@@ -981,7 +1120,7 @@ home_preview() { # home_preview <item line>
   local kind _ p s rows
   IFS=$'\t' read -r kind _ p s <<<"$1"
   case $kind in
-    brief) brief_view "$p" ;;
+    brief) request_view "$p" ;;
     pr) pr_view "$(cut -f3- <<<"$1")" ;;
     vm) echo "$p: its VM didn't answer ssh. kuggis sh $p to look; kuggis ls to retry." ;;
     session)
@@ -997,14 +1136,14 @@ home_act() { # home_act <item line>
   local kind _ p s
   IFS=$'\t' read -r kind _ p s <<<"$1"
   case $kind in
-    brief) review_brief "$p" || true ;;
+    brief) review_request "$p" || true ;;
     pr) pr_screen "$(cut -f3- <<<"$1")" || true ;;
     session) cmd_attach "$p" "$s" || true ;;
   esac
-  (room_status >/dev/null 2>&1 &)
+  (room_state >/dev/null 2>&1 &)
 }
 
-cell_items() { web_cells_snapshot | cell_tool items --color; }
+cell_items() { snapshot | cell_tool items --color; }
 
 cell_preview() {
   local kind _ p s
@@ -1013,7 +1152,8 @@ cell_preview() {
     cell) cell_tool definition "$p" ;;
     thinker) echo 'kuggis think' ;;
     setup) echo "kuggis audit $p" ;;
-    door) echo 'kuggis dispatch — review pending briefs before sending them' ;;
+    door) echo 'kuggis dispatch — a request from the Thinker waits for your decision' ;;
+    pr) echo "$p#$s · enter opens it on GitHub" ;;
     *) home_preview "$1" ;;
   esac
 }
@@ -1026,6 +1166,7 @@ cell_act() {
     thinker) "$HERE/kuggis" think ;;
     setup) python3 -I "$HERE/cellctl.py" audit "$p" ;;
     door) cmd_dispatch ;;
+    pr) gh pr view "$s" -R "$p" --web >/dev/null 2>&1 ;;
     session) cmd_attach "$p" "$s" ;;
     vm) "$HERE/kuggis" sh "$p" ;;
   esac
@@ -1071,7 +1212,7 @@ cmd_fzf_home() {
   sock=$dir/home.sock
   FZF_API_KEY=$(openssl rand -hex 16)
   export FZF_API_KEY
-  [ "$mode" != prs ] || (room_status >/dev/null 2>&1 &)
+  [ "$mode" != prs ] || (room_state >/dev/null 2>&1 &)
   (
     # Refresh the list and the preview every 15s while fzf runs.
     while sleep 15; do
@@ -1101,10 +1242,10 @@ cmd_home() {
   local i choice line p s st age repo n head sha base author checks title rev verdict
   local briefs=() prs=() rows=() C='' Y='' D='' N='' R=''
   [ -t 1 ] && C=$'\e[1m' Y=$'\e[33m' D=$'\e[2m' N=$'\e[0m' R=$'\e[31m'
-  (room_status >/dev/null 2>&1 &)
+  (room_state >/dev/null 2>&1 &)
   while :; do
     briefs=() prs=() rows=()
-    while IFS= read -r line; do [ -n "$line" ] && briefs+=("$line"); done < <(pending_briefs)
+    while IFS= read -r line; do [ -n "$line" ] && briefs+=("$line"); done < <(pending_requests)
     while IFS= read -r line; do [ -n "$line" ] && prs+=("$line"); done < <(prs_tsv)
     while IFS= read -r line; do
       [ "$(cut -f2 <<<"$line")" != - ] && rows+=("$line")
@@ -1115,8 +1256,8 @@ cmd_home() {
       echo "${C}Briefs from the Thinker${N}"
       for line in "${briefs[@]}"; do
         i=$((i + 1))
-        printf '  %2d  %-28s %-7s %s\n' "$i" "$(brief_field "$line" project) / $(brief_field "$line" session)" \
-          "$(brief_field "$line" agent)" "$D$(basename "$line")$N"
+        printf '  %2d  %-28s %-7s %s\n' "$i" "$(field "$line" project) / $(field "$line" session)" \
+          "$(field "$line" agent)" "$D$(basename "$line")$N"
       done
     fi
     if [ ${#prs[@]} -gt 0 ]; then
@@ -1126,8 +1267,8 @@ cmd_home() {
         IFS=$'\t' read -r p repo n head sha base author checks title <<<"$line"
         rev=$(review_for "$repo" "$n") verdict='no review'
         if [ -n "$rev" ]; then
-          verdict="Thinker: $(brief_field "$rev" verdict)"
-          [[ $sha == "$(brief_field "$rev" head)"* ]] && [ -n "$(brief_field "$rev" head)" ] || verdict="$verdict (stale)"
+          verdict="Thinker: $(field "$rev" verdict)"
+          [[ $sha == "$(field "$rev" head)"* ]] && [ -n "$(field "$rev" head)" ] || verdict="$verdict (stale)"
         fi
         case $checks in failing) checks="$R$(printf '%-8s' "$checks")$N" ;; *) checks=$(printf '%-8s' "$checks") ;; esac
         printf '  %2d  %-20s %-40.40s %s %s\n' "$i" "${repo#*/} #$n" "$title" "$checks" "$D$verdict$N"
@@ -1159,11 +1300,11 @@ cmd_home() {
       *[!0-9]*) continue ;;
     esac
     if [ "$choice" -ge 1 ] && [ "$choice" -le "$nb" ]; then
-      review_brief "${briefs[$((choice - 1))]}" || true
-      (room_status >/dev/null 2>&1 &)
+      review_request "${briefs[$((choice - 1))]}" || true
+      (room_state >/dev/null 2>&1 &)
     elif [ "$choice" -gt "$nb" ] && [ "$choice" -le $((nb + np)) ]; then
       pr_screen "${prs[$((choice - nb - 1))]}" || true
-      (room_status >/dev/null 2>&1 &)
+      (room_state >/dev/null 2>&1 &)
     elif [ "$choice" -gt $((nb + np)) ] && [ "$choice" -le $((nb + np + ns)) ]; then
       IFS=$'\t' read -r p s _ <<<"${rows[$((choice - nb - np - 1))]}"
       cmd_attach "$p" "$s" || true
@@ -1194,34 +1335,6 @@ cmd_web() {
 # The open PR <repo>#<n>, as a prs_tsv row.
 pr_row() { prs_tsv | awk -F'\t' -v r="$1" -v n="$2" 'tolower($2) == tolower(r) && $3 == n' | head -n 1; }
 
-# A read-only source for the cell dashboard. No GitHub queries or automatic
-# Thinker reviews: opening the overview must not start paid model work.
-# Keep this adapter until the typed event fold can replace it.
-web_cells_snapshot() {
-  local p vm repo profile sessions f
-  sessions=$(sessions_tsv)
-  {
-    if [ -f "$MAP" ]; then
-      while read -r p vm repo profile; do
-        [ -n "$p" ] && [[ $p != \#* ]] || continue
-        printf 'project\t%s\t%s\n' "$p" "${profile:--}"
-      done <"$MAP"
-    fi
-    [ -z "$sessions" ] || sed 's/^/session\t/' <<<"$sessions"
-    while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      printf 'brief\t%s\t%s\t%s\t%s\n' "$(basename "$f")" \
-        "$(brief_field "$f" project)" "$(brief_field "$f" session)" "$(stat -f %m "$f")"
-    done < <(pending_briefs)
-    [ ! -x /opt/kuggis-thinker/launch ] || printf 'thinker\n'
-    true
-  } | room_text | jq -Rn '[inputs | split("\t")] | {
-    projects: [.[] | select(.[0] == "project") | {name: .[1], profile: .[2]}],
-    sessions: [.[] | select(.[0] == "session") | {project: .[1], name: .[2], state: .[3], age: .[4]}],
-    briefs: [.[] | select(.[0] == "brief") | {id: .[1], project: .[2], session: .[3], since: (.[4] | tonumber)}],
-    thinker_installed: any(.[]; .[0] == "thinker"), now: (now | floor)}'
-}
-
 # Projects (with their tmux colour), open PRs with the Thinker's word on each,
 # and every session.
 web_state() {
@@ -1234,7 +1347,7 @@ web_state() {
       [ -n "$p" ] || continue
       rev=$(review_for "$repo" "$n") v='' stale='' empty=''
       t0=$(thinker_reviewing "$repo" "$n") || t0=''
-      [ -z "$rev" ] || v=$(brief_field "$rev" verdict) stale=$(review_stale "$rev" "$sha")
+      [ -z "$rev" ] || v=$(field "$rev" verdict) stale=$(review_stale "$rev" "$sha")
       ! thinker_came_back_empty "$repo" "$n" "$sha" "$rev" || empty=1
       printf 'pr'
       printf '\t%s' "$p" "$repo" "$n" "$head" "$sha" "$base" "$author" "$checks" "$title" "$v" "$stale" "$t0" "$empty"
@@ -1256,8 +1369,8 @@ web_pr() { # web_pr <repo> <n>
   local rev body='' flags='' hash='' head='' at='' def pr
   rev=$(review_for "$1" "$2")
   if [ -n "$rev" ]; then
-    body=$(review_body "$rev" | room_text) flags=$(brief_flags "$rev" | room_text)
-    hash=$(sha "$rev") head=$(brief_field "$rev" head | room_text) at=$(stat -f %m "$rev")
+    body=$(review_body "$rev" | room_text) flags=$(request_flags "$rev" | room_text)
+    hash=$(sha "$rev") head=$(field "$rev" head | room_text) at=$(stat -f %m "$rev")
   fi
   def=$(gh repo view "$1" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo main)
   pr=$(gh pr view "$2" -R "$1" --json additions,deletions,files,url 2>/dev/null) || pr=null
@@ -1285,7 +1398,7 @@ web_merge() { # web_merge <repo> <n> <head commit you saw>
   [ "$base" = "$def" ] || die "it's stacked on $base: merge that one first"
   merge_pr "$repo" "$n" "$head" "$sha" "$base" "$author" || die "not merged; its branch and stacked PRs are untouched"
   rev=$(review_for "$repo" "$n")
-  log_brief merged "${rev:-/dev/null}" "$repo#$n at ${sha:0:12}"
+  decide merged "${rev:-/dev/null}" "$repo#$n at ${sha:0:12}"
   echo "merged $repo#$n. Its session, when you're done with it: kuggis done $p $head"
 }
 
@@ -1316,7 +1429,7 @@ web_api() { # kuggis _web <cells|state | pr|log|ask <repo> <n> | merge|send <rep
   case ${1:-} in
     close) check_name "${3:-}"; act cmd_done "$2" "$3" </dev/null ;; # never --force: it refuses unpushed work
     state) web_state ;;
-    cells) web_cells_snapshot ;;
+    cells) snapshot ;;
     pr) web_pr "$2" "$3" ;;
     log) web_log "$2" "$3" ;;
     ask)
@@ -1341,7 +1454,7 @@ cmd_think() {
       token=$(security find-generic-password -s "$KEYCHAIN_SERVICE" -w 2>/dev/null) || die "no Claude token yet: kuggis token"
       [ "$(id -u)" != 0 ] || die "run kuggis think --setup as yourself, without sudo: it asks for sudo when it needs it"
       echo "kuggis: building the Thinker's room (sudo asks for your password)"
-      printf '%s' "$token" | sudo "$HERE/think/setup.sh" "$USER" "$bin"
+      printf '%s' "$token" | sudo "$HERE/think/setup.sh" "$USER" "$bin" "$CONF/secrets/thinker.env"
       ;;
     --check)
       sudo -u thinker "$room/check" "$USER" || true
@@ -1353,9 +1466,41 @@ cmd_think() {
       ;;
     "" | -*)
       [ -x "$room/launch" ] || die "no Thinker room yet: kuggis think --setup"
-      exec sudo -u thinker "$room/launch" "$@" ;;
+      cockpit "$@" ;;
     *) die "usage: kuggis think [--setup|--check|<claude flags>]" ;;
   esac
+}
+
+# The cockpit: the Thinker's chat, with kuggis watch carrying its requests and
+# the home screen one window over (C-b n) showing what waits for you. The bar
+# turns orange when something does. Without tmux (brew install tmux) the chat
+# runs alone, the watcher behind it.
+cockpit() {
+  local room=/opt/kuggis-thinker self=$HERE/kuggis
+  if ! command -v tmux >/dev/null; then
+    "$self" watch >"$CONF/watch.log" 2>&1 &
+    # shellcheck disable=SC2064 # expand now
+    trap "kill $! 2>/dev/null" EXIT
+    echo "kuggis: watching in the background (log: $CONF/watch.log); decide requests with: kuggis dispatch" >&2
+    sudo -u thinker "$room/launch" "$@"
+    return
+  fi
+  if ! tmux has-session -t =thinker 2>/dev/null; then
+    tmux new-session -d -s thinker -n chat "sudo -u thinker $room/launch $*"
+    tmux new-window -d -t =thinker -n kuggis "$self"
+    tmux new-window -d -t =thinker -n watch "$self watch"
+    tmux set-option -t =thinker status-interval 5 \; \
+      set-option -t =thinker status-right "#($self _waiting)" \; \
+      set-option -t =thinker status-right-length 40
+  fi
+  exec tmux attach-session -t =thinker
+}
+
+# For the cockpit's bar: how many requests wait for you, loud when any do.
+waiting_badge() {
+  local n; n=$(held_requests | grep -c . || true)
+  [ "$n" -gt 0 ] || { printf 'nothing waiting '; return; }
+  printf '#[fg=colour16,bg=colour214,bold] ⚑ %s waiting · C-b n #[default]' "$n"
 }
 
 case ${1:-home} in
@@ -1383,6 +1528,9 @@ case ${1:-home} in
   web) cmd_web ;;
   ls) shift; cmd_ls "$@" ;;
   dispatch) shift; cmd_dispatch "$@" ;;
+  watch) shift; cmd_watch "$@" ;;
+  url) shift; cmd_url "$@" ;;
+  _waiting) waiting_badge ;;
   new) shift; cmd_new "$@" ;;
   sync) shift; cmd_sync "$@" ;;
   done) shift; cmd_done "$@" ;;
