@@ -133,6 +133,10 @@ pub(super) struct Login {
     cancel: watch::Sender<bool>,
 }
 impl Login {
+    pub(super) async fn state(&self) -> AuthState {
+        self.state.lock().await.clone()
+    }
+
     async fn view(&self, id: RequestId) -> AuthFlow {
         AuthFlow {
             id,
@@ -431,9 +435,21 @@ pub(super) async fn cancel(
         .get(&id)
         .filter(|l| l.provider == provider)
         .ok_or_else(|| bad("Sign-in expired"))?;
-    if !login.state.lock().await.terminal() {
+    let mut state = login.state.lock().await;
+    if !state.terminal() {
+        // The background task only turns terminal as it unwinds. Marking it
+        // here lets this handler wait for the settings guard without the
+        // winding-down login counting as an active sign-in.
+        *state = AuthState::Cancelled;
         let _ = login.cancel.send(true);
     }
+    drop(state);
+    drop(logins);
+    // The background login task holds the settings guard until it has fully
+    // finished, while the login state turns terminal earlier. A client that
+    // saw the login cancel must be able to start the next settings change
+    // immediately, so only report cancellation once the guard is free.
+    drop(settings::acquire(&store, Duration::from_secs(10)).await?);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -441,7 +457,7 @@ pub(super) async fn logout(
     State(store): State<Arc<Store>>,
     Path(provider): Path<Provider>,
 ) -> ApiResult<StatusCode> {
-    let _guard = settings::lock(&store)?;
+    let _guard = settings::acquire(&store, Duration::from_secs(10)).await?;
     settings::directory(&store)?;
     settings::stop_idle(&store).await?;
     let child = launch(&store.config, provider, "logout")?;

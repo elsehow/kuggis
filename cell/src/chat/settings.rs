@@ -55,6 +55,40 @@ pub(super) fn lock(store: &Store) -> ApiResult<tokio::sync::MutexGuard<'_, ()>> 
     })
 }
 
+/// Like [`lock`], but tolerates a settings change that is winding down.
+/// A finished sign-in keeps the guard until its background task has stopped
+/// the idle Pi process, so a client that just observed the login finish may
+/// receive a brief grace period instead of an immediate conflict. A sign-in
+/// that is still waiting for user input remains an immediate conflict.
+pub(super) async fn acquire(
+    store: &Store,
+    timeout: Duration,
+) -> ApiResult<tokio::sync::MutexGuard<'_, ()>> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match store.settings_lock.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(_) => {
+                let logins = store.logins.lock().await;
+                let mut active = false;
+                for login in logins.values() {
+                    if !login.state().await.terminal() {
+                        active = true;
+                    }
+                }
+                drop(logins);
+                if active || tokio::time::Instant::now() >= deadline {
+                    return Err(error(
+                        StatusCode::CONFLICT,
+                        "Finish the current settings change or sign-in first".into(),
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    }
+}
+
 pub(super) async fn stop_idle(store: &Store) -> ApiResult<()> {
     let sessions: Vec<_> = store.sessions.lock().await.values().cloned().collect();
     for session in &sessions {
