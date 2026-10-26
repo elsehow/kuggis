@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, realpath } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, realpath, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-async function fixture(t) {
+async function fixture(t, nestedShared = false) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), "kuggis-files-")));
   const workspace = join(dir, "workspace");
   await mkdir(workspace);
@@ -19,7 +19,9 @@ async function fixture(t) {
   await writeFile(join(dir, "outside.txt"), "outside workspace");
   await symlink(join(dir, "outside.txt"), join(workspace, "outside-link"));
   await symlink(join(workspace, "round 25"), join(workspace, "round-link"));
-  const child = spawn(join(root, "cell/target/debug/cell"), ["chat", "--local", workspace, "--state", join(dir, "state"), "--listen", "127.0.0.1:0", "--assets", join(root, "web/dist"), "--pi", join(root, "web/tests/fake-pi.mjs")]);
+  await symlink(dir, join(workspace, "outside-dir"));
+  await symlink("../missing", join(workspace, "outside-dangling"));
+  const child = spawn(join(root, "cell/target/debug/cell"), ["chat", "--local", workspace, ...(nestedShared ? ["--shared", join(workspace, "round 25")] : []), "--state", join(dir, "state"), "--listen", "127.0.0.1:0", "--assets", join(root, "web/dist"), "--pi", join(root, "web/tests/fake-pi.mjs")]);
   let output = "";
   child.stderr.on("data", data => { output += data; });
   child.on("error", error => { output += error.message; });
@@ -61,7 +63,7 @@ test("read-only files, local workspace boundary, and streamed archives", { timeo
   assert.equal((await (await fetch(files(join(workspace, "round-link")))).json()).path, join(workspace, "round 25"));
 
   for (const download of [false, true]) {
-    for (const path of [join(dir, "outside.txt"), join(dir, "missing.txt"), join(workspace, "outside-link"), `${workspace}/../outside.txt`]) {
+    for (const path of [join(dir, "outside.txt"), join(dir, "missing.txt"), join(workspace, "outside-link"), join(workspace, "outside-dir", "outside.txt"), join(workspace, "outside-dir", "missing.txt"), join(workspace, "outside-dangling"), `${workspace}/../outside.txt`]) {
       assert.equal((await fetch(files(path, download))).status, 403, path);
     }
     assert.equal((await fetch(files("relative.txt", download))).status, 400);
@@ -79,6 +81,34 @@ test("read-only files, local workspace boundary, and streamed archives", { timeo
   assert.match(names, /round 25/);
   assert.doesNotMatch(names, /outside|round-link/);
   assert.equal(execFileSync("tar", ["-xOzf", "-", "workspace/round 25/résults #1.csv"], { input: bytes, encoding: "utf8" }), await readFile(path, "utf8"));
+});
+
+test("Files stay pinned when a shared-root ancestor is replaced", { timeout: 20000 }, async t => {
+  const { dir, workspace, files } = await fixture(t, true);
+  const root = join(workspace, "round 25");
+  const path = join(root, "résults #1.csv");
+  const expected = await readFile(path, "utf8");
+  const outside = join(dir, "private");
+  await mkdir(join(outside, "round 25"), { recursive: true });
+  await writeFile(join(outside, "round 25", "résults #1.csv"), "SECRET OUTSIDE SHARED ROOT");
+  await rename(workspace, join(dir, "original-workspace"));
+  await symlink(outside, workspace);
+  for (let i = 0; i < 3; i++) {
+    const response = await fetch(files());
+    assert.equal(response.status, 200);
+    const listing = await response.json();
+    assert.equal(listing.root, root);
+    assert.equal(listing.path, root);
+    assert.equal(listing.entries.length, 1);
+    assert.equal(listing.entries[0].size, Buffer.byteLength(expected));
+  }
+  const download = await fetch(files(path, true));
+  assert.equal(download.status, 200);
+  assert.equal(await download.text(), expected);
+  const archive = await fetch(files(root, true));
+  assert.equal(archive.status, 200);
+  const bytes = Buffer.from(await archive.arrayBuffer());
+  assert.equal(execFileSync("tar", ["-xOzf", "-", "round 25/résults #1.csv"], { input: bytes, encoding: "utf8" }), expected);
 });
 
 test("Files navigation preserves drafts and downloads from chat links", { skip: !process.env.KUGGIS_TEST_PLAYWRIGHT, timeout: 30000 }, async t => {

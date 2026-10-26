@@ -2,7 +2,7 @@
 //! chat process's own OS identity. Nothing outside it is listed or downloaded,
 //! so agent credentials and chat state stay private. The operator only relays
 //! bytes; it never resolves guest paths on the host.
-use super::{error, ApiError, ApiResult, Config, Store};
+use super::{error, ApiError, ApiResult, Store};
 use axum::{
     body::Body,
     extract::{Query, State},
@@ -78,8 +78,52 @@ fn io_error(e: io::Error) -> ApiError {
     )
 }
 
-fn shared_folder(config: &Config) -> ApiResult<&Path> {
-    config.shared.as_deref().ok_or_else(|| {
+/// The shared folder is pinned once at startup. Never reopen it by its pathname:
+/// O_NOFOLLOW on that pathname would not protect its ancestors from replacement.
+pub(super) struct Shared {
+    path: PathBuf,
+    directory: File,
+}
+
+impl Shared {
+    pub(super) fn new(path: &Path) -> io::Result<Self> {
+        let mut directory = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open("/")?;
+        // serve() canonicalizes the configured path before pinning it. Refuse
+        // any symlink introduced between that step and these descriptor opens.
+        for component in path.components() {
+            match component {
+                Component::RootDir => {}
+                Component::Normal(name) => {
+                    directory = open_at(&directory, name, libc::O_DIRECTORY)?;
+                }
+                _ => return Err(io::Error::other("Shared folder must be canonical")),
+            }
+        }
+        if !path.is_absolute() {
+            return Err(io::Error::other("Shared folder must be absolute"));
+        }
+        Ok(Self {
+            path: path.to_owned(),
+            directory,
+        })
+    }
+
+    fn outside(&self) -> ApiError {
+        error(
+            StatusCode::FORBIDDEN,
+            format!(
+                "Only the shared folder {} can be browsed. Ask the agent to copy this there.",
+                self.path.display()
+            ),
+        )
+    }
+}
+
+fn shared_folder(shared: Option<&Shared>) -> ApiResult<&Shared> {
+    shared.ok_or_else(|| {
         error(
             StatusCode::NOT_FOUND,
             "Files are not set up in this cell. Re-run cell setup to create its shared folder."
@@ -88,68 +132,173 @@ fn shared_folder(config: &Config) -> ApiResult<&Path> {
     })
 }
 
-fn resolve(config: &Config, value: Option<&str>) -> ApiResult<PathBuf> {
-    let shared = shared_folder(config)?;
-    let path = value.map(Path::new).unwrap_or(shared);
+fn c_name(name: &std::ffi::OsStr) -> io::Result<CString> {
+    CString::new(name.as_bytes()).map_err(|_| io::Error::other("Invalid path"))
+}
+
+fn open_at(directory: &File, name: &std::ffi::OsStr, flags: i32) -> io::Result<File> {
+    let name = c_name(name)?;
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC | flags,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+fn stat_at(directory: &File, name: &std::ffi::OsStr) -> io::Result<libc::stat> {
+    let name = c_name(name)?;
+    let mut stat = std::mem::MaybeUninit::uninit();
+    if unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } < 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { stat.assume_init() })
+}
+
+fn link_at(directory: &File, name: &std::ffi::OsStr) -> io::Result<PathBuf> {
+    let name = c_name(name)?;
+    let mut bytes = vec![0; 256];
+    loop {
+        let n = unsafe {
+            libc::readlinkat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                bytes.as_mut_ptr().cast(),
+                bytes.len(),
+            )
+        };
+        if n < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if (n as usize) < bytes.len() {
+            bytes.truncate(n as usize);
+            return Ok(PathBuf::from(OsString::from_vec(bytes)));
+        }
+        if bytes.len() >= 64 * 1024 {
+            return Err(io::Error::other("Symbolic link is too long"));
+        }
+        bytes.resize(bytes.len() * 2, 0);
+    }
+}
+
+// Resolve links ourselves, only relative to descriptors beneath the pinned
+// root. canonicalize() would probe outside targets (including missing ones)
+// before we could reject them. Each symlink is read, checked, then expanded;
+// the actual opens never follow symlinks, including concurrently replaced ones.
+fn resolve(shared: Option<&Shared>, value: Option<&str>) -> ApiResult<(PathBuf, File)> {
+    let shared = shared_folder(shared)?;
+    let path = value.map(Path::new).unwrap_or(&shared.path);
     if !path.is_absolute() || path.as_os_str().as_bytes().contains(&0) {
         return Err(super::bad("Use an absolute path in this cell"));
     }
-    let outside = || {
-        error(
-            StatusCode::FORBIDDEN,
-            format!(
-                "Only the shared folder {} can be browsed. Ask the agent to copy this there.",
-                shared.display()
-            ),
-        )
-    };
-    // Refuse before resolving, so a 404 cannot reveal what exists elsewhere.
-    if !path.starts_with(shared) || path.components().any(|c| c == Component::ParentDir) {
-        return Err(outside());
+    let relative = path
+        .strip_prefix(&shared.path)
+        .map_err(|_| shared.outside())?;
+    if path.components().any(|c| c == Component::ParentDir) {
+        return Err(shared.outside());
     }
-    let path = path.canonicalize().map_err(io_error)?;
-    if !path.starts_with(shared) {
-        return Err(outside());
-    }
-    Ok(path)
-}
-
-// Reopen a canonical path one component at a time. If a directory is replaced
-// by a symlink after canonicalization, fail instead of following that link.
-fn open(config: &Config, path: &Path) -> ApiResult<File> {
-    let shared = shared_folder(config)?;
-    let metadata = fs::metadata(path).map_err(io_error)?;
-    if !metadata.is_file() && !metadata.is_dir() {
-        return Err(super::bad(
-            "Only regular files and directories can be opened",
-        ));
-    }
-    let mut file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(shared)
-        .map_err(io_error)?;
-    let components: Vec<_> = path
-        .strip_prefix(shared)
-        .map_err(|_| super::bad("Invalid path"))?
+    let mut pending: std::collections::VecDeque<OsString> = relative
         .components()
+        .map(|c| c.as_os_str().to_owned())
         .collect();
-    for (index, component) in components.iter().enumerate() {
-        let Component::Normal(name) = component else {
-            return Err(super::bad("Invalid path"));
-        };
-        let name = CString::new(name.as_bytes()).map_err(|_| super::bad("Invalid path"))?;
-        let mut flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
-        if index + 1 < components.len() {
-            flags |= libc::O_DIRECTORY;
+    // dup() would share the directory enumeration offset across requests.
+    let root = open_at(
+        &shared.directory,
+        std::ffi::OsStr::new("."),
+        libc::O_DIRECTORY,
+    )
+    .map_err(io_error)?;
+    let mut directories = vec![root];
+    let mut resolved = PathBuf::new();
+    let mut links = 0;
+    while let Some(name) = pending.pop_front() {
+        if name == "." {
+            continue;
         }
-        let fd = unsafe { libc::openat(file.as_raw_fd(), name.as_ptr(), flags) };
-        if fd < 0 {
-            return Err(io_error(io::Error::last_os_error()));
+        if name == ".." {
+            if directories.len() == 1 {
+                return Err(shared.outside());
+            }
+            directories.pop();
+            resolved.pop();
+            continue;
         }
-        file = unsafe { File::from_raw_fd(fd) };
+        let directory = directories.last().unwrap();
+        let stat = stat_at(directory, &name).map_err(io_error)?;
+        if stat.st_mode & libc::S_IFMT == libc::S_IFLNK {
+            links += 1;
+            if links > 40 {
+                return Err(super::bad("Too many symbolic links"));
+            }
+            let target = link_at(directory, &name).map_err(io_error)?;
+            let target = if target.is_absolute() {
+                let relative = target
+                    .strip_prefix(&shared.path)
+                    .map_err(|_| shared.outside())?;
+                directories.truncate(1);
+                resolved.clear();
+                relative
+            } else {
+                &target
+            };
+            // Reject an escape before looking up ANY target components, even
+            // if an earlier component is missing. Runtime .. checks below also
+            // catch escapes through intermediate links which change the depth.
+            let mut depth = directories.len() - 1;
+            for component in target.components() {
+                match component {
+                    Component::ParentDir if depth == 0 => return Err(shared.outside()),
+                    Component::ParentDir => depth -= 1,
+                    Component::Normal(_) => depth += 1,
+                    _ => {}
+                }
+            }
+            for component in target.components().rev() {
+                pending.push_front(component.as_os_str().to_owned());
+            }
+            continue;
+        }
+        let mode = stat.st_mode & libc::S_IFMT;
+        if mode != libc::S_IFREG && mode != libc::S_IFDIR {
+            return Err(super::bad(
+                "Only regular files and directories can be opened",
+            ));
+        }
+        let file = open_at(
+            directory,
+            &name,
+            if pending.is_empty() {
+                0
+            } else {
+                libc::O_DIRECTORY
+            },
+        )
+        .map_err(io_error)?;
+        resolved.push(&name);
+        if pending.is_empty() {
+            return Ok((shared.path.join(resolved), file));
+        }
+        directories.push(file);
     }
-    Ok(file)
+    let path = if resolved.as_os_str().is_empty() {
+        shared.path.clone()
+    } else {
+        shared.path.join(resolved)
+    };
+    Ok((path, directories.pop().unwrap()))
 }
 
 fn kind(metadata: &fs::Metadata) -> FileKind {
@@ -211,10 +360,9 @@ fn names(directory: &File) -> io::Result<(Vec<OsString>, bool)> {
     }
 }
 
-fn listing(config: &Config, value: Option<&str>) -> ApiResult<FileListing> {
-    let shared = shared_folder(config)?;
-    let path = resolve(config, value)?;
-    let directory = open(config, &path)?;
+fn listing(shared: Option<&Shared>, value: Option<&str>) -> ApiResult<FileListing> {
+    let root = shared_folder(shared)?;
+    let (path, directory) = resolve(shared, value)?;
     let metadata = directory.metadata().map_err(io_error)?;
     let mut entries = vec![];
     let mut truncated = false;
@@ -227,29 +375,36 @@ fn listing(config: &Config, value: Option<&str>) -> ApiResult<FileListing> {
                 continue;
             };
             let entry_path = path.join(&name);
-            let link_metadata = fs::symlink_metadata(&entry_path).ok();
-            let symlink = link_metadata.as_ref().is_some_and(|m| m.is_symlink());
-            let metadata = if link_metadata
-                .as_ref()
-                .is_some_and(|m| !m.is_symlink() && !m.is_dir() && !m.is_file())
-            {
-                link_metadata
+            let stat = stat_at(&directory, std::ffi::OsStr::new(&name)).ok();
+            let mode = stat.as_ref().map(|s| s.st_mode & libc::S_IFMT);
+            let symlink = mode == Some(libc::S_IFLNK);
+            let special = mode
+                .is_some_and(|m| m != libc::S_IFLNK && m != libc::S_IFDIR && m != libc::S_IFREG);
+            let metadata = if special {
+                None
             } else {
-                resolve(config, entry_path.to_str())
-                    .and_then(|p| open(config, &p))
-                    .and_then(|f| f.metadata().map_err(io_error))
+                resolve(shared, entry_path.to_str())
+                    .and_then(|(_, f)| f.metadata().map_err(io_error))
                     .ok()
             };
             entries.push(FileEntry {
                 name,
                 path: entry_path.to_string_lossy().into_owned(),
                 symlink,
-                kind: metadata.as_ref().map(kind).unwrap_or(FileKind::Unavailable),
+                kind: if special {
+                    FileKind::Other
+                } else {
+                    metadata.as_ref().map(kind).unwrap_or(FileKind::Unavailable)
+                },
                 size: metadata.as_ref().filter(|m| m.is_file()).map(|m| m.len()),
-                modified: metadata
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|t| t.as_secs()),
+                modified: if special {
+                    stat.and_then(|s| u64::try_from(s.st_mtime).ok())
+                } else {
+                    metadata
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map(|t| t.as_secs())
+                },
             });
         }
         entries.sort_by(|a, b| {
@@ -259,10 +414,10 @@ fn listing(config: &Config, value: Option<&str>) -> ApiResult<FileListing> {
     Ok(FileListing {
         parent: path
             .parent()
-            .filter(|p| p.starts_with(shared))
+            .filter(|p| p.starts_with(&root.path))
             .map(|p| p.to_string_lossy().into_owned()),
         path: path.to_string_lossy().into_owned(),
-        root: shared.to_string_lossy().into_owned(),
+        root: root.path.to_string_lossy().into_owned(),
         kind: kind(&metadata),
         size: metadata.is_file().then(|| metadata.len()),
         entries,
@@ -274,7 +429,7 @@ pub(super) async fn list(
     State(store): State<Arc<Store>>,
     Query(query): Query<FileQuery>,
 ) -> ApiResult<Json<FileListing>> {
-    tokio::task::spawn_blocking(move || listing(&store.config, query.path.as_deref()))
+    tokio::task::spawn_blocking(move || listing(store.shared.as_ref(), query.path.as_deref()))
         .await
         .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map(Json)
@@ -302,14 +457,7 @@ pub(super) async fn download(
         .path
         .ok_or_else(|| super::bad("A download path is required"))?;
     let (path, file, metadata) = tokio::task::spawn_blocking(move || {
-        let path = resolve(&store.config, Some(&value))?;
-        let metadata = fs::metadata(&path).map_err(io_error)?;
-        if !metadata.is_file() && !metadata.is_dir() {
-            return Err(super::bad(
-                "Only regular files and directories can be downloaded",
-            ));
-        }
-        let file = open(&store.config, &path)?;
+        let (path, file) = resolve(store.shared.as_ref(), Some(&value))?;
         let metadata = file.metadata().map_err(io_error)?;
         Ok::<_, ApiError>((path, file, metadata))
     })
@@ -405,12 +553,11 @@ pub(super) async fn download(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::ExecutionMode;
-    use std::os::unix::fs::symlink;
+    use std::{io::Read, os::unix::fs::symlink};
 
     struct Fixture {
         directory: PathBuf,
-        config: Config,
+        shared: Shared,
     }
 
     impl Fixture {
@@ -423,17 +570,16 @@ mod tests {
             fs::write(directory.join("private"), "outside").unwrap();
             fs::write(directory.join("workspace/notes.md"), "unshared work").unwrap();
             fs::write(directory.join("shared/sub/results.csv"), "inside").unwrap();
-            let config = Config {
-                mode: ExecutionMode::Local {
-                    listen: "127.0.0.1:0".parse().unwrap(),
-                },
-                workspace: directory.join("workspace"),
-                shared: Some(directory.join("shared")),
-                state: directory.join("state"),
-                assets: directory.join("assets"),
-                pi: "pi".into(),
-            };
-            Self { directory, config }
+            let shared = Shared::new(&directory.join("shared")).unwrap();
+            Self { directory, shared }
+        }
+
+        fn resolve(&self, path: &Path) -> ApiResult<(PathBuf, File)> {
+            resolve(Some(&self.shared), path.to_str())
+        }
+
+        fn list(&self) -> FileListing {
+            listing(Some(&self.shared), None).unwrap_or_else(|e| panic!("{}", e.message))
         }
     }
 
@@ -443,39 +589,43 @@ mod tests {
         }
     }
 
+    fn contents(mut file: File) -> String {
+        let mut bytes = String::new();
+        file.read_to_string(&mut bytes).unwrap();
+        bytes
+    }
+
     #[test]
     fn links_and_parent_paths_cannot_escape_the_shared_folder() {
         let f = Fixture::new();
-        let shared = f.config.shared.as_ref().unwrap();
+        let shared = &f.shared.path;
         symlink(f.directory.join("private"), shared.join("outside")).unwrap();
         symlink(shared.join("sub"), shared.join("inside")).unwrap();
         for path in [
             f.directory.join("private"),
-            f.config.workspace.join("notes.md"),
+            f.directory.join("workspace/notes.md"),
             shared.join("../private"),
             shared.join("outside"),
-            // Missing paths elsewhere are refused rather than reported missing.
             f.directory.join("missing"),
             shared.join("../missing"),
         ] {
             assert_eq!(
-                resolve(&f.config, path.to_str()).err().unwrap().status,
+                f.resolve(&path).err().unwrap().status,
                 StatusCode::FORBIDDEN,
                 "{}",
                 path.display()
             );
         }
         assert_eq!(
-            resolve(&f.config, shared.join("missing").to_str())
-                .err()
-                .unwrap()
-                .status,
+            f.resolve(&shared.join("missing")).err().unwrap().status,
             StatusCode::NOT_FOUND
         );
-        let path = resolve(&f.config, shared.join("inside/results.csv").to_str())
+        let (path, file) = f
+            .resolve(&shared.join("inside/results.csv"))
             .unwrap_or_else(|e| panic!("{}", e.message));
         assert_eq!(path, shared.join("sub/results.csv"));
-        let list = listing(&f.config, None).unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(contents(file), "inside");
+        let list = f.list();
         assert_eq!(list.path, shared.to_string_lossy());
         assert!(list.parent.is_none());
         assert!(list
@@ -485,26 +635,171 @@ mod tests {
     }
 
     #[test]
-    fn replacement_symlink_is_not_followed_after_resolution() {
+    fn outside_links_do_not_probe_existence() {
         let f = Fixture::new();
-        let shared = f.config.shared.as_ref().unwrap();
-        let path = resolve(&f.config, shared.join("sub/results.csv").to_str())
+        let root = &f.shared.path;
+        symlink(f.directory.join("workspace"), root.join("absolute")).unwrap();
+        symlink("../workspace", root.join("relative")).unwrap();
+        symlink("../missing", root.join("dangling")).unwrap();
+        symlink("missing/../../workspace", root.join("missing-first")).unwrap();
+        symlink(
+            root.join("missing/../../workspace"),
+            root.join("absolute-missing-first"),
+        )
+        .unwrap();
+        for link in [
+            "absolute",
+            "relative",
+            "dangling",
+            "missing-first",
+            "absolute-missing-first",
+        ] {
+            for suffix in ["", "notes.md", "missing.md"] {
+                let path = root.join(link).join(suffix);
+                assert_eq!(
+                    f.resolve(&path).err().unwrap().status,
+                    StatusCode::FORBIDDEN,
+                    "{}",
+                    path.display()
+                );
+                assert_eq!(
+                    listing(Some(&f.shared), path.to_str())
+                        .err()
+                        .unwrap()
+                        .status,
+                    StatusCode::FORBIDDEN
+                );
+            }
+        }
+        assert!(f
+            .list()
+            .entries
+            .iter()
+            .filter(|entry| entry.symlink)
+            .all(|entry| entry.kind == FileKind::Unavailable));
+    }
+
+    #[test]
+    fn relative_links_are_resolved_in_order_and_loops_are_bounded() {
+        let f = Fixture::new();
+        let root = &f.shared.path;
+        symlink("..", root.join("sub/up")).unwrap();
+        symlink("sub/up/sub/results.csv", root.join("valid")).unwrap();
+        let (path, file) = f
+            .resolve(&root.join("valid"))
             .unwrap_or_else(|e| panic!("{}", e.message));
-        fs::rename(shared.join("sub"), shared.join("saved")).unwrap();
-        symlink(shared.join("saved"), shared.join("sub")).unwrap();
-        assert!(
-            open(&f.config, &path).is_err(),
-            "even a replacement link inside the shared folder must be reopened explicitly"
+        assert_eq!(path, root.join("sub/results.csv"));
+        assert_eq!(contents(file), "inside");
+        // Lexically this target stays inside; expanding 'up' changes its depth.
+        symlink("sub/up/../private", root.join("escape")).unwrap();
+        assert_eq!(
+            f.resolve(&root.join("escape")).err().unwrap().status,
+            StatusCode::FORBIDDEN
+        );
+        symlink("loop", root.join("loop")).unwrap();
+        assert_eq!(
+            f.resolve(&root.join("loop")).err().unwrap().status,
+            StatusCode::BAD_REQUEST
         );
     }
 
     #[test]
+    fn resolved_file_survives_replacement_after_resolution() {
+        let f = Fixture::new();
+        let root = &f.shared.path;
+        let (_, file) = f
+            .resolve(&root.join("sub/results.csv"))
+            .unwrap_or_else(|e| panic!("{}", e.message));
+        fs::write(f.directory.join("workspace/results.csv"), "outside").unwrap();
+        fs::rename(root.join("sub"), root.join("saved")).unwrap();
+        symlink(f.directory.join("workspace"), root.join("sub")).unwrap();
+        assert_eq!(contents(file), "inside");
+        assert_eq!(
+            f.resolve(&root.join("sub/results.csv"))
+                .err()
+                .unwrap()
+                .status,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[test]
+    fn nofollow_open_refuses_a_replacement_symlink() {
+        let f = Fixture::new();
+        let name = std::ffi::OsStr::new("sub");
+        let stat = stat_at(&f.shared.directory, name).unwrap();
+        assert_eq!(stat.st_mode & libc::S_IFMT, libc::S_IFDIR);
+        fs::rename(f.shared.path.join("sub"), f.shared.path.join("saved")).unwrap();
+        symlink("saved", f.shared.path.join("sub")).unwrap();
+        assert!(open_at(&f.shared.directory, name, libc::O_DIRECTORY).is_err());
+    }
+
+    #[test]
+    fn pinned_root_survives_ancestor_and_root_replacement() {
+        for ancestor in [false, true] {
+            let mut f = Fixture::new();
+            let parent = f.shared.path.clone();
+            if ancestor {
+                f.shared = Shared::new(&parent.join("sub")).unwrap();
+            }
+            let root = f.shared.path.clone();
+            let leaf = if ancestor {
+                "results.csv"
+            } else {
+                "sub/results.csv"
+            };
+            fs::create_dir_all(f.directory.join("workspace/sub")).unwrap();
+            fs::write(
+                f.directory.join("workspace/sub/results.csv"),
+                "SECRET OUTSIDE SHARED ROOT",
+            )
+            .unwrap();
+            fs::rename(&parent, f.directory.join("saved")).unwrap();
+            symlink(f.directory.join("workspace"), &parent).unwrap();
+            // Refuse to pin through a replaced ancestor, even though the final
+            // component is still a directory, not a symlink.
+            assert!(Shared::new(&root).is_err());
+            let (path, file) = f
+                .resolve(&root.join(leaf))
+                .unwrap_or_else(|e| panic!("{}", e.message));
+            assert_eq!(path, root.join(leaf));
+            assert_eq!(contents(file), "inside");
+            // Repeated listings need independent offsets on the pinned root.
+            for _ in 0..3 {
+                let list = f.list();
+                assert_eq!(list.entries.len(), 1);
+                assert_eq!(
+                    list.entries[0].name,
+                    if ancestor { "results.csv" } else { "sub" }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn special_files_are_listed_but_never_opened() {
+        let f = Fixture::new();
+        let pipe = f.shared.path.join("pipe");
+        let name = c_name(pipe.as_os_str()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert_eq!(
+            f.resolve(&pipe).err().unwrap().status,
+            StatusCode::BAD_REQUEST
+        );
+        assert!(f
+            .list()
+            .entries
+            .iter()
+            .any(|entry| entry.name == "pipe" && entry.kind == FileKind::Other));
+    }
+
+    #[test]
     fn cells_set_up_before_shared_folders_offer_no_files() {
-        let mut f = Fixture::new();
-        let path = f.config.shared.take().unwrap().join("sub/results.csv");
         for error in [
-            listing(&f.config, None).err().unwrap(),
-            resolve(&f.config, path.to_str()).err().unwrap(),
+            listing(None, None).err().unwrap(),
+            resolve(None, Some("/home/agent/shared/results"))
+                .err()
+                .unwrap(),
         ] {
             assert_eq!(error.status, StatusCode::NOT_FOUND);
             assert!(

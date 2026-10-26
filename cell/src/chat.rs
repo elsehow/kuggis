@@ -35,6 +35,7 @@ use types::*;
 
 struct Store {
     config: Config,
+    shared: Option<files::Shared>,
     sessions: Mutex<BTreeMap<SessionId, Arc<LiveSession>>>,
     authority: String,
     stopping: watch::Sender<bool>,
@@ -1051,6 +1052,7 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
         fs::create_dir_all(&shared)?;
         *shared = shared.canonicalize()?;
     }
+    let shared = config.shared.as_deref().map(files::Shared::new).transpose()?;
     fs::create_dir_all(&config.state)?;
     config.state = config.state.canonicalize()?;
     fs::set_permissions(&config.state, fs::Permissions::from_mode(0o700))?;
@@ -1161,6 +1163,7 @@ pub async fn serve(mut config: Config) -> crate::apply::Fallible {
     };
     let store = Arc::new(Store {
         config,
+        shared,
         sessions: Mutex::new(sessions),
         authority,
         stopping,
