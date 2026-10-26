@@ -288,7 +288,7 @@ fn chat(args: &[String]) -> Fallible {
             .ok_or_else(|| format!("cell chat requires {flag_name} PATH"))
     };
     let declaration = flag(args, "--cell").map(load_cell).transpose()?;
-    let (mode, workspace, shared) = if let Some(declaration) = declaration {
+    let (mode, workspace) = if let Some(declaration) = declaration {
         if flag(args, "--local").is_some() || flag(args, "--listen").is_some() {
             return Err("cell chat uses --workspace and a private --socket; --local/--listen are local-only".into());
         }
@@ -304,7 +304,6 @@ fn chat(args: &[String]) -> Fallible {
                 outbox: required("--outbox")?,
             },
             required("--workspace")?,
-            Some(required("--shared")?),
         )
     } else {
         for name in [
@@ -327,11 +326,13 @@ fn chat(args: &[String]) -> Fallible {
                 flag(args, "--local")
                     .ok_or("chat requires --local DIR or --cell FILE --workspace DIR")?,
             ),
-            flag(args, "--shared").map(PathBuf::from),
         )
     };
     // Local mode runs on the user's own machine, so its workspace is shared.
-    let shared = shared.unwrap_or_else(|| workspace.clone());
+    // A cell whose setup predates --shared keeps chat but offers no Files.
+    let shared = flag(args, "--shared")
+        .map(PathBuf::from)
+        .or_else(|| matches!(mode, ExecutionMode::Local { .. }).then(|| workspace.clone()));
     let state = flag(args, "--state")
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace.join(".kuggis/chat"));

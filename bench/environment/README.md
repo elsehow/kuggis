@@ -106,3 +106,24 @@ real registry builds, host authority, reapplication and missing-wall recovery.
 Run it only on a disposable VM; reboot that VM and run `cell check` plus the
 preservation/tool version checks afterward. Use `run.py`'s ownership receipt
 checks when deleting the VM. Never seed synthetic credentials on a real cell.
+
+## Files acceptance
+
+`files.py` tests shared-folder Files on an upgraded cell. It refuses any
+declaration except `files-acceptance`. On a disposable VM, set up the currently
+deployed release with synthetic credentials, create a chat titled
+`Files acceptance`, and send it one prompt so Pi records its instructions; the
+reply may fail. Run the candidate binary's `setup` on the same declaration, then
+`sudo python3 files.py`. It records each result in
+`/var/lib/cell/files-acceptance.json` and exits nonzero on any failure.
+It checks that the chat service has a private `--shared` folder; refusal of
+credentials, chat state, system files, escaping symlinks and `../` paths; the
+`cell check` probe; an intact folder download of about 1 GiB, with throughput;
+that cancelling a download stops its archive process; and that the existing
+chat's recorded instructions were upgraded with a backup. Reboot the VM and run
+it again.
+
+Then point a local `cell ui`, built from the candidate, at a tree containing only
+this cell. In a browser, at desktop and phone widths, download a file and a
+folder, cancel a large folder download, and follow a file link from chat. Delete
+the VM afterwards.

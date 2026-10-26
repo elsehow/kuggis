@@ -106,5 +106,16 @@ browser streams; chat processes keep running in their cells. This does not deplo
 new binaries into existing cells. A runtime update is a separate plan/apply from
 the supervisor's authoritative tree, after checking that the affected cell is idle.
 Do not reconcile cells merely to update frontend assets, and never replace the
-live tree with a checkout's older copy. Hosted sign-in retains Pi's manual redirect
+live tree with a checkout's older copy.
+
+For a release that changes Files, first pass `bench/environment/files.py` on a
+disposable cell. Update the supervisor before any cell: until a cell's runtime is
+updated, its Files view shows an error while its chat keeps working. After the
+supervisor update, an authenticated browser must be able to open Files and
+download a file and a folder through the hosted URL. Files routes must refuse
+requests without authentication, with a forged user ID, or from a foreign
+Origin. Then update one low-stakes cell, confirm its signed `cell check`
+includes a passing `host: Files serve only the shared folder` probe, and repeat
+the browser checks, including cancelling a large folder download, before
+updating the rest. Hosted sign-in retains Pi's manual redirect
 prompt; automatic loopback callbacks require a supervisor on the browser's machine.

@@ -117,9 +117,11 @@ are `/api/cells/:cell/files` and `/api/cells/:cell/files/download`. Both require
 the same origin and authentication as chat and run with the chat service's OS
 permissions. No sudo, host filesystem traversal, writes, or model calls are used.
 Paths and resolved symlinks must stay inside the folder given by `cell chat
---shared` (required for cells; local mode defaults to its workspace). Paths
-outside it are refused before they are resolved, so responses do not reveal
-what exists elsewhere.
+--shared` (cell setup passes `/home/agent/shared`; local mode defaults to its
+workspace). Paths outside it are refused before they are resolved, so responses
+do not reveal what exists elsewhere. A cell started without `--shared` keeps
+chat working; Files then asks for setup to be re-run. Every `cell check` probes
+that Files serves only the shared folder.
 
 Archives use the cell's Python 3 standard library. They contain regular files
 and directories, skipping symlinks, special files, and other filesystems.

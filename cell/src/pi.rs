@@ -78,14 +78,16 @@ type Pending = Arc<Mutex<HashMap<String, oneshot::Sender<CallResult<Value>>>>>;
 const SYSTEM_PROMPT: &str = "You are an assistant working in this workspace. Use the available tools to carry out the user's requests. Follow the workspace instructions, keep changes focused, and verify your work.";
 const GUEST_PROMPT_SUFFIX: &str = "You control this persistent Linux environment and have passwordless sudo. You may install toolchains and packages, change system configuration, and run local services. Use the configured HTTPS proxy for external downloads; the host enforces network grants. Changes survive restarts. The host signing key and authority controls are outside your environment.";
 
-fn instructions(shared: &Path, guest: bool) -> String {
-    let shared = shared.display();
-    let prompt = format!("{SYSTEM_PROMPT} To give the user a file or folder, copy it into {shared} and link its absolute path in Markdown, for example [Results]({shared}/results). Paths with spaces can use angle brackets, for example [Results](<{shared}/my results>). These links open the cell UI's read-only Files tab, which shows only {shared}; the user downloads files there, and folders as .tar.gz archives. Copy rather than symlink, because links leading out of {shared} cannot be downloaded. Verify that the path exists before linking it. Do not invent a host path or require SSH for downloads.");
-    if guest {
-        format!("{prompt} {GUEST_PROMPT_SUFFIX}")
-    } else {
-        prompt
+fn instructions(shared: Option<&Path>, guest: bool) -> String {
+    let mut prompt = SYSTEM_PROMPT.to_string();
+    if let Some(shared) = shared {
+        let shared = shared.display();
+        prompt += &format!(" To give the user a file or folder, copy it into {shared} and link its absolute path in Markdown, for example [Results]({shared}/results). Paths with spaces can use angle brackets, for example [Results](<{shared}/my results>). These links open the cell UI's read-only Files tab, which shows only {shared}; the user downloads files there, and folders as .tar.gz archives. Copy rather than symlink, because links leading out of {shared} cannot be downloaded. Verify that the path exists before linking it. Do not invent a host path or require SSH for downloads.");
     }
+    if guest {
+        prompt = format!("{prompt} {GUEST_PROMPT_SUFFIX}");
+    }
+    prompt
 }
 
 /// Pi 1.3 retains previous system sections in resumed request context. Replace
@@ -201,7 +203,7 @@ impl Rpc {
     pub fn spawn(
         bin: &Path,
         workspace: &Path,
-        shared: &Path,
+        shared: Option<&Path>,
         sessions: &Path,
         id: &str,
         agent_dir: Option<&Path>,
@@ -544,7 +546,7 @@ mod tests {
         let user = r#"{ "type": "message", "id": "user-1", "parentId": "system-1", "message": {"role":"user","content":"Pi documentation: docs/extensions.md"} }"#;
         let original = format!("{header}\n{system}\n{user}\n");
         fs::write(&path, &original).unwrap();
-        let prompt = instructions(Path::new("/home/agent/shared"), false);
+        let prompt = instructions(Some(Path::new("/home/agent/shared")), false);
         upgrade_instructions(&directory, &id, &prompt).unwrap();
         let updated = fs::read_to_string(&path).unwrap();
         assert!(
@@ -579,14 +581,16 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("cell-prompt-{}", crate::RequestId::generate()));
         fs::create_dir(&directory).unwrap();
-        let shared = Path::new("/home/agent/shared");
+        assert_eq!(instructions(None, false), SYSTEM_PROMPT);
+        assert!(instructions(None, true).ends_with(GUEST_PROMPT_SUFFIX));
+        let shared = Some(Path::new("/home/agent/shared"));
         let custom = "A preamble Kuggis did not write.";
         for (before, guest) in [
             // Before Files existed, without and with the environment suffix.
             (SYSTEM_PROMPT.to_string(), false),
             (format!("{SYSTEM_PROMPT} {GUEST_PROMPT_SUFFIX}"), true),
             // A different shared folder.
-            (instructions(Path::new("/srv/old"), true), true),
+            (instructions(Some(Path::new("/srv/old")), true), true),
             (custom.to_string(), true),
         ] {
             let id = crate::SessionId::generate().to_string();

@@ -24,8 +24,9 @@ pub enum ExecutionMode {
 pub struct Config {
     pub mode: ExecutionMode,
     pub workspace: PathBuf,
-    /// The only folder the Files API can read: what the agent shares with the user.
-    pub shared: PathBuf,
+    /// The only folder the Files API can read: what the agent shares with the
+    /// user. Without one, chat still works but Files is unavailable.
+    pub shared: Option<PathBuf>,
     pub state: PathBuf,
     pub assets: PathBuf,
     pub pi: PathBuf,

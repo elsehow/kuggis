@@ -256,6 +256,21 @@ for host,port in [("1.1.1.1",443),("169.254.169.254",80),("10.203.0.1",8000),("1
         run('curl', '-fsS', '--max-time', '10', '--unix-socket', '/run/cell-chat/api.sock',
             '-H', 'Host: cell.internal', 'http://cell.internal/api/pi/threads?includeArchived=true')
     case('host: persistent chat API available', chat)
+    def files():
+        # Credentials, chat state and unshared work must stay out of Files.
+        def get(path=None):
+            query = ['--data-urlencode', 'path=' + path] if path else []
+            out = run('curl', '-sS', '--max-time', '10', '--unix-socket', '/run/cell-chat/api.sock',
+                      '-H', 'Host: cell.internal', '-w', '\n%{http_code}', '--get', *query,
+                      'http://cell.internal/api/files').stdout
+            body, _, status = out.rpartition('\n')
+            return int(status), body
+        status, body = get()
+        assert status == 200 and json.loads(body)['root'] == '/home/agent/shared', (status, body[:200])
+        for path in ('/home/agent/.pi/agent/auth.json', '/home/agent/.kuggis/chat',
+                     '/etc/cell/cell.json', '/home/agent/shared/../.pi/agent/auth.json'):
+            assert get(path)[0] == 403, path
+    case('host: Files serve only the shared folder', files)
     case('guest: agent can sudo', lambda: guest('sudo', '-n', 'true', user='agent'))
     if Path('/etc/cell/publisher.json').exists():
         # A framed reply, even a refusal, means the socket is visible in the
