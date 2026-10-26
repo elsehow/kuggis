@@ -4,7 +4,7 @@ use super::*;
 use crate::provider::LoginMethod;
 use crate::Provider;
 use serde::{Deserialize, Serialize};
-use std::{process::Stdio, time::Instant};
+use std::{process::Stdio, time::Instant, sync::atomic::{AtomicBool, Ordering}};
 use tokio::{
     io::{AsyncWriteExt, BufReader},
     sync::mpsc,
@@ -129,20 +129,23 @@ pub(super) struct Login {
     provider: Provider,
     started: Instant,
     state: Arc<Mutex<AuthState>>,
+    settled: Arc<AtomicBool>,
     replies: mpsc::Sender<AuthReply>,
     cancel: watch::Sender<bool>,
 }
 impl Login {
-    pub(super) async fn state(&self) -> AuthState {
-        self.state.lock().await.clone()
-    }
-
     async fn view(&self, id: RequestId) -> AuthFlow {
+        let mut status = self.state.lock().await.clone();
+        // Terminal state is observable only after cleanup releases settings_lock.
+        // This applies to every caller, including new logins and MCP updates.
+        if status.terminal() && !self.settled.load(Ordering::Acquire) {
+            status = AuthState::Starting;
+        }
         AuthFlow {
             id,
             provider: self.provider,
             relay: RelayState::Manual,
-            status: self.state.lock().await.clone(),
+            status,
         }
     }
 }
@@ -373,10 +376,12 @@ pub(super) async fn start(
     let (cancel, cancelled) = watch::channel(false);
     let state = Arc::new(Mutex::new(AuthState::Starting));
     let id = RequestId::generate();
+    let settled = Arc::new(AtomicBool::new(false));
     let login = Login {
         provider,
         started: Instant::now(),
         state: state.clone(),
+        settled: settled.clone(),
         replies,
         cancel,
     };
@@ -385,11 +390,12 @@ pub(super) async fn start(
     let stopping = store.stopping.subscribe();
     drop(logins);
     tokio::spawn(async move {
-        let _guard = guard;
         run(child, state, rx, cancelled, stopping).await;
         // Browsing a chat during sign-in may have opened an idle Pi process.
         // Its next use must see the new credential/catalog snapshot too.
         let _ = settings::stop_idle(&store).await;
+        drop(guard);
+        settled.store(true, Ordering::Release);
     });
     Ok(Json(view))
 }
@@ -435,21 +441,9 @@ pub(super) async fn cancel(
         .get(&id)
         .filter(|l| l.provider == provider)
         .ok_or_else(|| bad("Sign-in expired"))?;
-    let mut state = login.state.lock().await;
-    if !state.terminal() {
-        // The background task only turns terminal as it unwinds. Marking it
-        // here lets this handler wait for the settings guard without the
-        // winding-down login counting as an active sign-in.
-        *state = AuthState::Cancelled;
+    if !login.state.lock().await.terminal() {
         let _ = login.cancel.send(true);
     }
-    drop(state);
-    drop(logins);
-    // The background login task holds the settings guard until it has fully
-    // finished, while the login state turns terminal earlier. A client that
-    // saw the login cancel must be able to start the next settings change
-    // immediately, so only report cancellation once the guard is free.
-    drop(settings::acquire(&store, Duration::from_secs(10)).await?);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -457,7 +451,7 @@ pub(super) async fn logout(
     State(store): State<Arc<Store>>,
     Path(provider): Path<Provider>,
 ) -> ApiResult<StatusCode> {
-    let _guard = settings::acquire(&store, Duration::from_secs(10)).await?;
+    let _guard = settings::lock(&store)?;
     settings::directory(&store)?;
     settings::stop_idle(&store).await?;
     let child = launch(&store.config, provider, "logout")?;
@@ -486,6 +480,47 @@ pub(super) async fn logout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn terminal_login_is_hidden_until_settings_guard_is_released() {
+        for terminal in [AuthState::Complete, AuthState::Cancelled,
+                         AuthState::Failed { message: "fixture".into() }] {
+            let lock = Arc::new(Mutex::new(()));
+            let guard = lock.clone().lock_owned().await;
+            let (replies, _rx) = mpsc::channel(1);
+            let (cancel, _cancelled) = watch::channel(false);
+            let settled = Arc::new(AtomicBool::new(false));
+            let login = Login {
+                provider: Provider::Anthropic,
+                started: Instant::now(),
+                state: Arc::new(Mutex::new(terminal)),
+                settled: settled.clone(), replies, cancel,
+            };
+            let id = RequestId::generate();
+            assert!(!login.view(id).await.status.terminal());
+            assert!(lock.try_lock().is_err());
+            drop(guard);
+            settled.store(true, Ordering::Release);
+            assert!(login.view(id).await.status.terminal());
+            assert!(lock.try_lock().is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_prompt_and_cancel_finish_without_reopening_terminal_state() {
+        let mut child = tokio::process::Command::new("python3");
+        child.args(["-c", "import json,time; print(json.dumps({'type':'extension_ui_request','id':'queued','method':'input','title':json.dumps({'kind':'input','message':'fixture','secret':False})}),flush=True); time.sleep(30)"])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).kill_on_drop(true);
+        let child = child.spawn().unwrap();
+        let state = Arc::new(Mutex::new(AuthState::Starting));
+        let (_replies, rx) = mpsc::channel(1);
+        let (cancel, cancelled) = watch::channel(false);
+        let (_stop, stopping) = watch::channel(false);
+        cancel.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), run(child, state.clone(), rx, cancelled, stopping))
+            .await.unwrap();
+        assert!(matches!(*state.lock().await, AuthState::Cancelled));
+    }
+
     #[test]
     fn auth_ui_rejects_stale_prompts_and_nonliteral_keys() {
         let mut state = AuthState::Starting;

@@ -89,6 +89,24 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 policy.states(policy.AGENTS)
 
+    def test_missing_properties_fail_closed_even_when_both_units_are_present(self):
+        rows = {u: dict(row(), Id=u, SubState='dead') for u in policy.AGENTS}
+        def output():
+            return '\n\n'.join('\n'.join(f'{k}={v}' for k, v in r.items()) for r in rows.values())
+        for unit in policy.AGENTS:
+            for key in policy.PROPERTIES:
+                if key == 'MainPID' and unit.endswith('.socket'):
+                    continue
+                saved = rows[unit].pop(key)
+                with self.subTest(unit=unit, key=key), patch.object(policy, 'command', return_value=output()):
+                    with self.assertRaises(RuntimeError):
+                        policy.states(policy.AGENTS)
+                rows[unit][key] = saved
+        # systemd sockets do not have MainPID; empty dependency values are valid.
+        rows['shelley.socket'].pop('MainPID')
+        with patch.object(policy, 'command', return_value=output()):
+            self.assertTrue(policy.stopped_and_masked(policy.states(policy.AGENTS)))
+
     def test_fresh_image_without_shelley_still_gets_persistent_masks(self):
         managed = {name: row() for name in policy.MANAGED}
         missing = {name: dict(row(mask=''), LoadState='not-found') for name in policy.AGENTS}

@@ -611,7 +611,7 @@ fn request_id(headers: &HeaderMap) -> ApiResult<RequestId> {
 }
 
 async fn execute(store: &Store, id: &SessionId, command: SessionCommand) -> ApiResult<()> {
-    let _settings = settings::acquire(store, Duration::from_secs(10)).await?;
+    let _settings = settings::lock(store)?;
     let session = store.find(id).await?;
     {
         let view = session.view.lock().await;

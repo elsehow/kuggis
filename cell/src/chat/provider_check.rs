@@ -103,7 +103,7 @@ pub(super) async fn check(
     State(store): State<Arc<Store>>,
     Path(provider): Path<Provider>,
 ) -> ApiResult<StatusCode> {
-    let _settings = settings::acquire(&store, Duration::from_secs(10)).await?;
+    let _settings = settings::lock(&store)?;
     let dir = settings::directory(&store)?;
     if !store
         .config

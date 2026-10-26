@@ -42,7 +42,7 @@ def command(*args):
 
 
 def states(units):
-    args = ["show", *units]
+    args = ["show", "--all", *units]
     for name in PROPERTIES:
         args += ["-p", name]
     output = command(*args)
@@ -50,7 +50,12 @@ def states(units):
     for block in output.strip().split("\n\n"):
         row = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
         if row.get("Id") in units:
-            parsed[row["Id"]] = {key: row.get(key, "") for key in PROPERTIES}
+            # MainPID is a service-only property and is absent for missing units.
+            required = set(PROPERTIES) - {"MainPID"}
+            require(required <= row.keys(), "Incomplete service properties; refusing to guess")
+            if row["Id"].endswith(".service") and row["LoadState"] != "not-found":
+                require(row.get("MainPID", "").isdigit(), "Missing or invalid service MainPID")
+            parsed[row["Id"]] = row
     require(set(parsed) == set(units), "Incomplete service metadata; refusing to guess")
     return parsed
 
