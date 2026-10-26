@@ -1,8 +1,9 @@
 # Hosted supervisor
 
-Run the operator on a dedicated trusted exe.dev VM. Cells remain separate VMs;
+Run the operator on a dedicated trusted exe.dev VM. Cells remain on separate hosts;
 the supervisor holds the private tree, identity pins, operation receipts and an
 operator SSH key. Chats, workspaces and provider credentials stay in their cells.
+[Existing Ubuntu hosts](ssh-hosts.md) can be registered through pinned SSH.
 Do not run agents or untrusted workloads on the supervisor: local processes can
 impersonate its trusted ingress, and its SSH key can manage the exe.dev account.
 Keeping that key off a laptop does not isolate it from a laptop agent that can
@@ -45,9 +46,34 @@ ssh exe.dev share port "$SUPERVISOR_VM" 8000
 
 Deployment procedure:
 
-Disable bundled development agents, including their activation sockets, on the
-supervisor. For an image with Shelley, disable both `shelley.socket` and
-`shelley.service` before giving the machine an operator key.
+Stop and persistently mask bundled host development agents, including their
+activation sockets, on every Kuggis host: supervisor, cells (including production),
+and publishers. Do this on the supervisor before giving it an operator key.
+From an authenticated administrator SSH session, run the reviewed helper from
+this release (copy `cell/src/host_agents.py` to the host as needed):
+
+```sh
+sudo python3 host_agents.py --apply
+sudo python3 host_agents.py
+```
+
+Require `ok: true`. The helper stops/disables and persistently masks only
+`shelley.socket` and `shelley.service`, preserves local unit definitions and a
+receipt under root-only `/var/lib/kuggis-host-agent-policy/`, and verifies the
+tracked Kuggis services retain their state and process IDs. It refuses known
+managed-service dependencies on Shelley. A failure is a review item; do not
+continue provisioning while the boundary is unverified. No guest, supervisor,
+publisher, credential, or application restart is requested by this helper.
+
+`UnitFileState=disabled` alone does not mean a service or socket has stopped.
+Recheck after image updates and reboots. New cell setup applies the same embedded
+helper before modifying the guest; `cell check` verifies the policy read-only.
+Supervisor and publisher provisioning must run the helper explicitly. Stopping
+Shelley interrupts its own sessions, so perform this step through SSH, not from
+a Shelley session. Normal Kuggis deployment continues through its existing
+SSH identity and services. Rollback of this policy is a separate administrator
+decision: preserve the receipt and original unit files; do not automatically
+restore host agents when rolling back an application release.
 
 1. Build `web/dist` and a Linux `cell` binary. Put a release under
    `/opt/kuggis/releases/RELEASE/` with `cell` and `web/`, owned by root, then
@@ -56,13 +82,19 @@ supervisor. For an image with Shelley, disable both `shelley.socket` and
    `/var/lib/kuggis-supervisor` (0700). Generate its dedicated SSH key there and
    register only the public key with exe.dev. Configure `exe.dev` and `*.exe.xyz`
    to use it with `IdentitiesOnly yes`, `BatchMode yes`, and pinned known hosts.
+   Set `ForwardAgent no`, `ClearAllForwardings yes`, and `ForwardX11 no` on
+   deployment connections, including nested SSH and manual SCP commands. The
+   runtime supplies these restrictions explicitly; standalone helper scripts
+   must do so too. The supervisor service removes inherited `SSH_AUTH_SOCK`
+   and `SSH_AGENT_PID`; authentication uses its dedicated identity files.
    This operator needs account management access; a VM-scoped key is insufficient.
    Never copy a laptop private key or a cell's provider credentials.
 3. Establish the owner ID through an authenticated private HTTPS request to a
    temporary probe. Verify that a caller-supplied user ID is overwritten. Save
    the allowlist at `/etc/kuggis-supervisor/access.json`, root-owned and readable
    only by the supervisor group (0640). Stop the probe before starting the UI.
-4. Stop the old operator. Back up and copy only its tree (including `.pins`) and
+4. Stop the old operator. Back up and copy only its tree (including `.pins`,
+   `.hosts` and `.identities.json`) and
    operator state to the new home. Keep directory permissions 0700 and files
    0600, owned by the service user. Do not copy an entire checkout's `.kuggis/`:
    it can contain unrelated private backups and evidence. Run only one active

@@ -1,6 +1,8 @@
 # Environment autonomy bench
 
 Production integration: [migration acceptance results](PRODUCTION-REPORT.md).
+Standalone SSH hosting: [dedicated-host acceptance results](SSH-REPORT.md).
+Shared scoped Git: [broker acceptance results](GIT-REPORT.md).
 
 Architecture experiment result: [22/22 cases passed on exe.dev](REPORT.md), including a
 full VM reboot. The report also records an intermittent existing auth-test failure.
@@ -106,3 +108,120 @@ real registry builds, host authority, reapplication and missing-wall recovery.
 Run it only on a disposable VM; reboot that VM and run `cell check` plus the
 preservation/tool version checks afterward. Use `run.py`'s ownership receipt
 checks when deleting the VM. Never seed synthetic credentials on a real cell.
+
+## Standalone SSH host acceptance
+
+`ssh_acceptance.py` exercises the production runtime on a disposable cell whose
+name ends in `-canary`, bootstrapped with the [SSH host CLI](../../deploy/ssh-hosts.md).
+The declaration needs Ubuntu package mirror grants (`us.archive.ubuntu.com` and
+`security.ubuntu.com`). It refuses other grant types besides public hosts and
+providers. Run each phase as host root, passing the exact cell name:
+
+```sh
+python3 ssh_acceptance.py test-canary seed
+python3 ssh_acceptance.py test-canary boundary
+python3 ssh_acceptance.py test-canary verify
+python3 ssh_acceptance.py test-canary fail-closed
+```
+
+The seed requires an empty chat list and no provider credentials. It installs
+`jq` through the guest proxy, writes workspace and guest configuration markers,
+starts an idle Pi chat without calling a model, and records host identity hashes
+in a private host receipt. Boundary tests flush only the guest firewall and
+exercise an alternate guest UID. The fail-closed test temporarily hides the
+approved firewall snapshot and checks that guest startup refuses; the actual
+host firewall stays loaded, protecting the public proxy listener throughout.
+
+Separately review and apply an unchanged CLI plan, which must contain no setup
+actions, then run `verify`. To exercise actual reinstallation, run
+`cell setup /etc/cell/cell.json --host-runtime /etc/cell/host.json` on the host
+and verify again. Run `verify` after restarting `cell-agent`; after an explicitly
+authorized host reboot, run `post-reboot`, which requires a changed boot ID.
+These phases check identity, configuration, workspace, installed software,
+idle chat, Pi startup, and a fresh signed boundary check. Verify the resulting
+signed check and pinned identity with `cell host plan` from the operator machine.
+Keep raw logs and deployment receipts in ignored private storage.
+
+### Scoped Git upgrade
+
+After seeding the standalone canary, add the read-only code grant
+`{"code":{"repo":"octocat/hello-world","write":false}}` and review/apply
+the new runtime through the SSH host CLI. Run, as host root:
+
+```sh
+python3 ssh_git_acceptance.py test-canary
+```
+
+This tests public clone/fetch, standard GitHub and legacy URL rewrites, refused
+access to another repository, a refused dry-run push, blocked broad CONNECT
+tunnels, guest exclusion from credential paths, and preservation of the
+original signing identity, guest configuration, installed jq, workspace and chat.
+It requires an empty broker credential store and makes no remote writes.
+Repeat after a reviewed no-op apply and an authorized host reboot; compare boot
+IDs separately. The local Git broker suite tests real pushes against disposable
+Git backends with synthetic credentials.
+
+For private repository acceptance, install a [repository-scoped credential](../../deploy/scoped-git.md#credentials)
+and restart `cell-git`. Confirm independently that the selected repository is
+private. Before adding its Code grant, its broker advertisement must still
+return 403: a stored credential is not authorization. Review/apply a read-only
+grant, then run as host root:
+
+```sh
+python3 ssh_private_git_acceptance.py test-canary example/private-project read
+```
+
+With a write-capable token already installed, this proves that the grant still
+refuses pushes. Review/apply the same grant with `write: true`, then run:
+
+```sh
+python3 ssh_private_git_acceptance.py test-canary example/private-project write
+```
+
+Both phases independently clone/fetch into a temporary guest directory, check
+legacy URL routing and scope refusal, and verify credential isolation, preserved
+canary state, and fresh signed boundary checks. Write mode proposes a unique
+new branch using `git push --dry-run` and verifies the exact ref is absent before
+and after. It makes no remote changes; it does not validate actual ref updates
+or server-side update hooks. The original seed and an ungranted
+`octocat/spoon-knife` repository are required. Keep logs in private deployment
+storage and verify the final signed observation through `cell host plan`.
+
+### Supervisor connection
+
+Register the canary in a **separate** supervisor tree/state directory using
+`cell host register`, then run a candidate `cell ui` service on loopback port
+18080 as `kuggis-ovh-acceptance.service`. Use the production supervisor's service
+user and sandbox settings, a dedicated SSH key, and the pinned host receipt.
+Do not attach the test instance to the production tree.
+
+First verify real Pi health, provider credential prompting/cancellation without
+submitting a credential, and refusal of stale approvals, deletion, child doors
+and unsupported grants. For deterministic streaming acceptance, run
+`ssh_supervisor_fixture.py CELL-CANARY install` as root on the disposable host,
+passing a JSON map of the repository's `web/tests/fake-pi.mjs` and `fake-auth.mjs`
+source on stdin. It refuses existing model credentials and installs a separate
+guest systemd drop-in; it never reads the host's Git credentials.
+
+On the supervisor, with permission to restart only the acceptance service, run:
+
+```sh
+python3 supervisor_ssh_acceptance.py http://127.0.0.1:18080 test-canary /private/acceptance.json
+```
+
+This exercises real SSH relay and SSE, refuses applying configuration during a
+running chat, restarts the supervisor while the chat continues, and checks for
+duplicate messages. It renames/archives/unarchives the test chat, adds and removes
+the `example.com` host grant through reviewed plans, checks a no-op apply, and
+verifies preservation of existing chat metadata and test history. It requires a
+canary-only inventory and leaves one archived test chat. No model calls occur.
+
+Also verify failed SSH connections, changed machine identity and changed SSH
+trust using the isolated binding, restoring it in `finally`. Stop only the
+canary's guest chat service and exercise health/start recovery through the
+supervisor. After an authorized canary reboot, require a changed boot ID, passing
+signed boundary checks, and preserved chats/workspace. Run
+`ssh_supervisor_fixture.py CELL-CANARY restore` afterward and check real Pi health
+again. Stop the acceptance supervisor before registering the canary with the
+production supervisor. Keep receipts, screenshots, host configuration and keys
+outside tracked source.

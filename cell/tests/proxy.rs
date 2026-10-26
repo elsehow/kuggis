@@ -184,7 +184,7 @@ fn edge_hosts_must_sit_at_the_gateway_and_ordinary_hosts_must_not() {
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>(),
-        ["codex.int.exe.xyz", "github.int.exe.xyz"]
+        ["codex.int.exe.xyz"]
     );
     let gateway: SocketAddr = (cell::proxy::GATEWAY, 443).into();
     let public: SocketAddr = "8.8.8.8:443".parse().unwrap();

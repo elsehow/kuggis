@@ -29,6 +29,8 @@ pub(crate) mod creation;
 pub(crate) mod deletion;
 mod oauth;
 mod identity;
+#[cfg(test)]
+mod hosts_tests;
 pub(crate) mod resources;
 pub(crate) mod resource_cleanup;
 pub use access::Access;
@@ -45,6 +47,7 @@ pub(crate) struct CellView {
     id: String,
     binding: Name,
     can_rename: bool,
+    external_host: Option<String>,
     name: Name,
     parent: Option<String>,
     grants: std::collections::BTreeSet<crate::Grant>,
@@ -155,6 +158,7 @@ struct Change {
     cell: Cell,
     path: PathBuf,
     plans: BTreeMap<Name, Plan>,
+    host_plan: Option<crate::ssh_host::Plan>,
 }
 struct Operator {
     config: Config,
@@ -196,6 +200,9 @@ impl Operator {
         Ok(binding)
     }
     async fn vm_for(&self, name: &Name) -> Result<String> {
+        if crate::host_binding::Binding::load(&self.config.tree, name).map_err(bad)?.is_some() {
+            return Err(bad("External hosts cannot use an exe.dev VM route"));
+        }
         let registry = self.identities()?;
         if let Some(identity) = registry.by_binding(name) {
             let expected = identity.vm.clone().ok_or_else(|| bad("Local identity cannot target a remote VM"))?;
@@ -212,6 +219,23 @@ impl Operator {
         }
         self.vms.read().await.get(name).cloned().ok_or_else(|| Error(StatusCode::SERVICE_UNAVAILABLE, "Cell has no VM; apply its declaration first".into()))
     }
+    async fn remote_command(&self, name: &Name, command: &str) -> Result<(Command, Option<crate::ssh_host::TrustSnapshot>)> {
+        self.identities()?.check_pin(&self.config.tree, name).map_err(bad)?;
+        if let Some(binding) = crate::host_binding::Binding::load(&self.config.tree, name).map_err(bad)? {
+            let (command, snapshot) = binding.command(command).map_err(bad)?;
+            return Ok((Command::from(command), Some(snapshot)));
+        }
+        let vm = self.vm_for(name).await?;
+        let guarded = match self.identities()?.by_binding(name) {
+            Some(identity) => format!("test \"$(cat /etc/cell/key.pub)\" = '{}' && {command}", identity.key),
+            None => command.to_owned(),
+        };
+        let mut remote = Command::new("ssh");
+        remote.args(crate::ssh_policy::OPTIONS);
+        remote.args(["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2"])
+            .arg(format!("{vm}.exe.xyz")).arg(guarded);
+        Ok((remote, None))
+    }
     fn tree(&self) -> Result<(Tree, BTreeMap<Name, PathBuf>)> {
         let loaded = crate::tree::load(&self.config.tree).map_err(bad)?;
         self.identities()?.check_active(&self.config.tree, &loaded.0).map_err(bad)?;
@@ -224,6 +248,7 @@ impl Operator {
             return Err(Error(StatusCode::NOT_FOUND, "Cell not found".into()));
         }
         let mut child = None;
+        let mut trust = None;
         let stream: Box<dyn Transport> = if let Some(dir) = &self.config.sockets {
             Box::new(
                 UnixStream::connect(dir.join(format!("{name}.sock")))
@@ -231,27 +256,16 @@ impl Operator {
                     .map_err(fail)?,
             )
         } else {
-            let vm = self.vm_for(name).await?;
-            // exe.dev's SSH gateway restricts forwarded Unix socket paths. An
-            // operator-owned relay command reaches the socket with OS group checks.
-            let relay = match self.identities()?.by_binding(name) {
-                Some(identity) => format!("test \"$(cat /etc/cell/key.pub)\" = '{}' && /usr/local/bin/cell relay", identity.key),
-                None => "/usr/local/bin/cell relay".into(),
+            // exe.dev keeps its existing group-authorized relay. An external
+            // bootstrap account reaches the private socket through sudo.
+            let relay = if crate::host_binding::Binding::load(&self.config.tree, name).map_err(bad)?.is_some() {
+                "sudo -n /usr/local/bin/cell relay"
+            } else {
+                "/usr/local/bin/cell relay"
             };
-            let mut process = Command::new("ssh")
-                .args([
-                    "-T",
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "ConnectTimeout=10",
-                    "-o",
-                    "ServerAliveInterval=15",
-                    "-o",
-                    "ServerAliveCountMax=2",
-                ])
-                .arg(format!("{vm}.exe.xyz"))
-                .arg(relay)
+            let (mut command, snapshot) = self.remote_command(name, relay).await?;
+            trust = snapshot;
+            let mut process = command
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
@@ -270,6 +284,7 @@ impl Operator {
             .map_err(fail)?;
         let mut stopping = self.stopping.subscribe();
         tokio::spawn(async move {
+            let _trust = trust;
             tokio::select! { _ = connection => {}, _ = stopping.changed() => {} }
             if let Some(mut child) = child {
                 let _ = child.kill().await;
@@ -289,6 +304,11 @@ impl Operator {
 
     async fn refresh_vms(&self) -> Result<()> {
         if self.config.sockets.is_some() {
+            return Ok(());
+        }
+        let (tree, _) = self.tree()?;
+        if tree.iter().next().is_some() && tree.iter().all(|c| crate::host_binding::Binding::load(&self.config.tree, &c.name).is_ok_and(|b| b.is_some())) {
+            self.vms.write().await.clear();
             return Ok(());
         }
         let edge = self.edge.clone();
@@ -320,7 +340,12 @@ async fn cells(State(op): State<Arc<Operator>>) -> Result<Json<CellsView>> {
     for cell in tree.iter() { identities.check_pin(&op.config.tree, &cell.name).map_err(bad)?; }
     let jobs = creation::list(&op.config.state).map_err(fail)?;
     let deletions = deletion::list(&op.config.state).map_err(fail)?;
+    let hosts = tree.iter().map(|c| Ok((c.name.clone(), crate::host_binding::Binding::load(&op.config.tree, &c.name).map_err(bad)?)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let vms = op.vms.read().await;
+    if hosts.iter().any(|(name, host)| host.is_some() && vms.contains_key(name)) {
+        return Err(bad("An external cell also has an exe.dev VM binding"));
+    }
     let row = |cell: &Cell, parent: Option<Name>, creation: Option<&creation::Creation>| {
         let deletion = deletions
             .iter()
@@ -334,12 +359,13 @@ async fn cells(State(op): State<Arc<Operator>>) -> Result<Json<CellsView>> {
         let lifecycle = lifecycle(
             creation.map(|j| &j.phase),
             deletion.map(|j| &j.phase),
-            vm.is_some() || socket_available,
+            vm.is_some() || socket_available || hosts.get(&cell.name).is_some_and(Option::is_some),
         );
         CellView {
             id: identities.route(&cell.name),
             binding: cell.name.clone(),
             can_rename: identities.by_binding(&cell.name).is_some(),
+            external_host: hosts.get(&cell.name).and_then(|h| h.as_ref()).map(|h| h.host.hostname.clone()),
             name: identities.by_binding(&cell.name).map(|c| c.name.clone()).or_else(|| creation.and_then(|c| c.display_name.clone())).unwrap_or_else(|| cell.name.clone()),
             parent: parent.map(|p| identities.route(&p)),
             grants: cell.grants.clone(),
@@ -466,20 +492,32 @@ async fn preview(
         .binary
         .as_ref()
         .ok_or_else(|| bad("Start cell ui with --bin LINUX_CELL to apply configuration"))?;
-    let pins = op.config.tree.join(".pins");
-    let edge = op.edge.clone();
-    let target = after.clone();
-    let names = vec![name];
-    let plans = tokio::task::spawn_blocking(move || {
-        apply::plans(edge.as_ref(), &pins, &target, &names).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(fail)?
-    .map_err(fail)?;
+    let binding = crate::host_binding::Binding::load(&op.config.tree, &name).map_err(bad)?;
+    let (plans, host_plan) = if let Some(binding) = binding {
+        binding.host.runtime.validate_cell(&cell).map_err(bad)?;
+        let binary_path = op.config.binary.clone().unwrap();
+        let cell = cell.clone();
+        let plan = tokio::task::spawn_blocking(move || {
+            let binary = crate::ssh_host::linux_binary(&binary_path).map_err(|e| e.to_string())?;
+            binding.plan(cell, &binary).map_err(|e| e.to_string())
+        }).await.map_err(fail)?.map_err(bad)?;
+        let view = Plan { want: plan.cell.hash(), have: plan.before.cell.as_ref().map(Cell::hash).unwrap_or(Hash::ZERO), bin: plan.binary,
+            actions: plan.actions.iter().map(|_| crate::Action::Setup).collect() };
+        ([(name, view)].into(), Some(plan))
+    } else {
+        let pins = op.config.tree.join(".pins");
+        let edge = op.edge.clone();
+        let target = after.clone();
+        let names = vec![name];
+        let plans = tokio::task::spawn_blocking(move || {
+            apply::plans(edge.as_ref(), &pins, &target, &names).map_err(|e| e.to_string())
+        }).await.map_err(fail)?.map_err(fail)?;
+        (plans, None)
+    };
     let id = RequestId::generate();
     let result = Preview {
         id,
-        approval: Approved::hash(&plans),
+        approval: host_plan.as_ref().map(crate::ssh_host::Plan::hash).unwrap_or_else(|| Approved::hash(&plans)),
         plans: plans.clone(),
     };
     op.changes.lock().await.insert(
@@ -491,6 +529,7 @@ async fn preview(
             cell,
             path,
             plans,
+            host_plan,
         },
     );
     Ok(Json(result))
@@ -521,7 +560,10 @@ async fn apply_change(
             "The tree changed; review the change again".into(),
         ));
     }
-    let approved = Approved::new(change.plans, &body.approval).map_err(bad)?;
+    let approved = if let Some(plan) = &change.host_plan {
+        if plan.hash() != body.approval { return Err(bad("Host plan approval mismatch")); }
+        None
+    } else { Some(Approved::new(change.plans.clone(), &body.approval).map_err(bad)?) };
     // Never restart a cell that has an active conversation.
     let request = Request::builder()
         .uri("/api/pi/threads?includeArchived=true")
@@ -541,6 +583,18 @@ async fn apply_change(
             "The tree changed; review the change again".into(),
         ));
     }
+    if let Some(plan) = change.host_plan {
+        let binding = crate::host_binding::Binding::load(&op.config.tree, &change.cell.name).map_err(bad)?
+            .ok_or_else(|| bad("External host binding disappeared"))?;
+        let binary_path = op.config.binary.clone().ok_or_else(|| bad("Deployment binary missing"))?;
+        let state = op.config.state.join("hosts").join(change.cell.name.as_str());
+        let actions = tokio::task::spawn_blocking(move || {
+            let binary = crate::ssh_host::linux_binary(&binary_path).map_err(|e| e.to_string())?;
+            binding.apply(&plan, body.approval, &binary, &state).map_err(|e| e.to_string())
+        }).await.map_err(fail)?.map_err(fail)?;
+        crate::identity::atomic(&change.path, &change.cell.canonical()).map_err(fail)?;
+        return Ok(Json(AppliedChange { actions }));
+    }
     let path = change.path;
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, change.cell.canonical()).map_err(fail)?;
@@ -552,7 +606,7 @@ async fn apply_change(
             edge.as_ref(),
             &pins,
             &change.after,
-            &approved,
+            &approved.expect("exe.dev plan"),
             &mut Vec::new(),
         )
         .map_err(|e| e.to_string())
@@ -677,7 +731,8 @@ async fn context_loop(op: Arc<Operator>) {
                     publishing_at = std::time::Instant::now();
                 }
                 for cell in tree.iter() {
-                    let vm = match op.vm_for(&cell.name).await {
+                    let host = crate::host_binding::Binding::load(&op.config.tree, &cell.name).map_err(bad)?;
+                    let vm = match if let Some(host) = &host { Ok(format!("ssh:{}", Hash::of(&crate::canon::bytes(host)))) } else { op.vm_for(&cell.name).await } {
                         Ok(vm) => vm,
                         Err(e) => { eprintln!("cell {} context target unavailable: {}", cell.name, e.1); continue; }
                     };
@@ -700,6 +755,26 @@ async fn context_loop(op: Arc<Operator>) {
                             old == &value && at.elapsed().as_secs() < 60
                         })
                     {
+                        continue;
+                    }
+                    if let Some(host) = host {
+                        let payload = crate::canon::bytes(&context);
+                        let result = tokio::task::spawn_blocking(move || -> std::result::Result<(), String> {
+                            use std::io::Write;
+                            // The same trusted installer provisions publishing and writes
+                            // context on both host backends; its key check precedes writes.
+                            let install = include_str!("publish/install.py").replace('\'', "'\\''");
+                            let (mut command, _trust) = host.command(&format!("sudo -n /usr/bin/python3 -c '{install}'")).map_err(|e| e.to_string())?;
+                            let mut child = command.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|e| e.to_string())?;
+                            let mut input = child.stdin.take().unwrap();
+                            let written = input.write_all(&payload); drop(input);
+                            let status = child.wait().map_err(|e| e.to_string())?;
+                            written.map_err(|e| e.to_string())?;
+                            if !status.success() { return Err("external cell context publication failed".into()); }
+                            Ok(())
+                        }).await;
+                        if matches!(result, Ok(Ok(()))) { sent.insert(cell.name.clone(), (value, std::time::Instant::now())); }
+                        else { eprintln!("cell {} context publication failed: {result:?}", cell.name); }
                         continue;
                     }
                     let edge = op.edge.clone();

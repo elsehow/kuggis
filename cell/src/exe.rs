@@ -381,6 +381,7 @@ impl Ssh {
         let host = format!("{vm}.exe.xyz");
         retrying(&format!("ssh {host} {cmd}"), || {
             let mut child = Command::new("ssh")
+                .args(crate::ssh_policy::OPTIONS)
                 .args(VM_OPTS)
                 .arg(&host)
                 .arg(cmd)
@@ -397,6 +398,7 @@ impl Ssh {
         let to = format!("{vm}.exe.xyz:{remote}");
         retrying(&format!("scp {} {to}", local.display()), || {
             Command::new("scp")
+                .args(crate::ssh_policy::OPTIONS)
                 .args(VM_OPTS)
                 .arg(local)
                 .arg(&to)
@@ -415,6 +417,7 @@ impl Edge for Ssh {
 
     fn run(&self, args: &[&str]) -> Fallible<String> {
         let out = Command::new("ssh")
+            .args(crate::ssh_policy::OPTIONS)
             .args(["-o", "BatchMode=yes", "exe.dev"])
             .args(args)
             .output()?;
@@ -461,6 +464,7 @@ impl Edge for Ssh {
         let managed = context.publishing.is_some();
         let install = include_str!("publish/install.py").replace('\'', "'\\''");
         let mut child = Command::new("ssh")
+            .args(crate::ssh_policy::OPTIONS)
             .args(VM_OPTS)
             .args(["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2"])
             .arg(format!("{vm}.exe.xyz"))

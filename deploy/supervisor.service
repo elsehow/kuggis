@@ -9,6 +9,7 @@ User=kuggis-supervisor
 Group=kuggis-supervisor
 WorkingDirectory=/var/lib/kuggis-supervisor
 Environment=HOME=/var/lib/kuggis-supervisor
+UnsetEnvironment=SSH_AUTH_SOCK SSH_AGENT_PID
 ExecStart=/opt/kuggis/current/cell ui /var/lib/kuggis-supervisor/tree --state /var/lib/kuggis-supervisor/operator --assets /opt/kuggis/current/web --bin /opt/kuggis/current/cell --listen 127.0.0.1:8000 --exe-proxy /etc/kuggis-supervisor/access.json
 Restart=on-failure
 RestartSec=3

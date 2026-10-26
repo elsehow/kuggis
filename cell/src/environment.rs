@@ -77,7 +77,17 @@ pub fn install() -> Result {
 }
 
 pub fn firewall() -> String {
+    firewall_for(&crate::host_runtime::Runtime::default())
+}
+
+pub const SCOPED_GIT_CHECK: &str = "ok  host: scoped Git broker refuses unscoped routes; credentials stay private: ok";
+
+pub fn firewall_for(runtime: &crate::host_runtime::Runtime) -> String {
     let b = BoundarySpec::default();
+    let dns = runtime.dns().iter().map(|ip| {
+        let family = if ip.is_ipv4() { "ip" } else { "ip6" };
+        format!("  meta skuid \"cell-proxy\" {family} daddr {ip} udp dport 53 accept\n  meta skuid \"cell-proxy\" {family} daddr {ip} tcp dport 53 accept")
+    }).collect::<Vec<_>>().join("\n");
     format!(
         r#"table inet cell {{}}
 flush table inet cell
@@ -85,8 +95,10 @@ table inet cell {{
  chain input {{
   type filter hook input priority -200; policy accept;
   iifname "{iface}" ip daddr {host} tcp dport 3128 accept
+  iifname "{iface}" ip daddr {host} tcp dport 3129 accept
   iifname "{iface}" counter reject
   iifname != "lo" tcp dport 3128 counter reject
+  iifname != "lo" tcp dport 3129 counter reject
  }}
  chain forward {{
   type filter hook forward priority -200; policy accept;
@@ -97,13 +109,18 @@ table inet cell {{
   meta skuid "agent" counter reject
   meta skuid "cell-proxy" oifname "lo" accept
   meta skuid "cell-proxy" oifname "{iface}" tcp sport 3128 accept
-  meta skuid "cell-proxy" ip daddr 169.254.169.254 udp dport 53 accept
-  meta skuid "cell-proxy" ip daddr 169.254.169.254 tcp dport 53 accept
+{dns}
   meta skuid "cell-proxy" tcp dport {{ 443, 8443 }} accept
   meta skuid "cell-proxy" counter reject
+  meta skuid "cell-git" oifname "lo" accept
+  meta skuid "cell-git" oifname "{iface}" tcp sport 3129 accept
+{git_dns}
+  meta skuid "cell-git" tcp dport 443 accept
+  meta skuid "cell-git" counter reject
  }}
 }}
 "#,
+        git_dns = dns.replace("cell-proxy", "cell-git"),
         iface = b.interface,
         host = b.host_ip
     )
@@ -121,5 +138,16 @@ mod tests {
         assert!(wall.contains("ip daddr 10.203.0.1 tcp dport 3128 accept"));
         assert!(!wall.contains("meta skuid \"root\""));
         assert_ne!(BoundarySpec::default().uid_base, 0);
+    }
+
+    #[test]
+    fn portable_dns_does_not_open_guest_egress_or_keep_the_platform_gateway() {
+        let runtime: crate::host_runtime::Runtime = serde_json::from_str(r#"{"backend":"ssh","dns":["127.0.0.53","2001:4860:4860::8888"],"memory_max":8589934592}"#).unwrap();
+        let wall = firewall_for(&runtime);
+        assert!(!wall.contains("169.254.169.254"));
+        assert!(wall.contains("ip daddr 127.0.0.53 udp dport 53 accept"));
+        assert!(wall.contains("ip6 daddr 2001:4860:4860::8888 tcp dport 53 accept"));
+        assert!(wall.contains("iifname \"ve-cell-env\" counter reject"));
+        assert!(wall.contains("meta skuid \"cell-proxy\" counter reject"));
     }
 }

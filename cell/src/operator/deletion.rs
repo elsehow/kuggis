@@ -364,11 +364,19 @@ pub(super) async fn preview(
 ) -> Result<Json<DeletionView>> {
     preview_with(op, name, Options::default()).await
 }
+pub(super) fn ensure_provider_owned(op: &Operator, name: &Name) -> Result<()> {
+    if crate::host_binding::Binding::load(&op.config.tree, name).map_err(bad)?.is_some()
+        || op.identities()?.by_binding(name).is_some_and(|c| c.vm.is_none()) {
+        return Err(bad("Externally owned hosts cannot be deleted through the exe.dev lifecycle"));
+    }
+    Ok(())
+}
 async fn preview_with(
     op: Arc<Operator>,
     name: Name,
     options: Options,
 ) -> Result<Json<DeletionView>> {
+    ensure_provider_owned(&op, &name)?;
     let _lock = op.applying.try_lock().map_err(|_| {
         Error(
             StatusCode::CONFLICT,

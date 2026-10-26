@@ -22,6 +22,7 @@ IFACE = SPEC['interface']
 HOST = SPEC['host_ip']
 PROXY = 'http://' + HOST + ':3128'
 BASE = SPEC['uid_base']
+RUNTIME = json.loads((ETC / 'host.json').read_text()) if (ETC / 'host.json').exists() else {'backend': 'exe_dev'}
 
 
 def run(*args, timeout=180, check=True, **kw):
@@ -177,6 +178,7 @@ WantedBy=multi-user.target
         stage.rename(ROOT)
         write(READY, '1\n')
     shutil.copy2('/usr/local/bin/cell', LIB / 'cell')
+    write(LIB / 'host.json', json.dumps(RUNTIME))
     outbox = Path('/var/lib/cell/outbox')
     # The shipper owns the directory; guest agent's mapped group can enqueue.
     os.chown(outbox, __import__('pwd').getpwnam('cell-say').pw_uid, BASE + 1000)
@@ -185,7 +187,7 @@ WantedBy=multi-user.target
     write('/etc/systemd/system/cell-agent.service', f'''[Unit]
 Description=Cell persistent autonomous environment
 Requires=cell-wall.service
-After=cell-wall.service cell-proxy.service cell-say.service
+After=cell-wall.service cell-proxy.service cell-git.service cell-say.service
 [Service]
 Type=notify
 Delegate=yes
@@ -196,7 +198,7 @@ ExecStartPre=/usr/bin/python3 {LIB}/environment.py guard
 ExecStartPre=/usr/bin/python3 {LIB}/environment.py socket
 ExecStart=/usr/bin/systemd-nspawn --quiet --keep-unit --boot --settings=no --machine={MACHINE} --directory={ROOT} --private-users={BASE}:{SPEC['uid_count']} --private-users-ownership=chown --network-veth --link-journal=no --resolv-conf=off --bind-ro={LIB}:/run/cell-runtime --bind-ro=/etc/cell/cell.json:/etc/cell/cell.json --bind-ro=/var/lib/cell/inbox --bind-ro=/var/lib/cell/said --bind=/var/lib/cell/outbox --bind=/run/cell-chat --bind-ro=/run/cell-publish
 ExecStartPost=/usr/bin/python3 {LIB}/environment.py network
-MemoryMax=4G
+MemoryMax={RUNTIME.get('memory_max', 4 * 1024**3)}
 TasksMax=2048
 Restart=on-failure
 RestartSec=3
@@ -231,6 +233,10 @@ def check():
             assert os.readlink(f'/proc/{pid}/ns/{ns}') != os.readlink(f'/proc/1/ns/{ns}'), ns
     case('host: private UID, mount, PID and network namespaces', namespaces)
     case('host: complete firewall matches approved rules', guard)
+    def memory_limit():
+        actual = int(run('systemctl', 'show', 'cell-agent', '-p', 'MemoryMax', '--value').stdout.strip())
+        assert actual == RUNTIME.get('memory_max', 4 * 1024**3), 'guest memory ceiling differs from host configuration'
+    case('host: guest memory ceiling matches runtime', memory_limit)
     def network_probes():
         pid = run('machinectl', 'show', MACHINE, '-p', 'Leader', '--value').stdout.strip()
         # Trusted Python and source run with only the net namespace switched.
@@ -242,16 +248,50 @@ def proxy(target):
  s=socket.create_connection(("10.203.0.1",3128),3); s.settimeout(15)
  s.sendall(("CONNECT "+target+" HTTP/1.1\\r\\nHost: "+target+"\\r\\n\\r\\n").encode())
  data=s.recv(1024); s.close(); return data.split(b"\\r\\n")[0]
-assert b" 403 " in proxy("example.com:443")
+assert b" 403 " in proxy(DENIED_HOST + ":443")
 assert b" 400 " in proxy("1.1.1.1:443")
-assert b" 200 " in proxy("door-nobody.int.exe.xyz:443")
+assert DOOR_STATUS in proxy("door-nobody.int.exe.xyz:443")
+if ALLOWED_HOST is not None:
+ assert b" 200 " in proxy(ALLOWED_HOST + ":443"), "allowed public host is unreachable through the proxy"
 for host,port in [("1.1.1.1",443),("169.254.169.254",80),("10.203.0.1",8000),("10.203.0.1",22),("2606:4700:4700::1111",443)]:
  try: connect(host,port)
  except OSError: continue
  raise AssertionError((host,port,"direct route escaped"))
 '''
+        allowed = sorted(run('/usr/local/bin/cell', 'allow', '/etc/cell/cell.json').stdout.splitlines())
+        denied = next('denied-' + str(i) + '.invalid' for i in range(len(allowed) + 1)
+                      if 'denied-' + str(i) + '.invalid' not in allowed)
+        public = allowed[0] if RUNTIME['backend'] == 'ssh' and allowed else None
+        status = b' 200 ' if RUNTIME['backend'] == 'exe_dev' else b' 403 '
+        code = f'DENIED_HOST = {denied!r}\nALLOWED_HOST = {public!r}\nDOOR_STATUS = {status!r}\n' + code
         run('nsenter', '-t', pid, '-n', '/usr/bin/python3', '-c', code, timeout=90)
     case('host: guest network reaches proxy and cannot bypass it', network_probes)
+    def git_boundary():
+        pid = run('machinectl', 'show', MACHINE, '-p', 'Leader', '--value').stdout.strip()
+        cell = json.loads((ETC / 'cell.json').read_text())
+        repositories = {}
+        for grant in cell['grants']:
+            if 'code' in grant:
+                g = grant['code']; repo = g.get('via') or g['repo']
+                repositories[repo] = repositories.get(repo, False) or g['write']
+        code = '''import http.client
+c = http.client.HTTPConnection('10.203.0.1', 3129, timeout=10)
+c.request('GET', '/not-a-git-route')
+assert c.getresponse().status == 403, 'Git broker accepts an unscoped route'
+c.close()
+for repo, write in REPOSITORIES.items():
+ for operation in (['upload', 'receive'] if write else ['upload']):
+  c = http.client.HTTPConnection('10.203.0.1', 3129, timeout=40)
+  c.request('GET', '/' + repo + '.git/info/refs?service=git-' + operation + '-pack')
+  r = c.getresponse()
+  assert r.status == 200, 'declared repository operation unavailable'
+  assert r.getheader('Content-Type') == 'application/x-git-' + operation + '-pack-advertisement'
+  r.read(32); c.close()
+'''
+        run('nsenter', '-t', pid, '-n', '/usr/bin/python3', '-c', f'REPOSITORIES = {repositories!r}\n' + code)
+        info = (ETC / 'git-credentials.json').stat()
+        assert info.st_uid == 0 and info.st_mode & 0o777 == 0o600, 'Git credential permissions'
+    case('host: scoped Git broker refuses unscoped routes; credentials stay private', git_boundary)
     def chat():
         run('curl', '-fsS', '--max-time', '10', '--unix-socket', '/run/cell-chat/api.sock',
             '-H', 'Host: cell.internal', 'http://cell.internal/api/pi/threads?includeArchived=true')

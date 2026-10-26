@@ -14,6 +14,8 @@ pub mod door;
 pub mod exe;
 pub mod environment;
 pub mod grant;
+pub mod host_runtime;
+pub mod host_binding;
 pub mod identity;
 mod legacy;
 pub mod log;
@@ -31,6 +33,8 @@ pub mod resource_rpc;
 pub mod said;
 pub mod session;
 pub mod ship;
+pub mod ssh_host;
+pub mod ssh_policy;
 pub mod tree;
 pub mod wall;
 

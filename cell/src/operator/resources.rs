@@ -128,7 +128,7 @@ impl Backend {
                 if bytes.len() > resource_rpc::MAX_RPC_BYTES {
                     return Err(bad("Resource command exceeds limit"));
                 }
-                let mut child=std::process::Command::new("ssh").args(["-T","-o","BatchMode=yes","-o","ConnectTimeout=10","-o","ServerAliveInterval=5","-o","ServerAliveCountMax=2"])
+                let mut child=std::process::Command::new("ssh").args(crate::ssh_policy::OPTIONS).args(["-T","-o","BatchMode=yes","-o","ConnectTimeout=10","-o","ServerAliveInterval=5","-o","ServerAliveCountMax=2"])
      .arg(format!("{vm}.exe.xyz")).arg("sudo -n -u cell-publisher /usr/local/bin/cell publisher resource-rpc /var/lib/cell-publisher")
      .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(fail)?;
                 let mut input = child.stdin.take().unwrap();

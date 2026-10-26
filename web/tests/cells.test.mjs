@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createPiHttpClient, PiThreadController } from "@assistant-ui/react-pi";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const binary = join(root, "cell/target/debug/cell");
@@ -46,7 +47,7 @@ async function chooseLogin(path, flow, method) {
 }
 
 test("a pre-dispatch permission failure remains known after restart", { timeout: 20000 }, async (t) => {
-  const dir = await mkdtemp("/tmp/kuggis-denied-");
+  const dir = await mkdtemp(join(tmpdir(), "kuggis-denied-"));
   for (const name of ["inbox", "outbox", "sockets", "tree"]) await mkdir(join(dir, name));
   const file = join(dir, "tree/denied.json");
   await writeFile(file, JSON.stringify({ name: "denied", grants: [] }));
@@ -79,7 +80,7 @@ test("a pre-dispatch permission failure remains known after restart", { timeout:
 test("cell tree, isolated sessions, credentials, connections and gateway restart", { timeout: 45000 }, async (t) => {
   const previousMask = process.umask(0o077); // Match cell-agent.service.
   t.after(() => process.umask(previousMask));
-  const dir = await mkdtemp("/tmp/kuggis-cells-");
+  const dir = await mkdtemp(join(tmpdir(), "kuggis-cells-"));
   const tree = join(dir, "tree"), sockets = join(dir, "sockets");
   await mkdir(join(tree, "project"), { recursive: true }); await mkdir(sockets);
   const grants = [{ provider: "anthropic" }, { host: "tools.example.com" }];
@@ -198,7 +199,7 @@ test("cell tree, isolated sessions, credentials, connections and gateway restart
 });
 
 test("Pi offers browser and code login, plus API-key-only providers", { timeout: 25000 }, async t => {
-  const dir = await mkdtemp("/tmp/kuggis-openai-");
+  const dir = await mkdtemp(join(tmpdir(), "kuggis-openai-"));
   for (const name of ["inbox", "outbox", "sockets", "tree"]) await mkdir(join(dir, name));
   const file = join(dir, "tree/project.json");
   await writeFile(file, JSON.stringify({ name: "project", grants: [{ provider: "openai" }, { provider: "paperinstruments" }] }));
