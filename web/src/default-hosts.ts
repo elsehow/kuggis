@@ -14,7 +14,7 @@ export const browserTestingHosts = [
 ] as const;
 
 export function defaultHosts(parentGrants?: readonly Grant[]): string[] {
-  if (!parentGrants) return [...browserTestingHosts];
+  if (!parentGrants || parentGrants.some(g => "network" in g && g.network === "public")) return [...browserTestingHosts];
   const allowed = new Set(parentGrants.flatMap(g => "host" in g ? [g.host] : []));
   return browserTestingHosts.filter(host => allowed.has(host));
 }
