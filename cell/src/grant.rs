@@ -45,6 +45,15 @@ impl Provider {
     }
 }
 
+/// Broad network access, still subject to the proxy's port and address rules.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ts_rs::TS,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Network {
+    Public,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase", deny_unknown_fields)]
 pub enum Grant {
@@ -69,6 +78,8 @@ pub enum Grant {
     Host(Host),
     /// Publishing authority only; does not grant network or exe.dev access.
     Publish(PublishScope),
+    /// Public HTTPS destinations, without credentials or edge attachments.
+    Network(Network),
 }
 
 impl fmt::Display for Provider {
@@ -84,8 +95,8 @@ impl fmt::Display for Grant {
 }
 
 /// Where Claude Code talks: the API, and the two hosts its sign-in needs.
-/// Everything else it would reach, the updater, claude.ai connectors,
-/// telemetry, stays behind the wall.
+/// The provider grant alone does not allow the updater, claude.ai
+/// connectors, or telemetry; public network access may allow those hosts.
 pub const CLAUDE_HOSTS: [&str; 3] = ["api.anthropic.com", "claude.ai", "platform.claude.com"];
 /// Pi’s API-key and subscription endpoints, including device-code sign-in.
 pub const OPENAI_HOSTS: [&str; 3] = ["api.openai.com", "auth.openai.com", "chatgpt.com"];
@@ -107,6 +118,7 @@ impl Grant {
             Grant::Edge(name) => vec![fixed(&format!("{name}{EDGE_SUFFIX}"))],
             Grant::Host(h) => vec![h.clone()],
             Grant::Publish(_) => vec![],
+            Grant::Network(_) => vec![],
         }
     }
 
@@ -134,10 +146,13 @@ impl Grant {
 
     /// Does `self` reach at least as far as `other`? Equal grants do; a
     /// writable repo covers the same repo read-only; a publishing namespace
-    /// covers its sites. Nothing else covers
-    /// anything.
+    /// covers its sites. Public network access covers ordinary host grants,
+    /// but never provider, publishing, or edge authority.
     pub fn covers(&self, other: &Grant) -> bool {
         match (self, other) {
+            (Grant::Network(Network::Public), Grant::Host(host)) => {
+                !host.as_str().ends_with(EDGE_SUFFIX)
+            }
             (
                 Grant::Code {
                     repo: a,
@@ -159,6 +174,34 @@ impl Grant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_network_is_explicit_and_only_covers_ordinary_hosts() {
+        let public: Grant = serde_json::from_str(r#"{"network":"public"}"#).unwrap();
+        assert_eq!(public, Grant::Network(Network::Public));
+        assert_eq!(public.to_string(), r#"{"network":"public"}"#);
+        assert!(public.hosts().is_empty());
+        assert!(!public.at_edge());
+        assert!(public.covers(&public));
+        let host = Grant::Host("en.wikipedia.org".parse().unwrap());
+        assert!(public.covers(&host));
+        assert!(!host.covers(&public));
+        for separate in [
+            Grant::Provider(Provider::Anthropic),
+            Grant::Edge("brave".parse().unwrap()),
+            Grant::Host(GITHUB_EDGE.parse().unwrap()),
+            code("o/r", false),
+        ] {
+            assert!(!public.covers(&separate), "{separate}");
+        }
+        for invalid in [
+            r#"{"network":"private"}"#,
+            r#"{"network":"*"}"#,
+            r#"{"host":"*"}"#,
+        ] {
+            assert!(serde_json::from_str::<Grant>(invalid).is_err());
+        }
+    }
 
     #[test]
     fn paper_instruments_is_a_scoped_pi_provider() {

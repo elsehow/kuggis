@@ -9,7 +9,7 @@ import type { Grant, CellInfo, ChangePreview } from "./api-types";
 import { sameGrants as same, publishLabel, preservedGrants } from "./grants";
 type ConnectionDraft = ConnectionConfig & Pick<ConnectionUpdate, "credential">;
 type Preview = ChangePreview & { grants: Grant[] };
-const grantLabel = (grant: Grant) => "provider" in grant ? providerLabel(grant.provider) : "code" in grant ? `${grant.code.write ? "Write" : "Read"} ${grant.code.repo}${grant.code.via ? ` via ${grant.code.via}` : ""}` : "host" in grant ? `Connect to ${grant.host}` : "publish" in grant ? publishLabel(grant.publish) : `Connect to ${grant.edge}`;
+const grantLabel = (grant: Grant) => "provider" in grant ? providerLabel(grant.provider) : "code" in grant ? `${grant.code.write ? "Write" : "Read"} ${grant.code.repo}${grant.code.via ? ` via ${grant.code.via}` : ""}` : "host" in grant ? `Connect to ${grant.host}` : "publish" in grant ? publishLabel(grant.publish) : "network" in grant ? "Public internet (HTTPS)" : `Connect to ${grant.edge}`;
 
 export function Settings({ cell, base, canApply, onClose, onApplied, onDelete }: { cell: CellInfo; base: string; canApply: boolean; onClose: () => void; onApplied: () => Promise<void>; onDelete?: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -20,6 +20,7 @@ export function Settings({ cell, base, canApply, onClose, onApplied, onDelete }:
   const [publisher, setPublisher] = useState<string | null>(null);
   useEffect(() => { void api<string | null>("/api/publishing").then(setPublisher).catch(() => {}); }, []);
   const [hosts, setHosts] = useState(cell.grants.flatMap((g) => "host" in g ? [g.host] : []).join("\n"));
+  const [publicNetwork, setPublicNetwork] = useState(cell.grants.some((g) => "network" in g && g.network === "public"));
   const [connections, setConnections] = useState<ConnectionDraft[]>([]);
   const [preview, setPreview] = useState<Preview>();
   const [busy, setBusy] = useState(false);
@@ -45,6 +46,7 @@ export function Settings({ cell, base, canApply, onClose, onApplied, onDelete }:
       ...providers.map((provider) => ({ provider })),
       ...repos.filter((r) => r.repo.trim()).map((r) => ({ code: { repo: r.repo.trim(), write: r.write, ...(r.via?.trim() ? { via: r.via.trim() } : {}) } })),
       ...[...grantedHosts].map((host) => ({ host })),
+      ...(publicNetwork ? [{ network: "public" as const }] : []),
       ...preservedGrants(cell.grants).filter(g => !("publish" in g && g.publish === "private")),
     ];
     if (same(grants, cell.grants)) { await storeConnections(); await refresh(); setSaved(true); }
@@ -77,7 +79,11 @@ export function Settings({ cell, base, canApply, onClose, onApplied, onDelete }:
         <input className="fork" aria-label={`Repository ${i + 1} fork`} placeholder="Fork (optional): owner/repository" value={repo.via ?? ""} onChange={(e) => setRepos(repos.map((r, n) => n === i ? { ...r, via: e.target.value } : r))} />
       </div>)}<button className="text-button" onClick={() => setRepos([...repos, { repo: "", write: false }])}>＋ Repository</button></section>
       <section><h3>Connections</h3>{connections.map((connection, i) => <div className="connection" key={connection.name}><label>{connection.name === "bigbrain" ? "BigBrain" : "Portal"}<input type="url" aria-label={`${connection.name} URL`} placeholder="https://…/mcp" value={connection.url} onChange={(e) => setConnections(connections.map((c, n) => n === i ? { ...c, url: e.target.value } : c))} /></label><input type="password" autoComplete="off" aria-label={`${connection.name} token`} placeholder={connection.credential.operation === "clear" ? "Token will be removed" : connection.auth.method === "bearer" ? "Token saved — enter to replace" : "Bearer token (optional)"} value={connection.credential.operation === "replace" ? connection.credential.value : ""} onChange={(e) => setConnections(connections.map((c, n) => n === i ? { ...c, credential: e.target.value ? { operation: "replace", value: e.target.value } : { operation: "clear" } } : c))} />{connection.auth.method === "bearer" && connection.credential.operation !== "clear" && <button className="text-button" onClick={() => setConnections(connections.map((c, n) => n === i ? { ...c, credential: { operation: "clear" } } : c))}>Remove token</button>}</div>)}
-        <details><summary>Allowed hosts</summary><textarea aria-label="Allowed hosts" rows={3} value={hosts} onChange={(e) => setHosts(e.target.value)} /></details>
+      </section>
+      <section className="network-access"><h3>Internet access</h3>
+        <label><input type="checkbox" checked={publicNetwork} disabled={busy} onChange={(e) => setPublicNetwork(e.target.checked)} /> Allow public internet</label>
+        <p>Access public sites over HTTPS for research and downloads. Private network addresses remain blocked. A parent cell must also have this permission.</p>
+        <details><summary>Allowed hosts</summary><p>Exact hostnames, one per line. To allow any public site, enable public internet access above.</p><textarea aria-label="Allowed hosts" rows={3} value={hosts} onChange={(e) => setHosts(e.target.value)} /></details>
       </section>
       <footer className="settings-actions">{onDelete && <button className="delete-link" disabled={busy} onClick={onDelete}>Delete cell…</button>}{saved && <span role="status">Saved</span>}<button className="primary" disabled={busy || !detail} onClick={() => void save()}>{busy ? "Saving…" : "Save"}</button></footer>
     </>}

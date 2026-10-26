@@ -70,6 +70,19 @@ A cell file:
 ]}
 ```
 
+For research or downloads from arbitrary public sites, add
+`{"network":"public"}` to the grants, or enable **Allow public internet**
+under **Internet access** in cell settings (also available when creating a
+cell). Save and apply the reviewed change to restart the cell with its new
+policy. A child can receive this grant only if its parent has it; a parent
+with public access can also grant a child individual ordinary hostnames.
+Public access does not confer provider, repository, or integration grants.
+It is off by default, and turning it off retains explicit host grants.
+
+Allowed hosts accepts exact DNS names, not `*` or subdomain wildcards.
+`cell allow` displays `* (public network; ports 443 and 8443)` when the
+public grant is present, followed by explicit hosts.
+
 `Provider` describes authority, independently of the executable. Pi is a
 runtime, not a grant. Provider grants allow their API and sign-in hosts.
 OpenAI uses `api.openai.com`, `auth.openai.com`, and `chatgpt.com`; no exe.dev
@@ -303,12 +316,18 @@ Local sessions keep the `local` owner; no local chat is reassigned to a VM cell.
 ## The proxy
 
 Standard library only. It tunnels CONNECT to allowed hosts on 443 or 8443
+(`{"network":"public"}` allows arbitrary public destinations on these ports)
 and refuses everything else: other methods, malformed targets, address
 literals, ports off the list, hosts off the list, oversized or slow
 request heads. After resolving an allowed name it checks where the name
 points: an exe.dev edge host must resolve to the platform gateway and
 nowhere else, and every other host must resolve somewhere public. TLS runs
 end to end, so the proxy sees hostnames and never content.
+The public grant still blocks private, loopback, link-local and metadata
+addresses, including mixed public/private DNS answers. Integration names
+under `.int.exe.xyz` still require their own grants, with the existing door
+exception. Clients must use the configured HTTPS proxy; direct connections,
+plain HTTP on port 80, and IP-literal targets remain blocked.
 
 ## Tests
 

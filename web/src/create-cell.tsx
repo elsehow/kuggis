@@ -10,7 +10,7 @@ import { browserTestingHosts, defaultHosts } from "./default-hosts";
 
 const steps: Record<Step, string> = { preparing: "Preparing…", creating_vm: "Creating cell…", configuring_access: "Configuring access…", installing_runtime: "Setting up workspace…", connecting_parent: "Connecting parent…", opening_chat: "Opening chat…" };
 export const creationLabel = (creation: Creation) => creation.phase.state === "provisioning" ? steps[creation.phase.step] : creation.phase.state === "failed" ? "Setup failed" : "";
-const describe = (g: Grant) => "provider" in g ? providerLabel(g.provider) : "code" in g ? `${g.code.write ? "Write" : "Read"} ${g.code.repo}${g.code.via ? ` via ${g.code.via}` : ""}` : "host" in g ? g.host : "publish" in g ? publishLabel(g.publish) : g.edge;
+const describe = (g: Grant) => "provider" in g ? providerLabel(g.provider) : "code" in g ? `${g.code.write ? "Write" : "Read"} ${g.code.repo}${g.code.via ? ` via ${g.code.via}` : ""}` : "host" in g ? g.host : "publish" in g ? publishLabel(g.publish) : "network" in g ? "Public internet (HTTPS)" : g.edge;
 
 export function CreateCell({ cells, parent: initialParent, id, onId, onClose, onStarted, onReady, onDelete }: {
   cells: CellInfo[]; parent: string | null; id: string | null;
@@ -30,12 +30,14 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
   const [publisher, setPublisher] = useState<string | null>(null);
   useEffect(() => { void api<string | null>("/api/publishing").then(setPublisher).catch(() => {}); }, []);
   const [hosts, setHosts] = useState("");
+  const [publicNetwork, setPublicNetwork] = useState(false);
   const [job, setJob] = useState<Creation>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(!!id);
   const delivered = useRef(false);
   const parentCell = cells.find((c) => cellId(c) === parent || cellBinding(c) === parent);
+  const canUsePublicNetwork = !parentCell || parentCell.grants.some((g) => "network" in g && g.network === "public");
   const available = cells.filter((c) => c.lifecycle.state === "available");
   const parentName = parentCell?.name ?? parent;
   const fullName = parent && !name.startsWith(parentName + "-") ? `${parentName}-${name}` : name;
@@ -43,6 +45,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
   const selectParent = (value: string) => {
     setParent(value);
     const grants = cells.find((c) => cellId(c) === value || cellBinding(c) === value)?.grants;
+    setPublicNetwork(false);
     setProviders(grants ? grants.flatMap((g) => "provider" in g ? [g.provider] : []) : ["anthropic"]);
     setPrivateSites(!!grants?.some(g => "publish" in g && g.publish === "private"));
     setHosts(defaultHosts(grants).join("\n"));
@@ -57,6 +60,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
     setProviders(job.cell.grants.flatMap((g) => "provider" in g ? [g.provider] : []));
     setPrivateSites(job.cell.grants.some(g => "publish" in g && g.publish === "private"));
     setHosts(job.cell.grants.flatMap((g) => "host" in g ? [g.host] : []).join("\n"));
+    setPublicNetwork(job.cell.grants.some((g) => "network" in g && g.network === "public"));
     const code = job.cell.grants.find((g) => "code" in g);
     setRepo(code && "code" in code ? code.code.repo : "");
     setWrite(code && "code" in code ? code.code.write : false);
@@ -89,6 +93,7 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
       ...(privateSites ? [{ publish: "private" as const }, ...(publisher ? [{ host: new URL(publisher).hostname }] : [])] : []),
       ...providers.map((provider) => ({ provider })),
       ...[...new Set(hosts.split(/\s+/).filter(Boolean))].map(host => ({ host })),
+      ...(publicNetwork && canUsePublicNetwork ? [{ network: "public" as const }] : []),
       ...(repo.trim() ? [{ code: { repo: repo.trim(), write, ...(fork.trim() ? { via: fork.trim() } : {}) } }] : []),
     ];
     const next = await api<Creation>("/api/cells/plan", { method: "POST", body: JSON.stringify({ name: fullName, parent: parent || null, grants }) });
@@ -124,6 +129,10 @@ export function CreateCell({ cells, parent: initialParent, id, onId, onClose, on
       <label><input type="checkbox" checked={privateSites} disabled={!!parentCell && !parentCell.grants.some(g => "publish" in g && g.publish === "private")} onChange={e => setPrivateSites(e.target.checked)} /> Private websites</label>
       {privateSites && !publisher && <p role="status">Connect a publisher to enable website hosting.</p>}
       <ProviderChoices selected={providers} onChange={setProviders} disabled={id => !!parentCell && !parentCell.grants.some(g => "provider" in g && g.provider === id)} />
+      <section className="network-access"><h3>Internet access</h3>
+        <label><input type="checkbox" checked={publicNetwork && canUsePublicNetwork} disabled={!canUsePublicNetwork} onChange={(e) => setPublicNetwork(e.target.checked)} /> Allow public internet</label>
+        <p>{canUsePublicNetwork ? "Access public sites over HTTPS for research and downloads. Private network addresses remain blocked." : "Enable public internet access on the parent cell first."}</p>
+      </section>
       <section><h3>Allowed hosts</h3>
         <p>Defaults allow npm packages, Playwright browsers, and Ubuntu browser dependencies. Remove hosts you do not need.</p>
         {parentCell && defaultHosts(parentCell.grants).length < browserTestingHosts.length && <p role="status">Some browser testing hosts are unavailable because the parent does not grant them. Add them to the parent first to enable full browser installation.</p>}

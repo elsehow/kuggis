@@ -346,4 +346,30 @@ mod tests {
         let t = Tree::new([node("", r#"{"name":"a"}"#)]).unwrap();
         assert!(t.get(&"a".parse().unwrap()).unwrap().allowlist().is_empty());
     }
+
+    #[test]
+    fn public_network_can_be_delegated_or_narrowed_but_not_invented() {
+        let public = r#"{"name":"p","grants":[{"network":"public"}]}"#;
+        for child in [
+            r#"{"name":"c","grants":[{"network":"public"}]}"#,
+            r#"{"name":"c","grants":[{"host":"en.wikipedia.org"}]}"#,
+            r#"{"name":"c"}"#,
+        ] {
+            Tree::new([node("", public), node("p", child)]).unwrap();
+        }
+        assert!(matches!(
+            err(&[
+                ("", r#"{"name":"p","grants":[{"host":"en.wikipedia.org"}]}"#),
+                ("p", r#"{"name":"c","grants":[{"network":"public"}]}"#),
+            ]),
+            TreeError::Wider { .. }
+        ));
+        assert!(matches!(
+            err(&[
+                ("", public),
+                ("p", r#"{"name":"c","grants":[{"edge":"brave"}]}"#),
+            ]),
+            TreeError::Wider { .. }
+        ));
+    }
 }

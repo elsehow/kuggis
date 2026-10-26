@@ -119,6 +119,19 @@ fn keys_statements_and_replies_across_processes() {
 }
 
 #[test]
+fn allow_reports_public_network_and_explicit_hosts() {
+    let d = tmp("public-network");
+    let file = write(
+        &d,
+        "research.json",
+        r#"{"name":"research","grants":[{"network":"public"},{"host":"pypi.org"}]}"#,
+    );
+    let result = run(&["allow", &file], "");
+    assert!(result.status.success(), "{}", err(&result));
+    assert_eq!(out(&result), "* (public network; ports 443 and 8443)\npypi.org");
+}
+
+#[test]
 fn tree_allow_plan_and_observe() {
     let d = tmp("tree");
     let cells = d.join("cells");

@@ -8,7 +8,7 @@
 
 use crate::cell::Cell;
 use crate::exe::door_of_host;
-use crate::grant::Grant;
+use crate::grant::{Grant, EDGE_SUFFIX};
 use crate::prim::Host;
 use std::collections::BTreeSet;
 use std::fmt;
@@ -31,6 +31,7 @@ pub const GATEWAY: Ipv4Addr = Ipv4Addr::new(169, 254, 169, 254);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Policy {
     pub hosts: BTreeSet<Host>,
+    pub public_network: bool,
     /// The subset of `hosts` that are exe.dev's edge, expected at [`GATEWAY`].
     pub edge: BTreeSet<Host>,
     pub ports: BTreeSet<u16>,
@@ -49,15 +50,18 @@ impl Policy {
             .collect();
         Policy {
             hosts: cell.allowlist(),
+            public_network: cell.public_network(),
             edge,
             ports: [443, 8443].into(),
             private_ok: false,
         }
     }
 
-    /// A host on the allowlist, or a door.
+    /// An explicit host, a public-network destination, or a door.
     pub fn allows(&self, host: &Host) -> bool {
-        self.hosts.contains(host) || door_of_host(host).is_some()
+        self.hosts.contains(host)
+            || door_of_host(host).is_some()
+            || (self.public_network && !host.as_str().ends_with(EDGE_SUFFIX))
     }
 
     /// A host expected at the gateway.
@@ -372,6 +376,43 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
 mod tests {
     use super::*;
     use std::net::Ipv6Addr;
+
+    #[test]
+    fn public_network_keeps_address_and_edge_boundaries() {
+        let cell: Cell = serde_json::from_str(
+            r#"{"name":"research","grants":[{"network":"public"},{"edge":"brave"}]}"#,
+        )
+        .unwrap();
+        let policy = Policy::for_cell(&cell);
+        let host: Host = "en.wikipedia.org".parse().unwrap();
+        let public: SocketAddr = "8.8.8.8:443".parse().unwrap();
+        let gateway: SocketAddr = (GATEWAY, 443).into();
+        assert!(policy.allows(&host));
+        assert!(policy.placed_well(&host, &[public]));
+        assert!(!policy.private_ok);
+        assert!(!policy.allows(&"github.int.exe.xyz".parse().unwrap()));
+        assert!(!policy.allows(&"other.int.exe.xyz".parse().unwrap()));
+        for address in [
+            "127.0.0.1:443",
+            "10.0.0.1:443",
+            "192.168.1.1:443",
+            "169.254.169.254:443",
+            "[::1]:443",
+            "[fd00::1]:443",
+            "[fe80::1]:443",
+            "[::ffff:127.0.0.1]:443",
+        ] {
+            let private: SocketAddr = address.parse().unwrap();
+            assert!(!policy.placed_well(&host, &[private]), "{address}");
+            assert!(!policy.placed_well(&host, &[public, private]), "{address}");
+        }
+        for name in ["brave.int.exe.xyz", "door-child.int.exe.xyz"] {
+            let edge = name.parse().unwrap();
+            assert!(policy.allows(&edge));
+            assert!(policy.placed_well(&edge, &[gateway]));
+            assert!(!policy.placed_well(&edge, &[public]));
+        }
+    }
 
     #[test]
     fn public_addresses() {

@@ -13,6 +13,7 @@ export function grantKey(grant: Grant): string {
       ? JSON.stringify(["publish", "namespace", scope.namespace])
       : JSON.stringify(["publish", "site", scope.site.namespace, scope.site.name]);
   }
+  if ("network" in grant) return JSON.stringify(["network", grant.network]);
   return JSON.stringify(["edge", grant.edge]);
 }
 
@@ -28,8 +29,8 @@ export function publishLabel(scope: Extract<Grant, { publish: unknown }>["publis
     : `Publish site ${scope.site.namespace}/${scope.site.name}`;
 }
 
-// Settings currently edit providers, repositories and hosts. Preserve all other
+// Settings currently edit providers, repositories, hosts and network access. Preserve all other
 // authority when saving those controls, including operator-managed publishing.
 export function preservedGrants(grants: Grant[]): Grant[] {
-  return grants.filter((g) => !("provider" in g || "code" in g || "host" in g));
+  return grants.filter((g) => !("provider" in g || "code" in g || "host" in g || "network" in g));
 }

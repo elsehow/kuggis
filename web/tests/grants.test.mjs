@@ -7,6 +7,15 @@ const source = await readFile(new URL("../src/grants.ts", import.meta.url), "utf
 const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } });
 const { sameGrants, preservedGrants } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 
+test("public internet grants survive review and enabling or revoking them is a change", () => {
+  const hosts = [{ host: "en.wikipedia.org" }];
+  const publicNetwork = { network: "public" };
+  assert.equal(sameGrants([...hosts, publicNetwork], [publicNetwork, ...hosts]), true);
+  assert.equal(sameGrants(hosts, [...hosts, publicNetwork]), false);
+  assert.equal(sameGrants([...hosts, publicNetwork], hosts), false);
+  assert.equal(sameGrants([publicNetwork], [{ edge: "brave" }]), false);
+});
+
 test("grant review compares permissions rather than JSON property order", () => {
   const saved = { code: { repo: "example/kuggis", via: "example-workers/kuggis", write: true } };
   const draft = { code: { repo: "Example/Kuggis", write: true, via: "example-workers/kuggis" } };
@@ -30,7 +39,7 @@ test("ordinary settings changes preserve operator-managed publishing grants", ()
   const publishing = { publish: { namespace: "owner" } };
   const edge = { edge: "search" };
   assert.deepEqual(preservedGrants([
-    { provider: "anthropic" }, { host: "example.com" },
+    { provider: "anthropic" }, { host: "example.com" }, { network: "public" },
     { code: { repo: "example/tool", write: true } }, publishing, edge,
   ]), [publishing, edge]);
 });
