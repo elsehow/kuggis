@@ -76,6 +76,7 @@ impl Config {
     pub(crate) fn command(&self, remote: &str) -> Fallible<Command> {
         self.validate()?;
         let mut command = Command::new("ssh");
+        command.args(crate::ssh_policy::OPTIONS);
         command.args([
             "-F",
             "/dev/null",
@@ -90,10 +91,6 @@ impl Config {
             "UpdateHostKeys=no",
             "-o",
             "IdentitiesOnly=yes",
-            "-o",
-            "ForwardAgent=no",
-            "-o",
-            "ClearAllForwardings=yes",
             "-o",
             "ConnectTimeout=10",
             "-o",

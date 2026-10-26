@@ -819,6 +819,7 @@ fn login(args: &[String]) -> Fallible {
     eprintln!("opening Pi as the agent on {vm}; use /login there");
     let pi = cell::wall::PI_BIN;
     let status = std::process::Command::new("ssh")
+        .args(cell::ssh_policy::OPTIONS)
         .args([
             "-t",
             &format!("{vm}.exe.xyz"),

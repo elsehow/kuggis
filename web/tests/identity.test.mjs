@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createPiHttpClient } from "@assistant-ui/react-pi";
 import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -19,7 +20,7 @@ const post = (url, body = {}) => fetch(url, { method: "POST", headers: { "Conten
 async function json(response) { assert.equal(response.status, 200, await response.clone().text()); return response.json(); }
 
 async function fixture(t) {
-  const dir = await mkdtemp("/tmp/kuggis-identity-");
+  const dir = await mkdtemp(join(tmpdir(), "kuggis-identity-"));
   for (const sub of ["tree/parent", "tree/.pins", "sockets", "inbox", "outbox"]) await mkdir(join(dir, sub), { recursive: true });
   const parent = JSON.stringify({ name: "parent", grants: [{ provider: "anthropic" }] });
   const child = JSON.stringify({ name: "child", grants: [] });

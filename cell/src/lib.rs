@@ -34,6 +34,7 @@ pub mod said;
 pub mod session;
 pub mod ship;
 pub mod ssh_host;
+pub mod ssh_policy;
 pub mod tree;
 pub mod wall;
 

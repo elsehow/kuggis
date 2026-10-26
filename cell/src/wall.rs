@@ -507,6 +507,9 @@ pub fn setup_with_runtime(
     if !preflight.status.success() {
         return Err(format!("Git preflight failed: {}", String::from_utf8_lossy(&preflight.stderr)).into());
     }
+    // Host-level development agents bypass the guest boundary. Stop both the
+    // service and activation socket, then persistently mask them before setup.
+    run("python3", &["-c", include_str!("host_agents.py"), "--apply"])?;
     preserve_before_upgrade()?;
     let _ = attempt("systemctl", &["stop", "cell-agent"]);
     let _ = attempt("systemctl", &["stop", "cell-git"]);
@@ -1081,6 +1084,17 @@ pub fn check() -> Fallible<Statement> {
         probes
     };
     let (_, owner) = attempt("stat", &["-c", "%U:%a", &etc("secret").to_string_lossy()]);
+    let (host_agents_safe, _) = attempt("python3", &["-c", include_str!("host_agents.py")]);
+    probes.push(Probe::new(
+        "root: bundled host agents stopped and masked",
+        "isolated",
+        if host_agents_safe {
+            "isolated"
+        } else {
+            "needs attention"
+        },
+        "Shelley service and activation socket must remain inactive and masked",
+    ));
     probes.push(Probe::new(
         "root: the key's owner and mode",
         &format!("{SAY_USER}:600"),
@@ -1179,6 +1193,20 @@ fn signed_in() -> BTreeSet<Provider> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_agents_are_blocked_without_restarting_managed_services() {
+        let output = std::process::Command::new("python3")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/host_agents.py"))
+            .output()
+            .expect("run host-agent policy regression checks");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn setup_preserves_chat_workspace_when_repository_grants_change() {

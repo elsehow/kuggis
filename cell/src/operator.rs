@@ -231,6 +231,7 @@ impl Operator {
             None => command.to_owned(),
         };
         let mut remote = Command::new("ssh");
+        remote.args(crate::ssh_policy::OPTIONS);
         remote.args(["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2"])
             .arg(format!("{vm}.exe.xyz")).arg(guarded);
         Ok((remote, None))

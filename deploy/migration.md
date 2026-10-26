@@ -87,3 +87,49 @@ before restarting the source, or sequence numbers would fork. After user writes
 resume, a rollback is a reverse migration of the latest guest and host state,
 not restoration of the old snapshot. A failure with uncertain remote state
 requires inspection and a fresh reviewed action, not an automatic retry.
+
+## Separating development from production
+
+Preserving a cell's credentials is appropriate when moving the same trusted
+identity to a different host. Moving a production workload away from a cell
+that will continue running development agents is a different operation:
+the development guest must not retain production credentials or private data.
+Guest root can read all guest-local files regardless of their user ownership.
+
+Before a workload transfer, record an explicit manifest of the data and
+configuration paths being moved, their intended identities, and the paths
+retained for rollback. Use separate development and production credentials.
+Do not copy a provider refresh token from another cell merely to skip sign-in.
+Keep deployment SSH identities and credential-bearing state out of development
+checkouts and source archives.
+
+Keep rollback archives and retired runtime trees in a host-owned, mode-0700
+directory outside every guest rootfs and bind mount. Preserve file contents
+and metadata for rollback; an inactive guest service or a disabled wrapper is
+not an access restriction. Release-retention jobs that preserve state and
+home directories do not sanitize those directories.
+
+Migration acceptance must record these checks before the source resumes
+development:
+
+1. Confirm the destination has the required data and its own production
+   credentials. Preserve the existing deployment and rollback workflow.
+2. Obtain approval for any development interruption. Stop the source guest
+   before removing access so old processes cannot retain open handles. Check
+   for remaining guest processes, nested mounts and external hardlinks.
+3. Quarantine the source manifest's sensitive paths outside the guest. Include
+   import archives, temporary transfer copies, and credential configuration;
+   moving just the live configuration misses duplicates. Do not automatically
+   delete the retained copy or move the whole guest home.
+4. After restarting development, verify the live UID mapping, original path
+   absence, quarantine ownership/modes, and guest mount roots. Save metadata
+   receipts without credential values or application data.
+5. Treat previously guest-readable credentials as potentially exposed. Record
+   validity and reuse as unknown until provider-side metadata is available.
+   When replacement is authorized, provision distinct production credentials,
+   validate the authorized production workflow, then revoke the old credentials.
+   Removing a local file does not revoke a credential or erase prior copies.
+
+For retired whole-cell migrations, keep the old source fenced as described
+above. Never resume it as a development environment while it retains the
+production identity or its credentials.

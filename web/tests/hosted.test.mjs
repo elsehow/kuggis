@@ -6,6 +6,7 @@ import { createServer, request } from "node:http";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const binary = fileURLToPath(new URL("../../cell/target/debug/cell", import.meta.url));
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -22,7 +23,7 @@ const fetch = (url, options = {}) => new Promise((resolve, reject) => {
 });
 
 test("hosted ingress protects every route and removes credentials before cell relay", { timeout: 15000 }, async (t) => {
-  const dir = await mkdtemp("/tmp/kuggis-hosted-");
+  const dir = await mkdtemp(join(tmpdir(), "kuggis-hosted-"));
   let child;
   const cell = createServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
