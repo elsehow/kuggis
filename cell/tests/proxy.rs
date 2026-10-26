@@ -90,6 +90,79 @@ fn allowed_policy() -> Policy {
 }
 
 #[test]
+fn public_network_tunnels_unlisted_hosts_and_revocation_restores_the_allowlist() {
+    let t = target();
+    let mut c = cell(r#"{"name":"t","grants":[{"network":"public"},{"host":"pypi.org"}]}"#);
+    for public in [true, false] {
+        if !public {
+            c.grants.remove(&cell::Grant::Network(cell::Network::Public));
+        }
+        let mut policy = Policy::for_cell(&c);
+        policy.private_ok = true; // only this test's echo target is on loopback
+        let px = proxy(
+            policy,
+            resolver(vec![("en.wikipedia.org", t), ("pypi.org", t)]),
+            limits(),
+        );
+        for port in [443, 8443] {
+            let (status, body) = exchange(
+                px,
+                format!("CONNECT en.wikipedia.org:{port} HTTP/1.1\r\n\r\nresearch").as_bytes(),
+            );
+            assert!(
+                status.contains(if public { "200" } else { "403" }),
+                "{status}"
+            );
+            if public {
+                assert_eq!(body, b"echo:research");
+            } else {
+                assert!(body.is_empty());
+            }
+        }
+        assert!(exchange(px, b"CONNECT pypi.org:443 HTTP/1.1\r\n\r\n")
+            .0
+            .contains("200"));
+        for target in [
+            "en.wikipedia.org:80",
+            "en.wikipedia.org:22",
+            "github.int.exe.xyz:443",
+        ] {
+            assert!(
+                exchange(px, format!("CONNECT {target} HTTP/1.1\r\n\r\n").as_bytes())
+                    .0
+                    .contains("403")
+            );
+        }
+        assert!(exchange(px, b"CONNECT 8.8.8.8:443 HTTP/1.1\r\n\r\n")
+            .0
+            .contains("400"));
+    }
+}
+
+#[test]
+fn public_network_refuses_private_and_mixed_dns_answers_over_the_proxy() {
+    let policy = Policy::for_cell(&cell(r#"{"name":"t","grants":[{"network":"public"}]}"#));
+    let px = proxy(
+        policy,
+        resolver(vec![
+            ("metadata.example", "169.254.169.254:443".parse().unwrap()),
+            ("mixed.example", "8.8.8.8:443".parse().unwrap()),
+            ("mixed.example", "127.0.0.1:443".parse().unwrap()),
+            ("private.example", "[fd00::1]:443".parse().unwrap()),
+        ]),
+        limits(),
+    );
+    for name in ["metadata.example", "mixed.example", "private.example"] {
+        let (status, body) = exchange(
+            px,
+            format!("CONNECT {name}:443 HTTP/1.1\r\n\r\nsecret").as_bytes(),
+        );
+        assert_eq!(status, "HTTP/1.1 403 Forbidden");
+        assert!(body.is_empty());
+    }
+}
+
+#[test]
 fn tunnels_an_allowed_host_and_forwards_bytes_sent_before_the_200() {
     let t = target();
     let px = proxy(

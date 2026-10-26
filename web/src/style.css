@@ -131,6 +131,8 @@ button:focus-visible, a:focus-visible, textarea:focus-visible, select:focus-visi
 .settings h3 { margin: 0 0 16px; font-size: 13px; font-weight: 600; }
 .provider { margin: 13px 0; }
 .provider > label { display: flex; align-items: center; gap: 8px; }
+.network-access > label { display: flex; align-items: center; gap: 8px; }
+.network-access p { font-size: 12px; line-height: 1.6; color: var(--muted); }
 .provider-auth { margin: 9px 0 15px 25px; }
 .auth-status { color: var(--muted); font-size: 12px; }
 .provider-auth form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }

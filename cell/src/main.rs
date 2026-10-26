@@ -416,7 +416,11 @@ fn open(args: &[String]) -> Fallible {
 }
 
 fn allow(args: &[String]) -> Fallible {
-    for h in load_cell(arg(args, 0, "CELLFILE")?)?.allowlist() {
+    let cell = load_cell(arg(args, 0, "CELLFILE")?)?;
+    if cell.public_network() {
+        println!("* (public network; ports 443 and 8443)");
+    }
+    for h in cell.allowlist() {
         println!("{h}");
     }
     Ok(())
@@ -737,6 +741,9 @@ fn proxy(args: &[String]) -> Fallible {
     );
     for h in &policy.hosts {
         eprintln!("  {h}");
+    }
+    if policy.public_network {
+        eprintln!("  public network (ports 443 and 8443)");
     }
     Arc::new(Proxy::new(policy, system_resolver())).serve(listener)?;
     Ok(())

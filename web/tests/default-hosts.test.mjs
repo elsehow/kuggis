@@ -22,6 +22,12 @@ test("browser defaults cover package installation, download redirects, and guest
   assert.ok(hosts.every(host => !host.includes("*") && !host.includes("/")));
 });
 
+test("public-network parents can delegate narrow browser host grants", () => {
+  const parent = [{ network: "public" }];
+  assert.deepEqual(defaultHosts(parent), defaultHosts());
+  assert.deepEqual(parent, [{ network: "public" }]);
+});
+
 test("subcell defaults cannot broaden the parent's authority", () => {
   assert.deepEqual(defaultHosts([]), []);
   const parent = [

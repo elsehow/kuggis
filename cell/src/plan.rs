@@ -241,6 +241,26 @@ mod tests {
     }
 
     #[test]
+    fn public_network_changes_require_setup_in_both_directions() {
+        let restricted = cell(r#"{"name":"research","grants":[{"host":"pypi.org"}]}"#);
+        let public = cell(
+            r#"{"name":"research","grants":[{"host":"pypi.org"},{"network":"public"}]}"#,
+        );
+        let doors = BTreeSet::new();
+        for (before, after) in [(&restricted, &public), (&public, &restricted)] {
+            assert_ne!(before.hash(), after.hash());
+            let plan = Plan::new(
+                after,
+                &doors,
+                Some((before, &doors)),
+                Some((before.hash(), Hash::ZERO)),
+                None,
+            );
+            assert_eq!(plan.actions, vec![Action::Setup]);
+        }
+    }
+
+    #[test]
     fn drift_at_the_edge_and_on_the_box() {
         let want = cell(WANT);
         let have = cell(

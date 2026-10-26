@@ -7,7 +7,7 @@
 //! "this box's configuration" and nothing else; so it is not here.
 
 use crate::canon;
-use crate::grant::{Grant, Provider};
+use crate::grant::{Grant, Network, Provider};
 
 /// Prefix of the tag that marks a VM as a cell's root.
 pub const TAG_PREFIX: &str = "cell-";
@@ -41,10 +41,14 @@ impl Cell {
         Hash::of(&self.canonical())
     }
 
-    /// Every host the proxy may tunnel to. The same function runs on the
-    /// laptop to print the plan and on the box to configure the proxy.
+    /// Explicitly granted hosts, excluding broad public network access.
+    /// Runs on the laptop and on the box to configure the proxy.
     pub fn allowlist(&self) -> BTreeSet<Host> {
         self.grants.iter().flat_map(Grant::hosts).collect()
+    }
+
+    pub fn public_network(&self) -> bool {
+        self.grants.contains(&Grant::Network(Network::Public))
     }
 
     pub fn providers(&self) -> BTreeSet<Provider> {

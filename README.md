@@ -187,7 +187,11 @@ systemd-nspawn environment. The agent can use `sudo`, install packages, edit
 `/etc`, and run localhost services. The VM host retains the authoritative
 declaration, CONNECT proxy, firewall, signing key, inbox, and signed log. Guest
 root maps to host UID 524288. Package downloads require explicit host grants
-for the registries and release hosts a cell needs. Child declarations are not
+for the registries and release hosts a cell needs, or the optional
+`{"network":"public"}` grant for public HTTPS access. Enable **Allow public
+internet** in cell settings for open-ended research and downloads. Private
+addresses remain blocked; child grants must be covered by their parent's
+permissions. Child declarations are not
 automatically expanded.
 
 Before migrating, setup refuses active runs and saves the previous runtime,

@@ -64,18 +64,25 @@ The new-cell form proposes editable host grants for browser testing: npm's
 `registry.npmjs.org`, `cdn.playwright.dev`, `storage.googleapis.com`,
 `playwright.download.prss.microsoft.com`, and the Ubuntu mirrors
 `archive.ubuntu.com`, `us.archive.ubuntu.com`, and `security.ubuntu.com`.
-Subcells default only to hosts already explicitly granted by their parent;
-the form explains when the parent lacks part of the browser installation set.
+Subcells default only to hosts covered by their parent: exact host grants or
+public internet access. The form explains when the parent lacks part of the
+browser installation set.
 These hosts appear in the creation review and can be removed before creation.
 CLI declarations and existing cells do not gain implicit network access.
 
-For an existing cell, add missing hosts in **Cell settings → Connections →
-Allowed hosts**, then review and apply. Grant missing hosts to ancestors first.
+For an existing cell, add missing hosts in **Cell settings → Internet access →
+Allowed hosts**, or enable **Allow public internet**, then review and apply.
+Public access is opt-in, uses the CONNECT proxy on ports 443 and 8443, and still
+blocks private addresses and IP-literal targets. Integration grants remain
+separate. A child can receive public access only when its parent holds it;
+turning it off retains explicit hosts and publishing permissions. Applying
+network changes restarts the cell. Grant missing access to ancestors first.
 Both the CDN and redirect destinations are needed: current Chromium downloads
 redirect to Google Storage, while FFmpeg and other Playwright artifacts use
 Microsoft's download service. The CONNECT proxy grants entire hostnames,
 including all of `storage.googleapis.com`, not individual buckets or URL paths.
-Custom download mirrors and the websites a browser visits need their own grants.
+Without public access, custom download mirrors and the websites a browser visits
+need their own host grants.
 After access is applied, retry `npx playwright install chromium`; install missing
 Linux libraries with `sudo -E npx playwright install-deps chromium`.
 See [Playwright's proxy guidance](https://playwright.dev/docs/browsers#install-behind-a-firewall-or-a-proxy)

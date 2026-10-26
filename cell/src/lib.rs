@@ -36,7 +36,7 @@ pub mod wall;
 
 pub use cell::Cell;
 pub use exe::Observed;
-pub use grant::{Grant, Provider};
+pub use grant::{Grant, Network, Provider};
 pub use plan::{Action, Approved, Plan, PlanError};
 pub use prim::{CellId, Commit, Hash, Host, Invalid, Name, Repo, RequestId, SessionId, Url};
 pub use said::{Key, Said, Secret, State, Statement, Unverified};

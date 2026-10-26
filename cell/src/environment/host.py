@@ -233,16 +233,19 @@ def check():
     case('host: complete firewall matches approved rules', guard)
     def network_probes():
         pid = run('machinectl', 'show', MACHINE, '-p', 'Leader', '--value').stdout.strip()
+        grants = json.loads((ETC / 'cell.json').read_text()).get('grants', [])
+        public_example = {'network': 'public'} in grants or {'host': 'example.com'} in grants
         # Trusted Python and source run with only the net namespace switched.
         # Guest root cannot forge their code, stdout, expected result or resolver.
-        code = '''import socket
+        code = 'expected_example = ' + repr(b' 200 ' if public_example else b' 403 ') + '\n' + '''import socket
 def connect(host, port):
  s=socket.create_connection((host,port),3); s.close()
 def proxy(target):
  s=socket.create_connection(("10.203.0.1",3128),3); s.settimeout(15)
  s.sendall(("CONNECT "+target+" HTTP/1.1\\r\\nHost: "+target+"\\r\\n\\r\\n").encode())
  data=s.recv(1024); s.close(); return data.split(b"\\r\\n")[0]
-assert b" 403 " in proxy("example.com:443")
+assert expected_example in proxy("example.com:443")
+assert b" 403 " in proxy("example.com:80")
 assert b" 400 " in proxy("1.1.1.1:443")
 assert b" 200 " in proxy("door-nobody.int.exe.xyz:443")
 for host,port in [("1.1.1.1",443),("169.254.169.254",80),("10.203.0.1",8000),("10.203.0.1",22),("2606:4700:4700::1111",443)]:

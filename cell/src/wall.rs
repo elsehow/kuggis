@@ -881,7 +881,17 @@ pub fn probe() -> Vec<Probe> {
         c.allowlist()
             .into_iter()
             .find(|h| !h.as_str().ends_with(EDGE_SUFFIX))
+            .or_else(|| c.public_network().then(|| "example.com".parse().unwrap()))
     });
+    let expected_host = |host: &str| {
+        if cell.as_ref().is_some_and(|c| {
+            crate::proxy::Policy::for_cell(c).allows(&host.parse().expect("probe hostname"))
+        }) {
+            "tunnelled"
+        } else {
+            "refused"
+        }
+    };
 
     let mut p = vec![
         tcp("direct tcp to a public address", "1.1.1.1:443"),
@@ -897,14 +907,14 @@ pub fn probe() -> Vec<Probe> {
             "https://example.com/",
         ),
         via_proxy(
-            "proxy: a host off the allowlist",
+            "proxy: a public research site",
             "example.com:443",
-            "refused",
+            expected_host("example.com"),
         ),
         via_proxy(
             "proxy: the account's claude.ai connectors",
             "mcp-proxy.anthropic.com:443",
-            "refused",
+            expected_host("mcp-proxy.anthropic.com"),
         ),
         via_proxy("proxy: an address literal", "1.1.1.1:443", "refused"),
         via_proxy(
