@@ -209,6 +209,8 @@ only the label. New operator-created cells then use UUIDs from creation.
 
 ## Cell files
 
-The **Files** tab browses the selected cell as its agent user. Download files or
-folders as streamed `.tar.gz` archives without SSH. Absolute file links in chat
-open Files in that same cell. Local mode stays inside its selected workspace.
+The agent shares files by copying them into `/home/agent/shared`. The **Files**
+tab browses only that folder, and downloads files or folders as streamed
+`.tar.gz` archives without SSH. Absolute file links in chat open Files in that
+same cell. The rest of the cell, including provider credentials and chat state,
+is never listed or downloaded. Local mode shares its workspace.

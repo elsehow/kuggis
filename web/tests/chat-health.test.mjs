@@ -43,6 +43,9 @@ test("opening a cell starts stopped chat, diagnoses crashes, and requires explic
   let requestsBeforeReady = 0;
   let holdHealth;
   let healthRequested;
+  let holdList;
+  let listRequested;
+  let listFailure = false;
   await page.route("**/api/cells", route => route.fulfill({ json: {
     mode: "cells", canApply: false, canCreate: false, canDelete: false,
     cells: [{ name: "demo", parent: null, grants: [], vm: "demo", lifecycle: { state: "available" }, creation: null, deletion: null }],
@@ -64,27 +67,51 @@ test("opening a cell starts stopped chat, diagnoses crashes, and requires explic
       requestsBeforeReady++;
       return route.fulfill({ status: 502, json: { error: "Chat service unavailable. Check the cell's chat health and recovery options." } });
     }
+    if (path.endsWith("/threads") && route.request().method() === "GET") {
+      listRequested?.();
+      if (holdList) await holdList;
+      if (listFailure) return route.fulfill({ status: 400, json: { error: "List temporarily unavailable" } });
+    }
     return route.continue({ url: route.request().url().replace("/api/cells/demo/", "/api/") });
   });
   await page.goto(`${url}/?cell=demo`);
-  await page.getByRole("button", { name: "＋ New chat", exact: true }).waitFor();
+  await page.getByRole("button", { name: "＋ New chat", exact: true, disabled: false }).waitFor();
   assert.deepEqual(recovery, ["start"]);
   assert.equal(requestsBeforeReady, 0, "chat requests wait for service readiness");
 
-  // Returning within the cache TTL mounts chat before a slow background probe.
+  // Each return checks fresh health, with the same sidebar skeleton spanning
+  // both a delayed health response and a delayed chat-list response.
   await page.getByRole("button", { name: "Resources", exact: true }).click();
-  let releaseHealth;
+  let releaseHealth, releaseList;
   holdHealth = new Promise(resolve => { releaseHealth = resolve; });
+  holdList = new Promise(resolve => { releaseList = resolve; });
   const probing = new Promise(resolve => { healthRequested = resolve; });
+  const listing = new Promise(resolve => { listRequested = resolve; });
   await page.getByRole("button", { name: "demo", exact: true }).click();
   await probing;
+  const loading = page.getByRole("complementary", { name: "Chats" }).getByRole("status", { name: "Loading chats" });
   try {
-    await page.getByRole("button", { name: "＋ New chat", exact: true }).waitFor();
+    await loading.waitFor();
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    assert.equal(await page.locator(".chat-skeleton").first().evaluate(node => getComputedStyle(node).animationName), "none");
     assert.equal(await page.getByRole("heading", { name: "Checking chat…" }).count(), 0);
-  } finally {
-    const checked = page.waitForResponse(response => response.url().endsWith("/health"));
+    assert.equal(await page.getByText("No chats yet.", { exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "＋ New chat", exact: true }).isDisabled(), true);
     releaseHealth(); holdHealth = null; healthRequested = null;
-    await checked;
+    await listing;
+    await loading.waitFor();
+    assert.equal(await page.getByText("No chats yet.", { exact: true }).count(), 0);
+    // Exercise list-error handling separately from service recovery.
+    listFailure = true;
+    releaseList(); holdList = null; listRequested = null;
+    await page.getByRole("button", { name: "Retry loading chats" }).waitFor();
+    listFailure = false;
+    await page.getByRole("button", { name: "Retry loading chats" }).click();
+    await page.getByText("No chats yet.", { exact: true }).waitFor();
+    assert.equal(await loading.count(), 0);
+  } finally {
+    releaseHealth(); releaseList(); holdHealth = null; holdList = null;
+    healthRequested = null; listRequested = null;
   }
 
   health = { state: "failed", message: "Chat cannot start because its configured workspace differs from the saved chats. Repair restores the saved workspace and preserves conversations.", recovery: "repair" };
@@ -95,7 +122,7 @@ test("opening a cell starts stopped chat, diagnoses crashes, and requires explic
   assert.equal(requestsBeforeReady, 0);
   if (process.env.KUGGIS_HEALTH_SCREENSHOT) await page.screenshot({ path: process.env.KUGGIS_HEALTH_SCREENSHOT });
   await page.getByRole("button", { name: "Repair chat", exact: true }).click();
-  await page.getByRole("button", { name: "＋ New chat", exact: true }).waitFor();
+  await page.getByRole("button", { name: "＋ New chat", exact: true, disabled: false }).waitFor();
   assert.deepEqual(recovery, ["start", "repair"]);
 
   health = { state: "failed", message: "Chat failed to start (result: exit-code, exit: 2).", recovery: "restart" };
@@ -109,7 +136,7 @@ test("opening a cell starts stopped chat, diagnoses crashes, and requires explic
   assert.deepEqual(recovery, ["start", "repair"]);
   const attemptedWrites = [...writes];
   await page.getByRole("button", { name: "Retry starting chat" }).click();
-  await page.getByRole("button", { name: "＋ New chat", exact: true }).waitFor();
+  await page.getByRole("button", { name: "＋ New chat", exact: true, disabled: false }).waitFor();
   assert.deepEqual(recovery, ["start", "repair", "restart"]);
   assert.deepEqual(writes, attemptedWrites, "recovering does not replay a prompt or session creation");
   assert.deepEqual(errors, []);

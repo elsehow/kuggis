@@ -241,10 +241,12 @@ button:focus-visible, a:focus-visible, textarea:focus-visible, select:focus-visi
 .resource-card label, .resource-card button, .resource-review button { margin: 8px 12px 8px 0; }
 .resource-card label { display: inline-block; }
 
-.chat-health { width: min(560px, 100%); margin: 60px auto; padding: 30px; align-self: start; }
-.chat-health h1 { font-size: 15px; margin: 0 0 24px; overflow-wrap: anywhere; }
-.chat-health section { border: 1px solid var(--line); border-radius: 8px; padding: 20px; background: #fff; }
-.chat-health h2 { font-size: 19px; margin: 0 0 12px; }
-.chat-health p { line-height: 1.6; margin: 0 0 18px; overflow-wrap: anywhere; }
-.chat-health section button { font-size: 14px; border: 1px solid var(--line); margin: 0 8px 4px 0; }
-.chat-health section button:first-of-type:not(:last-child) { background: var(--green); color: white; border-color: var(--green); }
+
+.chat-list-loading { padding: 8px; width: 100%; }
+.chat-skeleton { height: 30px; margin: 10px 0; border-radius: 6px; background: linear-gradient(100deg, #e4e7dc 25%, #f2f4ed 45%, #e4e7dc 65%); background-size: 250% 100%; animation: chat-shimmer 1.5s ease-in-out infinite; }
+.chat-skeleton:nth-of-type(2n) { width: 78%; }
+@keyframes chat-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .chat-skeleton { animation: none; } }
+.chat-list-error { padding: 10px 8px; overflow-wrap: anywhere; font-size: 13px; }
+.chat-list-error h2 { font-size: 15px; }
+.chat-list-error button { margin: 4px 4px 4px 0; text-decoration: underline; }

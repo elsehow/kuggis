@@ -95,25 +95,33 @@ to the gateway's routing table immediately, without restarting the UI server.
 
 ## Files and downloads
 
-Each cell has **Chat** and **Files** views. Files opens the workspace and supports
+Each cell has **Chat** and **Files** views. Files shows the cell's shared folder,
+`/home/agent/shared`, where the agent copies files for the user. It supports
 an absolute path, parent navigation, folder filtering, and downloads of individual
-files or entire folders. Switching views preserves the chat and its draft. File
+files or entire folders. Nothing outside the shared folder is listed or
+downloaded, so agent credentials, chat state and unshared work stay private. Switching views preserves the chat and its draft. File
 locations are saved in the URL for refresh, browser back/forward, and sharing
 within the same authenticated supervisor.
 
-Assistant Markdown links such as `[Results](</home/agent/forecast runs>)` open
-Files for that path in the selected cell. Ordinary web links stay web links;
-file links are never fetched automatically. New agent sessions receive these
-link instructions in their workspace prompt.
+Assistant Markdown links such as `[Results](</home/agent/shared/forecast runs>)`
+open Files for that path in the selected cell. A link outside the shared folder
+explains that the agent must copy it there. Ordinary web links stay web links;
+file links are never fetched automatically. Agent sessions receive these
+instructions in their workspace prompt, and resumed sessions are upgraded to it.
 
 `GET /api/files?path=ABSOLUTE_PATH` returns file metadata or a directory listing
-(at most 10,000 entries). Omit `path` to open the workspace.
+(at most 10,000 entries). Omit `path` to open the shared folder.
 `GET /api/files/download?path=ABSOLUTE_PATH` streams a regular file as an
 attachment, or a directory as a `.tar.gz`. Through the operator these routes
 are `/api/cells/:cell/files` and `/api/cells/:cell/files/download`. Both require
 the same origin and authentication as chat and run with the chat service's OS
 permissions. No sudo, host filesystem traversal, writes, or model calls are used.
-Local mode additionally confines paths and resolved symlinks to its workspace.
+Paths and resolved symlinks must stay inside the folder given by `cell chat
+--shared` (cell setup passes `/home/agent/shared`; local mode defaults to its
+workspace). Paths outside it are refused before they are resolved, so responses
+do not reveal what exists elsewhere. A cell started without `--shared` keeps
+chat working; Files then asks for setup to be re-run. Every `cell check` probes
+that Files serves only the shared folder.
 
 Archives use the cell's Python 3 standard library. They contain regular files
 and directories, skipping symlinks, special files, and other filesystems.

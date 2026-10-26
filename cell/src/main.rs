@@ -88,7 +88,7 @@ usage:
   cell login DIR NAME             open Pi on NAME's box as the agent, to sign in
   cell ui TREE [--bin LINUX_CELL] [--listen 127.0.0.1:8080] [--exe-proxy FILE]
                                   browse cells and their chats over SSH
-  cell chat --local DIR [--listen 127.0.0.1:8080] [--state DIR] [--assets DIR] [--pi PATH]
+  cell chat --local DIR [--listen 127.0.0.1:8080] [--state DIR] [--shared DIR] [--assets DIR] [--pi PATH]
                                   serve the React chat UI with persistent local Pi sessions
 ";
 
@@ -328,12 +328,18 @@ fn chat(args: &[String]) -> Fallible {
             ),
         )
     };
+    // Local mode runs on the user's own machine, so its workspace is shared.
+    // A cell whose setup predates --shared keeps chat but offers no Files.
+    let shared = flag(args, "--shared")
+        .map(PathBuf::from)
+        .or_else(|| matches!(mode, ExecutionMode::Local { .. }).then(|| workspace.clone()));
     let state = flag(args, "--state")
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace.join(".kuggis/chat"));
     let config = cell::chat::Config {
         mode,
         workspace,
+        shared,
         state,
         assets: flag(args, "--assets").unwrap_or("web/dist").into(),
         pi: flag(args, "--pi").unwrap_or("pi").into(),

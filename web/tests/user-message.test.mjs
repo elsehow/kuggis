@@ -30,7 +30,8 @@ function fixture() {
     sendMessage: async () => {},
     subscribe: (_id, fn) => { listener = fn; return () => {}; },
   };
-  return { client: presentationClient(transport), raw, image, emit: (event) => listener({ threadId: "t1", seq: 2, ...event }) };
+  let seq = 1;
+  return { client: presentationClient(transport), raw, image, emit: (event) => listener({ threadId: "t1", seq: ++seq, ...event }) };
 }
 
 test("normalizes snapshots, live echoes, and queues without mutating transport data or images", async () => {
@@ -57,6 +58,15 @@ test("normalizes snapshots, live echoes, and queues without mutating transport d
   assert.equal(raw.messages[0].content[0].text, envelope("hello"));
 });
 
+test("trailing host image captions are stripped so typed text and the echo reconcile", () => {
+  const typed = "look at this plan";
+  const caption = "\n\n[Image: original 968x2180, displayed at 888x2000. Multiply coordinates by 1.09 to map to original image.]";
+  assert.equal(splitUserMessage(envelope(typed + caption)).request, typed);
+  assert.equal(splitUserMessage("\n" + envelope(typed + caption)).request, typed);
+  assert.equal(splitUserMessage(typed + caption).request, typed);
+  assert.equal(splitUserMessage("real text [Image: not the host format]").request, "real text [Image: not the host format]");
+});
+
 test("host-enriched echoes reconcile optimistic messages instead of leaving a duplicate at the bottom", async () => {
   const { client, emit } = fixture();
   const controller = new PiThreadController(client, "t1");
@@ -66,5 +76,25 @@ test("host-enriched echoes reconcile optimistic messages instead of leaving a du
     assert.equal(controller.getProjectedMessages().length, 1);
     emit({ type: "message_start", message: { role: "user", content: [{ type: "text", text: envelope("hello") }], timestamp: 2 } });
     assert.equal(controller.getProjectedMessages().filter((m) => m.role === "user").length, 1);
+  } finally { controller.dispose(); }
+});
+
+test("an echoed user message carrying an image caption reconciles against the optimistic bubble", async () => {
+  const { client, emit } = fixture();
+  const controller = new PiThreadController(client, "t1");
+  controller.connect();
+  try {
+    const typed = "i could select a bigger one of these… OR an external box?";
+    const caption = "\n\n[Image: original 968x2180, displayed at 888x2000. Multiply coordinates by 1.09 to map to original image.]";
+    await controller.sendMessage({ role: "user", content: [{ type: "text", text: typed }, { type: "image", image: "data:image/png;base64,AAA" }], attachments: [], parentId: null, sourceId: null, runConfig: {} });
+    assert.equal(controller.getProjectedMessages().filter((m) => m.role === "user").length, 1);
+    emit({ type: "message_start", message: { role: "user", content: [{ type: "text", text: envelope(typed + caption) }, { type: "image", data: "AAAA", mimeType: "image/png" }], timestamp: 2 } });
+    emit({ type: "message_end", message: { role: "user", content: [{ type: "text", text: envelope(typed + caption) }, { type: "image", data: "AAAA", mimeType: "image/png" }], timestamp: 2 } });
+    emit({ type: "message_start", message: { role: "assistant", content: [{ type: "text", text: "Both work…" }], timestamp: 3 } });
+    await new Promise((resolve) => setImmediate(resolve));
+    const projected = controller.getProjectedMessages();
+    assert.equal(projected.filter((m) => m.role === "user").length, 1);
+    // The stale optimistic copy must not trail the reply it precedes.
+    assert.notEqual(projected[projected.length - 1].role, "user");
   } finally { controller.dispose(); }
 });

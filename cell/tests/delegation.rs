@@ -68,6 +68,8 @@ impl Worker {
             .arg(dir.join("inbox"))
             .arg("--outbox")
             .arg(dir.join("outbox"))
+            .arg("--shared")
+            .arg(dir.join("shared"))
             .arg("--pi")
             .arg(fixture)
             .env("KUGGIS_FIXTURE_PROVIDER", "anthropic")

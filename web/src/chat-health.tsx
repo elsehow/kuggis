@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, explain } from "./api";
-import { chatHealthCache } from "./chat-health-cache.mjs";
+import { ChatListLoading } from "./chat-list-loading";
 import type { ChatHealth } from "./generated/ChatHealth";
 import type { ChatRecovery } from "./generated/ChatRecovery";
 
@@ -11,7 +11,7 @@ export function ChatHealthBoundary({ name, label, standalone, children }: {
   children: (onUnavailable: () => void) => ReactNode;
 }) {
   const base = `/api/cells/${encodeURIComponent(name)}`;
-  const [health, setHealth] = useState<ChatHealth | null>(() => chatHealthCache.get(base));
+  const [health, setHealth] = useState<ChatHealth | null>(null);
   const [busy, setBusy] = useState(false);
   const generation = useRef(0);
   const diagnosing = useRef(false);
@@ -23,7 +23,6 @@ export function ChatHealthBoundary({ name, label, standalone, children }: {
         ? await api<ChatHealth>(`${base}/recovery`, { method: "POST", body: JSON.stringify({ action }) })
         : await api<ChatHealth>(`${base}/health`);
       if (current !== generation.current) return;
-      chatHealthCache.set(base, result);
       if (autoStart && result.state === "stopped" && result.recovery === "start") {
         setHealth({ state: "starting", message: "Starting chat…", recovery: null });
         result = await api<ChatHealth>(`${base}/recovery`, { method: "POST", body: JSON.stringify({ action: "start" }) });
@@ -38,12 +37,10 @@ export function ChatHealthBoundary({ name, label, standalone, children }: {
         result = await api<ChatHealth>(`${base}/health`);
       }
       if (current === generation.current) {
-        chatHealthCache.set(base, result);
         setHealth(result);
       }
     } catch (error) {
       if (current === generation.current) {
-        chatHealthCache.delete(base);
         setHealth({ state: "unreachable", message: explain(error), recovery: null });
       }
     } finally {
@@ -56,18 +53,22 @@ export function ChatHealthBoundary({ name, label, standalone, children }: {
   }, [standalone, check]);
   const onUnavailable = useCallback(() => {
     if (standalone || diagnosing.current) return;
-    chatHealthCache.delete(base);
     diagnosing.current = true;
     void check().finally(() => { diagnosing.current = false; });
   }, [standalone, check, base]);
   if (standalone || health?.state === "ready") return children(onUnavailable);
-  return <main className="chat-health">
-    <h1>{label ?? name}</h1>
-    <section role={health && health.state !== "starting" ? "alert" : "status"}>
-      <h2>{!health ? "Checking chat…" : health.state === "starting" ? "Starting chat…" : "Chat service unavailable"}</h2>
-      <p>{health?.message ?? "Checking the cell’s chat service."}</p>
-      {health?.recovery && <button disabled={busy} onClick={() => void check(false, health.recovery ?? undefined)}>{recoveryLabels[health.recovery]}</button>}
-      {health && <button disabled={busy} onClick={() => void check()}>{busy ? "Checking…" : "Check again"}</button>}
-    </section>
-  </main>;
+  const loading = !health || (health.state === "starting" && busy);
+  return <div className="workspace">
+    <aside className="sidebar" aria-label="Chats">
+      <header className="sidebar-header"><span className="sidebar-cell" title={label ?? name}>{label ?? name}</span></header>
+      <button className="new-chat" disabled>＋ New chat</button>
+      {loading ? <ChatListLoading /> : <section className="chat-list-error" role="alert">
+        <h2>Chat service unavailable</h2>
+        <p>{health?.message}</p>
+        {health?.recovery && <button disabled={busy} onClick={() => void check(false, health.recovery ?? undefined)}>{recoveryLabels[health.recovery]}</button>}
+        <button disabled={busy} onClick={() => void check()}>{busy ? "Checking…" : "Check again"}</button>
+      </section>}
+    </aside>
+    <main className="chat-main" aria-label="Conversation" />
+  </div>;
 }

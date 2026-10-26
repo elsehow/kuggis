@@ -50,7 +50,7 @@ test("a pre-dispatch permission failure remains known after restart", { timeout:
   for (const name of ["inbox", "outbox", "sockets", "tree"]) await mkdir(join(dir, name));
   const file = join(dir, "tree/denied.json");
   await writeFile(file, JSON.stringify({ name: "denied", grants: [] }));
-  const args = ["chat", "--cell", file, "--workspace", dir, "--state", join(dir, "state"), "--socket", join(dir, "sockets/denied.sock"), "--agent-dir", join(dir, "auth"), "--pi", fixture, "--outbox", join(dir, "outbox"), "--inbox", join(dir, "inbox")];
+  const args = ["chat", "--cell", file, "--workspace", dir, "--state", join(dir, "state"), "--socket", join(dir, "sockets/denied.sock"), "--agent-dir", join(dir, "auth"), "--pi", fixture, "--outbox", join(dir, "outbox"), "--inbox", join(dir, "inbox"), "--shared", join(dir, "shared")];
   let cell = await launch(args, /Kuggis cell/);
   const ui = await launch(["ui", join(dir, "tree"), "--state", join(dir, "ui"), "--socket-dir", join(dir, "sockets"), "--listen", "127.0.0.1:0"], /Kuggis UI/);
   t.after(async () => { await ui.stop(); await cell.stop(); await rm(dir, { recursive: true, force: true }); });
@@ -90,7 +90,7 @@ test("cell tree, isolated sessions, credentials, connections and gateway restart
   for (const name of ["project", "project-dev"]) {
     const home = join(dir, name); await mkdir(home); await mkdir(join(home, "outbox")); await mkdir(join(home, "inbox"));
     const file = name === "project" ? join(tree, "project.json") : join(tree, "project", "project-dev.json");
-    processes.push(await launch(["chat", "--cell", file, "--workspace", home, "--state", join(home, "state"), "--socket", join(sockets, `${name}.sock`), "--agent-dir", join(home, "auth"), "--pi", fixture, "--outbox", join(home, "outbox"), "--inbox", join(home, "inbox")], /Kuggis cell/));
+    processes.push(await launch(["chat", "--cell", file, "--workspace", home, "--state", join(home, "state"), "--socket", join(sockets, `${name}.sock`), "--agent-dir", join(home, "auth"), "--pi", fixture, "--outbox", join(home, "outbox"), "--inbox", join(home, "inbox"), "--shared", join(home, "shared")], /Kuggis cell/));
   }
   // Exercise the exact stdio transport used by the remote SSH command.
   const relay = spawn(binary, ["relay", "--socket", join(sockets, "project-dev.sock")]);
@@ -202,7 +202,7 @@ test("Pi offers browser and code login, plus API-key-only providers", { timeout:
   for (const name of ["inbox", "outbox", "sockets", "tree"]) await mkdir(join(dir, name));
   const file = join(dir, "tree/project.json");
   await writeFile(file, JSON.stringify({ name: "project", grants: [{ provider: "openai" }, { provider: "paperinstruments" }] }));
-  const cell = await launch(["chat", "--cell", file, "--workspace", dir, "--state", join(dir, "state"), "--socket", join(dir, "sockets/project.sock"), "--agent-dir", join(dir, "auth"), "--pi", fixture, "--outbox", join(dir, "outbox"), "--inbox", join(dir, "inbox")], /Kuggis cell/);
+  const cell = await launch(["chat", "--cell", file, "--workspace", dir, "--state", join(dir, "state"), "--socket", join(dir, "sockets/project.sock"), "--agent-dir", join(dir, "auth"), "--pi", fixture, "--outbox", join(dir, "outbox"), "--inbox", join(dir, "inbox"), "--shared", join(dir, "shared")], /Kuggis cell/);
   const ui = await launch(["ui", join(dir, "tree"), "--state", join(dir, "ui"), "--socket-dir", join(dir, "sockets"), "--listen", "127.0.0.1:0"], /Kuggis UI/);
   t.after(async () => { await ui.stop(); await cell.stop(); await rm(dir, { recursive: true, force: true }); });
   const base = `${ui.log().match(/Kuggis UI: (http:\/\/\S+)/)[1]}/api/cells/project`;

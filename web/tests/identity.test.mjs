@@ -29,7 +29,7 @@ async function fixture(t) {
     const key = execFileSync(binary, ["key", "new", join(dir, `${name}.key`)], { encoding: "utf8" }).trim();
     await writeFile(join(dir, `tree/.pins/${name}.pub`), key);
   }
-  const cell = await launch(["chat", "--cell", join(dir, "tree/parent.json"), "--workspace", dir, "--state", join(dir, "chat"), "--socket", join(dir, "sockets/parent.sock"), "--agent-dir", join(dir, "auth"), "--pi", join(root, "web/tests/fake-pi.mjs"), "--outbox", join(dir, "outbox"), "--inbox", join(dir, "inbox")], /Kuggis cell/);
+  const cell = await launch(["chat", "--cell", join(dir, "tree/parent.json"), "--workspace", dir, "--state", join(dir, "chat"), "--socket", join(dir, "sockets/parent.sock"), "--agent-dir", join(dir, "auth"), "--pi", join(root, "web/tests/fake-pi.mjs"), "--outbox", join(dir, "outbox"), "--inbox", join(dir, "inbox"), "--shared", join(dir, "shared")], /Kuggis cell/);
   const args = ["ui", join(dir, "tree"), "--state", join(dir, "operator"), "--socket-dir", join(dir, "sockets"), "--assets", join(root, "web/dist"), "--listen", "127.0.0.1:0"];
   let ui = await launch(args, /Kuggis UI/);
   t.after(async () => { await ui.stop(); await cell.stop(); await rm(dir, { recursive: true, force: true }); });
