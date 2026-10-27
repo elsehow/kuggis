@@ -1,7 +1,7 @@
 # Kuggis v2: configured workspaces, autonomous agents
 
-Status: implementation plan and tested first v2 slice. V1 remains in `cell/` and
-`web/` while v2 is developed independently in `v2/`.
+Status: v2 is the entry point for new workspaces and is being prepared for main.
+V1 remains in `cell/` and `web/` for existing deployments during migration.
 
 Implementation update: the v2 installer, host/guest helpers, persistent terminal
 entry, CONNECT proxy, atomic transfers, private relays and exe private-ingress
@@ -34,8 +34,9 @@ collection of SSH targets is sufficient; multiple guests per host are deferred.
 The BigBrain trial showed that the manual setup below needs a complete operator
 entry point. The [onboarding proposal](v2-onboarding.md) describes one create
 operation with interactive questions or unattended flags/JSON, built on the
-existing boundary and recipes. The initial exe/Pi create flow is implemented;
-additional agents and native login profiles remain planned.
+existing boundary and recipes. Exe creation with Pi or Codex is implemented,
+including saved agent selection per chat. Claude Code and native login profiles
+remain planned.
 
 Deployment configuration is prepared before agents run. It selects an SSH target,
 resource access, credentials, initial tools, launch command, and private web
@@ -48,14 +49,18 @@ Current CLI (setup takes a Linux binary built from the same source):
 ```sh
 kuggis setup workspace.json --bin path/to/linux/kuggis
 kuggis connect workspace.json
+kuggis connect workspace.json --chat research
 kuggis shell workspace.json
 kuggis put workspace.json ./design.png inputs/design.png
 kuggis get workspace.json output/report.pdf ./report.pdf
 kuggis check workspace.json
 ```
 
-Configuration paths are the initial interface. Name-based lookup can be a small
-local registry later; it is not a tree or a second source of authority.
+Configuration paths and names under `.kuggis/workspaces/` are supported.
+Named chats use independent persistent terminals and a declarative `chat_launch`
+recipe for agent-native history selection. Plain connect lists chats without
+starting one; `--chat default` explicitly selects a retained legacy chat.
+Chats share the workspace and its configured authority.
 
 `connect` enters a persistent guest terminal such as tmux. Disconnection leaves
 work alive. After a process exits or a machine reboots, the selected agent owns
@@ -152,7 +157,7 @@ Keep service units and firewall rules in plaintext templates. Compile validated
 configuration into a deterministic bundle with pure functions. Keep SSH, process,
 filesystem and Linux effects outside the configuration and policy modules.
 
-Network rules are exact destination/port pairs, not independent host and port
+Restricted network rules are exact destination/port pairs, not independent host and port
 sets whose cross product grants extra access. DNS resolution must reject private
 and metadata addresses by default; explicit address pins permit deliberately
 configured private or IPv4 link-local platform endpoints. A TCP tunnel cannot
@@ -161,6 +166,12 @@ own authorization. The Pi recipe explicitly grants exe's already-attached LLM
 gateway through such a pin, with provider credentials retained by exe.
 Support SSH egress as well as HTTPS without
 granting a general route around the boundary. No implicit exe door exception.
+
+An explicit `egress: "internet"` setting now grants all public destinations and
+ports, including direct IPv4 DNS/TCP/UDP and public HTTP/HTTPS through the proxy.
+Private resource pins, host management isolation and private ingress remain
+separate. The default stays restricted. Proxy service maintenance must not stop
+running workspace chats; the workspace wants the proxy but requires the firewall.
 
 Setup is an idempotent sequence, not an approval transaction. Serialize updates,
 stop guest activity before changing its boundary, install the new configuration,

@@ -1,5 +1,5 @@
 //! A reviewable environment description, not an installer or runtime report.
-use crate::config::{Credential, Endpoint, Name, PrivateWeb, Workspace};
+use crate::config::{ChatLaunch, Credential, Egress, Endpoint, Name, PrivateWeb, Workspace};
 use serde::Serialize;
 
 pub const GUEST_HOME: &str = "/home/agent";
@@ -10,6 +10,7 @@ pub const HOST_HELPER: &str = "/usr/local/libexec/kuggis-host";
 pub struct Environment<'a> {
     pub status: DescriptionStatus,
     pub name: &'a Name,
+    pub egress: Egress,
     pub host_config: String,
     pub host_data: String,
     pub guest_home: &'static str,
@@ -18,6 +19,9 @@ pub struct Environment<'a> {
     pub guest_root_host_uid: u32,
     pub memory_bytes: u64,
     pub launch: &'a [String],
+    pub chat_launch: Option<&'a ChatLaunch>,
+    pub agents: &'a std::collections::BTreeMap<Name, crate::config::AgentRecipe>,
+    pub default_agent: Option<&'a Name>,
     pub endpoints: Vec<&'a Endpoint>,
     pub credentials: Vec<&'a Credential>,
     pub private_web: Vec<PrivateRelay<'a>>,
@@ -41,6 +45,7 @@ impl<'a> Environment<'a> {
         Self {
             status: DescriptionStatus::ConfigurationOnly,
             name: workspace.name(),
+            egress: workspace.egress(),
             host_config: crate::deploy::CONFIG.into(),
             host_data: "/var/lib/kuggis/rootfs".into(),
             guest_home: GUEST_HOME,
@@ -50,6 +55,9 @@ impl<'a> Environment<'a> {
             guest_root_host_uid: 524288,
             memory_bytes: workspace.memory_bytes().get(),
             launch: workspace.launch(),
+            chat_launch: workspace.chat_launch(),
+            agents: workspace.agents(),
+            default_agent: workspace.default_agent(),
             endpoints: workspace
                 .resources()
                 .iter()

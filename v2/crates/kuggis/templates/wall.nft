@@ -1,5 +1,5 @@
 table inet kuggis_v2 {}
-flush table inet kuggis_v2
+delete table inet kuggis_v2
 table inet kuggis_v2 {
  chain input {
   type filter hook input priority -200; policy accept;
@@ -14,7 +14,7 @@ table inet kuggis_v2 {
   oifname "kv2-host" counter reject
  }
  chain output {
-  type filter hook output priority -200; policy accept;
+  type filter hook output priority -150; policy accept;
   meta skuid "kuggis-proxy" oifname "kv2-host" ip daddr 10.205.0.2 tcp sport 3128 ct state established accept
   meta skuid "kuggis-proxy" udp dport 53 accept
   meta skuid "kuggis-proxy" tcp dport 53 accept

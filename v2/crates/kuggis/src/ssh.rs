@@ -4,7 +4,7 @@
 //! enters the guest namespaces, then drops to the agent user before touching any
 //! guest file or program. Never evaluate guest paths or launch argv as host root.
 use crate::{
-    config::{GuestPath, Workspace},
+    config::{GuestPath, Name, Workspace},
     environment::HOST_HELPER,
 };
 use serde::Serialize;
@@ -12,7 +12,9 @@ use std::process::Command;
 
 #[derive(Debug, Clone)]
 pub enum Request {
-    Connect,
+    Chats,
+    Chat(Name),
+    SelectChat { chat: Name, agent: Name },
     Shell,
     Check,
     Exec(Vec<String>),
@@ -103,7 +105,10 @@ impl Invocation {
             HOST_HELPER.into(),
         ];
         let (verb, terminal, stdin, stdout) = match request {
-            Request::Connect => ("connect", true, Stream::Terminal, Stream::Terminal),
+            Request::Chat(_) | Request::SelectChat { .. } => {
+                ("connect", true, Stream::Terminal, Stream::Terminal)
+            }
+            Request::Chats => ("chats", false, Stream::Closed, Stream::JsonReport),
             Request::Shell => ("shell", true, Stream::Terminal, Stream::Terminal),
             Request::Check => ("check", false, Stream::Closed, Stream::JsonReport),
             Request::Exec(_) => ("exec", false, Stream::Terminal, Stream::Terminal),
@@ -112,6 +117,17 @@ impl Invocation {
         };
         remote.extend([verb.to_owned(), workspace.name().as_str().to_owned()]);
         match request {
+            Request::SelectChat { chat, agent } => {
+                remote.extend([
+                    "--chat".into(),
+                    chat.as_str().into(),
+                    "--agent".into(),
+                    agent.as_str().into(),
+                ]);
+            }
+            Request::Chat(name) => {
+                remote.extend(["--chat".into(), name.as_str().into()]);
+            }
             Request::Put { path, replace } => {
                 if *replace {
                     remote.push("--replace".into());
@@ -212,6 +228,6 @@ impl Invocation {
     }
 }
 
-fn quote(word: &str) -> String {
+pub(crate) fn quote(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\"'\"'"))
 }

@@ -86,6 +86,14 @@ class Transfers(unittest.TestCase):
 
 
 class HostExecutor(unittest.TestCase):
+    def test_ipv4_forwarding_is_enabled_only_for_internet_mode(self):
+        for mode in ['restricted', 'internet']:
+            with patch.object(h, 'load', return_value={'egress':mode}), patch.object(h, 'run') as run:
+                run.return_value.returncode = 0
+                h.network()
+                calls = [c.args for c in run.call_args_list]
+                self.assertEqual(('sysctl','-w','net.ipv4.ip_forward=1') in calls, mode == 'internet')
+
     def test_workspace_packages_wait_for_guest_apt_sources(self):
         # fd-find/python3-venv require universe, which the minimal debootstrap
         # index does not include. First install must use the same guest package

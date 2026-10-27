@@ -152,6 +152,8 @@ def guard(installing=False):
 
 
 def network():
+    if load().get('egress', 'restricted') == 'internet':
+        run('sysctl', '-w', 'net.ipv4.ip_forward=1')
     for _ in range(100):
         if run('ip', 'link', 'show', IFACE, check=False).returncode == 0:
             break
@@ -333,6 +335,8 @@ def install(stream):
                 old_targets = {c['target'] for r in (old or {}).get('resources', []) for c in r.get('credentials', [])}
                 new_targets = {c['target'] for c in secrets}
                 payload = {'launch': workspace['launch'], 'packages': workspace.get('packages', []), 'credentials': secrets,
+                           'chat_launch': workspace.get('chat_launch'),
+                           'agents': workspace.get('agents', {}), 'default_agent':workspace.get('default_agent'),
                            'private_web': workspace.get('private_web', []),
                            'removed_credentials': sorted(old_targets - new_targets)}
                 guest('/usr/bin/python3', '/run/kuggis-runtime/guest.py', 'configure', user='root',
@@ -371,6 +375,7 @@ def check(installing=False):
     case('proxy service', lambda: run('systemctl', 'is-active', '--quiet', 'kuggis-v2-proxy.service'))
     def probes():
         pid = int(run('machinectl', 'show', MACHINE, '-p', 'Leader', '--value').stdout)
+        internet = load().get('egress', 'restricted') == 'internet'
         code = '''import socket
 def refused(host, port):
  try:
@@ -379,20 +384,47 @@ def refused(host, port):
   return
  sock.close()
  raise RuntimeError('direct guest connection escaped the boundary')
-for host, port in [('1.1.1.1',443), ('169.254.169.254',80), ('10.205.0.1',22), ('2606:4700:4700::1111',443)]:
+for host, port in [('169.254.169.254',80), ('10.205.0.1',22), ('2606:4700:4700::1111',443)]:
  refused(host,port)
 sock=socket.create_connection(('10.205.0.1',3128),3)
 sock.settimeout(3)
-sock.sendall(b'CONNECT not-configured.invalid:65535 HTTP/1.1\\r\\n\\r\\n')
+sock.sendall(PROXY_PROBE)
 if b' 403 ' not in sock.recv(1024).split(b'\\r\\n')[0]:
  raise RuntimeError('unconfigured proxy target was not refused')
 sock.close()
 '''
+        probe = (b'CONNECT 169.254.169.254:65535 HTTP/1.1\r\n\r\n' if internet else
+                 b'CONNECT not-configured.invalid:65535 HTTP/1.1\r\n\r\n')
+        code = code.replace('PROXY_PROBE', repr(probe))
+        if internet:
+            code += "\nsocket.create_connection(('1.1.1.1',443),5).close()\n"
+        else:
+            code += "\nrefused('1.1.1.1',443)\n"
         # Only switch network namespace: Python, source, filesystem and output
         # stay host-controlled, so guest root cannot forge a passing probe.
-        run('nsenter', '-t', str(pid), '-n', '--', '/usr/bin/python3', '-c', code, timeout=30)
+        result = run('nsenter', '-t', str(pid), '-n', '--', '/usr/bin/python3', '-c', code, timeout=30, check=False)
+        if result.returncode:
+            raise RuntimeError('guest network probes failed: ' + result.stderr.decode(errors='replace')[-2048:])
     case('guest network probes', probes)
     return {'ok': all(item['passed'] for item in checks), 'checks': checks}
+
+
+def connect_chat(args):
+    return connect_options(args)[0]
+
+
+def connect_options(args):
+    values = {}
+    if len(args) % 2:
+        raise ValueError('expected connect [--chat NAME] [--agent AGENT]')
+    for flag, value in zip(args[::2], args[1::2]):
+        if (flag not in ('--chat','--agent') or flag in values
+                or not re.fullmatch(r'[a-z][a-z0-9-]{0,47}', value) or value.endswith('-')):
+            raise ValueError('expected connect [--chat NAME] [--agent AGENT]')
+        values[flag] = value
+    if '--chat' not in values:
+        raise ValueError('connect requires --chat NAME; bare connect lists chats')
+    return values['--chat'], values.get('--agent')
 
 
 def dispatch(args):
@@ -417,11 +449,32 @@ def dispatch(args):
             raise RuntimeError('workspace boundary check failed')
         return
     guard()
-    if verb == 'connect' and not rest:
-        # Persistent server belongs to its own guest service, not to this SSH
-        # connection's transient cgroup. Do not enable/replay it at guest boot.
-        guest('systemctl', 'start', 'kuggis-terminal.service', user='root')
-        command = guest_command(['/usr/bin/tmux', '-L', 'kuggis', 'attach-session', '-t', 'workspace'], terminal=True)
+    if verb in ('chats', 'connect') and not rest:
+        result = guest('/usr/bin/python3', '/run/kuggis-runtime/guest.py', 'list-chats')
+        sys.stdout.buffer.write(result.stdout)
+        return
+    if verb == 'connect':
+        name, agent = connect_options(rest)
+        workspace = load()
+        if workspace.get('agents'):
+            if agent and agent not in workspace['agents']:
+                raise ValueError('agent is not configured in this workspace')
+            guest('/usr/bin/python3', '/run/kuggis-runtime/guest.py', 'select-chat', name, *([agent] if agent else []))
+        elif agent:
+            raise ValueError('agent selection requires configured agent recipes')
+        if name != 'default':
+            if not workspace.get('chat_launch') and not workspace.get('agents'):
+                raise RuntimeError('named chats require a chat_launch recipe; configure it and run setup first')
+            guest('systemctl', 'start', 'kuggis-chat@' + name + '.service', user='root')
+            guest('/usr/bin/python3', '/run/kuggis-runtime/guest.py', 'revive-chat', name)
+            command = guest_command(['/usr/bin/tmux', '-L', 'kuggis-chat-' + name, 'attach-session', '-t', '=workspace'], terminal=True)
+        else:
+            # Persistent server belongs to its own guest service, not to this SSH
+            # connection's transient cgroup. Do not enable/replay it at guest boot.
+            guest('systemctl', 'start', 'kuggis-terminal.service', user='root')
+            if workspace.get('agents'):
+                guest('/usr/bin/python3', '/run/kuggis-runtime/guest.py', 'revive-chat', name)
+            command = guest_command(['/usr/bin/tmux', '-L', 'kuggis', 'attach-session', '-t', 'workspace'], terminal=True)
     elif verb == 'shell' and not rest:
         command = guest_command(['/bin/bash', '-l'], terminal=True)
     elif verb == 'exec' and len(rest) >= 2 and rest[0] == '--':

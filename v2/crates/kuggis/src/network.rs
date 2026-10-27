@@ -1,5 +1,5 @@
 //! Pure policy decisions. No listener, DNS lookup or firewall is installed here.
-use crate::config::{Destination, Endpoint, Host, Workspace};
+use crate::config::{Destination, Egress, Endpoint, Host, Workspace};
 use std::net::IpAddr;
 
 pub struct Policy<'a> {
@@ -19,16 +19,21 @@ impl<'a> Policy<'a> {
             .find(|endpoint| &endpoint.host == host && endpoint.port.get() == port)
     }
 
+    pub fn allows_target(&self, host: &Host, port: u16) -> bool {
+        port != 0
+            && (self.workspace.egress() == Egress::Internet || self.endpoint(host, port).is_some())
+    }
+
     /// A future connector must connect to one of these checked addresses, without
     /// resolving the name again. A mixed public/private DNS response fails closed.
     pub fn allows_resolved(&self, host: &Host, port: u16, addresses: &[IpAddr]) -> bool {
-        let Some(endpoint) = self.endpoint(host, port) else {
-            return false;
-        };
-        !addresses.is_empty()
-            && addresses.iter().all(|address| match &endpoint.destination {
-                Destination::Public => public_address(*address),
-                Destination::Pinned { addresses: pins } => pins.contains(address),
+        self.allows_target(host, port)
+            && !addresses.is_empty()
+            && addresses.iter().all(|address| {
+                match self.endpoint(host, port).map(|e| &e.destination) {
+                    Some(Destination::Pinned { addresses: pins }) => pins.contains(address),
+                    _ => public_address(*address),
+                }
             })
     }
 }

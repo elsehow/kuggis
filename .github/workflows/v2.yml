@@ -1,0 +1,19 @@
+name: Kuggis v2
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --manifest-path v2/Cargo.toml --check
+      - run: cargo clippy --manifest-path v2/Cargo.toml --all-targets --locked -- -D warnings
+      - run: cargo test --manifest-path v2/Cargo.toml --locked
+      - run: python3 -m unittest discover -s v2/tests -p 'test_*.py' -q
+      - run: sh v2/scripts/package.sh dist

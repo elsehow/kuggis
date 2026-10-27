@@ -1,6 +1,6 @@
 use kuggis::{
     client,
-    config::GuestPath,
+    config::{GuestPath, Name},
     deploy::Bundle,
     environment::Environment,
     ssh::{Invocation, Request},
@@ -13,7 +13,7 @@ use std::{
 
 const USAGE: &str = "kuggis v2 — configured autonomous workspaces
 
-  kuggis create [NAME] [--repo OWNER/REPO] [--host exe] [--agent pi]
+  kuggis create [NAME] [--repo OWNER/REPO] [--host exe] [--default-agent pi|codex]
                 [--github-access read|write] [--model exe-managed]
                 [--file SETUP_JSON] [--json] [--plan]
                 [--cpus N] [--memory-gib N]
@@ -24,12 +24,14 @@ const USAGE: &str = "kuggis v2 — configured autonomous workspaces
   kuggis render CONFIG
   kuggis bundle CONFIG
   kuggis setup CONFIG --bin LINUX_BINARY
-  kuggis connect CONFIG
+  kuggis connect CONFIG_OR_NAME [--chat NAME] [--agent AGENT]
+  kuggis connect CONFIG_OR_NAME --json
   kuggis shell CONFIG
   kuggis check CONFIG
   kuggis put CONFIG LOCAL_FILE GUEST_PATH [--replace]
   kuggis get CONFIG GUEST_PATH LOCAL_FILE [--replace]
   kuggis ssh-command CONFIG connect|shell|check
+  kuggis ssh-command CONFIG connect [--chat NAME] [--agent AGENT]
   kuggis ssh-command CONFIG put GUEST_PATH [--replace]
   kuggis ssh-command CONFIG get GUEST_PATH
 
@@ -38,6 +40,7 @@ render, bundle and ssh-command are descriptions, not live boundary checks.
 Setup needs a dedicated Ubuntu 24.04 host and preconfigured SSH authentication.";
 
 enum Operation {
+    Chats(bool),
     Validate,
     Render,
     Bundle,
@@ -98,6 +101,7 @@ fn run(args: Vec<String>) -> kuggis::Result<()> {
     let operation = parse_operation(&args[0], &args[2..])?;
     let workspace = load(&kuggis::onboarding::config_path(config)?)?;
     match operation {
+        Operation::Chats(json) => client::chats(&workspace, config, json)?,
         Operation::Validate => println!(
             "{}: valid v2 configuration (not installed)",
             workspace.name().as_str()
@@ -145,7 +149,9 @@ fn parse_operation(verb: &str, args: &[String]) -> kuggis::Result<Operation> {
         ("proxy", []) => Ok(Operation::Proxy),
         ("web", rest) => Ok(Operation::Web(kuggis::web::Options::parse(rest)?)),
         ("setup", [flag, binary]) if flag == "--bin" => Ok(Operation::Setup(binary.into())),
-        ("connect", []) => Ok(Operation::Remote(Request::Connect)),
+        ("connect", []) => Ok(Operation::Chats(false)),
+        ("connect", [flag]) if flag == "--json" => Ok(Operation::Chats(true)),
+        ("connect", rest) => Ok(Operation::Remote(connect_request(rest)?)),
         ("shell", []) => Ok(Operation::Remote(Request::Shell)),
         ("check", []) => Ok(Operation::Remote(Request::Check)),
         ("exec", [separator, program, rest @ ..]) if separator == "--" => {
@@ -197,7 +203,7 @@ fn parse_operation(verb: &str, args: &[String]) -> kuggis::Result<Operation> {
 fn parse_request(args: &[String]) -> kuggis::Result<Request> {
     let path = |value: &String| GuestPath::try_from(value.clone());
     match args {
-        [verb] if verb == "connect" => Ok(Request::Connect),
+        [verb, rest @ ..] if verb == "connect" => connect_request(rest),
         [verb] if verb == "shell" => Ok(Request::Shell),
         [verb] if verb == "check" => Ok(Request::Check),
         [verb, value] if verb == "put" => Ok(Request::Put {
@@ -211,6 +217,36 @@ fn parse_request(args: &[String]) -> kuggis::Result<Request> {
         [verb, value] if verb == "get" => Ok(Request::Get { path: path(value)? }),
         _ => Err(Error(USAGE.into())),
     }
+}
+
+fn connect_request(args: &[String]) -> kuggis::Result<Request> {
+    let (mut chat, mut agent) = (None, None);
+    let mut words = args.iter();
+    while let Some(flag) = words.next() {
+        let value = words
+            .next()
+            .ok_or_else(|| Error("expected a name after --chat or --agent".into()))?;
+        let target = match flag.as_str() {
+            "--chat" if chat.is_none() => &mut chat,
+            "--agent" if agent.is_none() => &mut agent,
+            _ => {
+                return Err(Error(
+                    "expected connect [--chat NAME] [--agent AGENT]".into(),
+                ))
+            }
+        };
+        *target = Some(Name::try_from(value.clone())?);
+    }
+    Ok(match (chat, agent) {
+        (Some(chat), Some(agent)) => Request::SelectChat { chat, agent },
+        (None, Some(_)) => {
+            return Err(Error(
+                "--agent requires --chat NAME; bare connect lists chats".into(),
+            ))
+        }
+        (Some(chat), None) => Request::Chat(chat),
+        (None, None) => Request::Chats,
+    })
 }
 
 fn print_json(value: &impl serde::Serialize) -> kuggis::Result<()> {

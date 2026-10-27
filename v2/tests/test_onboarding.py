@@ -30,7 +30,7 @@ def payload(root):
             'directory':str(root/'workspace'),'binary':str(binary),'cli':'kuggis',
             'workspace':{'version':2,'name':'test'},'ssh_config':str(root/'operator-ssh'),
             'json_output':True,'host_executor':'unused fake',
-            'recipes':{'release.json':'{}','install.py':'','models.json':'{}','smoke.py':''}}
+            'recipes':{agent:{'release.json':'{}','install.py':'','models.json':'{}','smoke.py':''} for agent in ('pi','codex')}}
 
 
 class Fake(o.Setup):
@@ -40,8 +40,8 @@ class Fake(o.Setup):
 
     def progress(self, step, message): self.step=step
 
-    def download(self):
-        p=self.directory/'pi.tar.gz';p.write_bytes(b'archive');return p
+    def download(self, agent):
+        p=self.directory/(agent+'.tar.gz');p.write_bytes(b'archive');return p
 
     def control(self, *words, as_json=False):
         self.remote['calls'].append(words)
@@ -86,6 +86,16 @@ class SetupEffects(unittest.TestCase):
     def tearDown(self): self.temp.cleanup()
 
     def run_setup(self): return Fake(copy.deepcopy(self.p),self.remote).provision()
+
+    def test_both_agents_are_installed_regardless_of_default(self):
+        self.p['request']['agent']='codex'
+        result=self.run_setup()
+        self.assertTrue(result['ok'])
+        calls=self.remote['calls']
+        for agent in ('pi','codex'):
+            self.assertTrue(any(c[:2]==('cli','put') and '.kuggis-setup/'+agent+'/install.py' in c for c in calls))
+        self.assertTrue(any(c[:2]==('cli','put') and '.kuggis-setup/codex/models.json' in c for c in calls))
+        self.assertTrue(any(o.DEFAULT_MODEL in c for c in calls))
 
     def test_creation_timeout_reconciles_owned_host_instead_of_duplicate(self):
         self.remote['lose_create_response']=True
@@ -213,6 +223,9 @@ class InputsAndRecovery(unittest.TestCase):
         (home/'.local/share/kuggis/setup').mkdir(parents=True)
         clone=o.CLONE.replace('/home/agent',str(home))
         for attempt in range(2):
+            staging=home/'.local/share/kuggis/setup/agents'
+            staging.mkdir(exist_ok=True)
+            (workspace/'.kuggis-setup').symlink_to(staging)
             sp.run([os.sys.executable,'-c',clone,source.as_uri()],env=env,check=True,capture_output=True)
             if not attempt:(workspace/'file').write_text('pending user work')
         self.assertEqual((workspace/'file').read_text(),'pending user work')

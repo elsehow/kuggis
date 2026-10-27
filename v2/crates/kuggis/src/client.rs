@@ -1,13 +1,13 @@
 //! Local effects: stream an installation or file over an already authorized SSH
 //! connection. Never read resource credentials or interpret guest output as code.
 use crate::{
-    config::{GuestPath, Ingress, Workspace},
+    config::{GuestPath, Ingress, Name, Workspace},
     deploy::Bundle,
     ssh::{Invocation, Request},
     transfer::{self, PendingFile},
     Error, Result,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
     io::{BufReader, Read, Seek, SeekFrom, Write},
@@ -31,7 +31,105 @@ fn success(status: std::process::ExitStatus) -> Result<()> {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Chat {
+    pub name: Name,
+    pub agent: Option<Name>,
+    pub running: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatIndex {
+    pub chats: Vec<Chat>,
+    pub agents: Vec<Name>,
+    pub default_agent: Option<Name>,
+}
+
+pub fn chats(workspace: &Workspace, target: &str, json: bool) -> Result<()> {
+    let mut process = Process(
+        Invocation::for_request(workspace, &Request::Chats)
+            .command()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()?,
+    );
+    let mut bytes = Vec::new();
+    process
+        .0
+        .stdout
+        .take()
+        .ok_or_else(|| Error("missing chat list".into()))?
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(Error("chat list exceeds 1 MiB".into()));
+    }
+    success(process.0.wait()?)?;
+    let index: ChatIndex = serde_json::from_slice(&bytes)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&index)?);
+    } else {
+        let target = if Name::try_from(target.to_owned()).is_ok() {
+            target.to_owned()
+        } else {
+            crate::ssh::quote(target)
+        };
+        println!("Chats in {}:", target);
+        if index.chats.is_empty() {
+            println!("  No chats yet.");
+        }
+        for chat in &index.chats {
+            println!(
+                "  {:<24} {:<10} {}",
+                chat.name.as_str(),
+                chat.agent.as_ref().map(Name::as_str).unwrap_or("legacy"),
+                if chat.running { "running" } else { "stopped" }
+            );
+        }
+        println!("\nOpen a chat: kuggis connect {} --chat NAME", target);
+        println!(
+            "Create one:  kuggis connect {} --chat new-chat{}",
+            target,
+            index
+                .default_agent
+                .as_ref()
+                .map(|agent| format!(" --agent {}", agent.as_str()))
+                .unwrap_or_default()
+        );
+        if !index.agents.is_empty() {
+            println!(
+                "Available agents: {}",
+                index
+                    .agents
+                    .iter()
+                    .map(Name::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn enter(workspace: &Workspace, request: Request) -> Result<()> {
+    if matches!(&request, Request::Chat(name) if name.as_str() != "default")
+        && workspace.chat_launch().is_none()
+        && workspace.agents().is_empty()
+    {
+        return Err(Error(
+            "named chats require a chat_launch recipe; configure it and run setup first".into(),
+        ));
+    }
+    if let Request::SelectChat { agent, .. } = &request {
+        if !workspace.agents().contains_key(agent) {
+            return Err(Error(format!(
+                "agent {} is not configured in this workspace",
+                agent.as_str()
+            )));
+        }
+    }
     let mut command = Invocation::for_request(workspace, &request).command();
     if matches!(request, Request::Check) {
         command.stdin(Stdio::null());

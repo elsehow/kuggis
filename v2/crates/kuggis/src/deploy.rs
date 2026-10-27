@@ -1,7 +1,10 @@
 //! Pure compilation of a validated workspace into plaintext host/guest files.
 //! Only the host executor performs effects. Rendered artifacts are not evidence
 //! that the live boundary matches them.
-use crate::{config::Workspace, Error, Result};
+use crate::{
+    config::{Egress, Workspace},
+    Error, Result,
+};
 use serde::Serialize;
 use std::{collections::BTreeMap, net::IpAddr};
 
@@ -74,7 +77,11 @@ impl<'a> Bundle<'a> {
             HOST_EXECUTOR.into(),
         );
         add(&format!("{RUNTIME}/guest.py"), 0o644, GUEST_EXECUTOR.into());
-        add("/etc/kuggis/wall.nft", 0o600, firewall());
+        add(
+            "/etc/kuggis/wall.nft",
+            0o600,
+            firewall_for(workspace.egress()),
+        );
         add(
             "/etc/systemd/network/00-kuggis-v2.network",
             0o644,
@@ -131,6 +138,24 @@ impl<'a> Bundle<'a> {
 
 pub fn firewall() -> String {
     include_str!("../templates/wall.nft").into()
+}
+
+pub fn firewall_for(egress: Egress) -> String {
+    if egress == Egress::Restricted {
+        return firewall();
+    }
+    let forward = r#"  iifname "kv2-host" ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.0.2.0/24, 192.168.0.0/16, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/3 } counter reject
+  iifname "kv2-host" oifname != "kv2-host" ip saddr 10.205.0.2 accept
+  oifname "kv2-host" ip daddr 10.205.0.2 ct state established,related accept
+"#;
+    let nat = r#" chain postrouting {
+  type nat hook postrouting priority srcnat; policy accept;
+  ip saddr 10.205.0.2 oifname != "kv2-host" masquerade
+ }
+"#;
+    firewall().replace(" chain forward {\n  type filter hook forward priority -200; policy accept;\n",
+        &format!(" chain forward {{\n  type filter hook forward priority -200; policy accept;\n{forward}"))
+        .replace(" chain output {", &format!("{nat} chain output {{"))
 }
 
 /// Normalized nftables state for host evidence comparisons. Counters and object

@@ -1,7 +1,7 @@
 //! Bounded CONNECT transport. The pure Policy grants a concrete resolved target;
 //! connections use those checked IPs directly, with no second DNS lookup.
 use crate::{
-    config::{Host, Workspace},
+    config::{Egress, Host, Workspace},
     deploy,
     network::Policy,
     Error, Result,
@@ -58,6 +58,72 @@ impl Target {
         }
         Ok(Self { host, port: parsed })
     }
+}
+
+/// Ordinary HTTP for proxy-aware clients in internet mode. Route by the URL,
+/// strip proxy credentials, and close after one response instead of pooling.
+pub fn http_request(head: &[u8]) -> Result<(Target, Vec<u8>)> {
+    let text = std::str::from_utf8(head).map_err(|_| Error("invalid HTTP header".into()))?;
+    let mut lines = text.split("\r\n");
+    let words: Vec<_> = lines.next().unwrap_or_default().split(' ').collect();
+    if words.len() != 3
+        || words[0].is_empty()
+        || words[0].len() > 32
+        || !words[0].bytes().all(|b| b.is_ascii_uppercase())
+        || words[0] == "CONNECT"
+        || !["HTTP/1.0", "HTTP/1.1"].contains(&words[2])
+    {
+        return Err(Error("expected an absolute HTTP request".into()));
+    }
+    let url = words[1]
+        .strip_prefix("http://")
+        .ok_or_else(|| Error("expected http:// URL".into()))?;
+    if url.chars().any(|c| c.is_control() || c == '#') {
+        return Err(Error("invalid HTTP URL".into()));
+    }
+    let split = url.find(['/', '?']).unwrap_or(url.len());
+    let (authority, path) = url.split_at(split);
+    let with_port = if authority.ends_with(']') || !authority.contains(':') {
+        format!("{authority}:80")
+    } else {
+        authority.to_owned()
+    };
+    let target = Target::parse(&format!("CONNECT {with_port} HTTP/1.1"))?;
+    let path = if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        format!("/{path}")
+    };
+    let mut forwarded = format!(
+        "{} {path} {}\r\nHost: {authority}\r\nConnection: close\r\n",
+        words[0], words[2]
+    );
+    for line in lines.take_while(|line| !line.is_empty()) {
+        let (key, _) = line
+            .split_once(':')
+            .ok_or_else(|| Error("invalid HTTP header".into()))?;
+        if key.is_empty()
+            || !key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+            || line.chars().any(|c| c.is_control() && c != '\t')
+        {
+            return Err(Error("invalid HTTP header".into()));
+        }
+        if ![
+            "host",
+            "connection",
+            "proxy-connection",
+            "proxy-authorization",
+        ]
+        .contains(&key.to_ascii_lowercase().as_str())
+        {
+            forwarded.push_str(line);
+            forwarded.push_str("\r\n");
+        }
+    }
+    forwarded.push_str("\r\n");
+    Ok((target, forwarded.into_bytes()))
 }
 
 pub fn serve(workspace: Workspace) -> Result<()> {
@@ -168,12 +234,18 @@ pub fn handle(
         .ok()
         .and_then(|head| head.split("\r\n").next())
         .and_then(|line| Target::parse(line).ok());
-    let Some(target) = target else {
+    let request = target.map(|target| (target, None)).or_else(|| {
+        (workspace.egress() == Egress::Internet)
+            .then(|| http_request(&head[..end]).ok())
+            .flatten()
+            .map(|(target, forwarded)| (target, Some(forwarded)))
+    });
+    let Some((target, forwarded)) = request else {
         refuse(client, 400);
         return Ok(());
     };
     let policy = Policy::new(workspace);
-    if policy.endpoint(&target.host, target.port).is_none() {
+    if !policy.allows_target(&target.host, target.port) {
         refuse(client, 403);
         return Ok(());
     }
@@ -198,7 +270,11 @@ pub fn handle(
         return Ok(());
     };
     remote.set_write_timeout(Some(Duration::from_secs(30)))?;
-    client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
+    if let Some(forwarded) = &forwarded {
+        remote.write_all(forwarded)?;
+    } else {
+        client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
+    }
     remote.write_all(&head[end..])?;
     client.set_read_timeout(None)?;
     let mut from_client = client.try_clone()?;
@@ -208,6 +284,9 @@ pub fn handle(
         let _ = to_remote.shutdown(Shutdown::Write);
     });
     let _ = io::copy(&mut remote, &mut client);
+    if forwarded.is_some() {
+        let _ = client.shutdown(Shutdown::Both);
+    }
     let _ = client.shutdown(Shutdown::Write);
     let _ = upstream.join();
     Ok(())

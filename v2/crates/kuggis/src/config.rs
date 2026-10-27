@@ -2,7 +2,7 @@
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     net::IpAddr,
     num::{NonZeroU16, NonZeroU64},
 };
@@ -164,15 +164,66 @@ pub enum Ingress {
     },
 }
 
+/// Public internet access is independent of private resource grants and ingress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Egress {
+    #[default]
+    Restricted,
+    Internet,
+}
+
+fn restricted(egress: &Egress) -> bool {
+    *egress == Egress::Restricted
+}
+
+/// Can only be constructed by strict deserialization followed by validation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "Vec<String>", into = "Vec<String>")]
+pub struct ChatLaunch(Vec<String>);
+
+impl TryFrom<Vec<String>> for ChatLaunch {
+    type Error = Error;
+    fn try_from(argv: Vec<String>) -> Result<Self> {
+        if argv.is_empty()
+            || argv[0].is_empty()
+            || argv[0].starts_with('-')
+            || argv[0].contains("{chat}")
+            || argv.iter().any(|arg| arg.contains('\0'))
+            || !argv.iter().skip(1).any(|arg| arg.contains("{chat}"))
+        {
+            return Err(Error("chat_launch must be a nonempty argv with {chat} in an argument after the executable".into()));
+        }
+        Ok(Self(argv))
+    }
+}
+
+impl From<ChatLaunch> for Vec<String> {
+    fn from(launch: ChatLaunch) -> Self {
+        launch.0
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRecipe {
+    pub launch: Vec<String>,
+    pub chat_launch: ChatLaunch,
+}
+
 /// Can only be constructed by strict deserialization followed by validation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "Declaration", into = "Declaration")]
 pub struct Workspace {
     name: Name,
+    egress: Egress,
     memory_bytes: NonZeroU64,
     ssh: SshTarget,
     ssh_config: Option<HostPath>,
     launch: Vec<String>,
+    chat_launch: Option<ChatLaunch>,
+    agents: BTreeMap<Name, AgentRecipe>,
+    default_agent: Option<Name>,
     packages: Vec<Package>,
     resources: Vec<Resource>,
     private_web: Vec<PrivateWeb>,
@@ -184,12 +235,20 @@ pub struct Workspace {
 struct Declaration {
     version: u8,
     name: Name,
+    #[serde(default, skip_serializing_if = "restricted")]
+    egress: Egress,
     #[serde(default = "default_memory")]
     memory_bytes: NonZeroU64,
     ssh: SshTarget,
     #[serde(default)]
     ssh_config: Option<HostPath>,
     launch: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chat_launch: Option<ChatLaunch>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    agents: BTreeMap<Name, AgentRecipe>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_agent: Option<Name>,
     #[serde(default)]
     packages: Vec<Package>,
     #[serde(default)]
@@ -226,6 +285,27 @@ impl TryFrom<Declaration> for Workspace {
             ));
         }
         let mut names = BTreeSet::new();
+        if raw.agents.is_empty() != raw.default_agent.is_none()
+            || raw
+                .default_agent
+                .as_ref()
+                .is_some_and(|name| !raw.agents.contains_key(name))
+        {
+            return Err(Error(
+                "agents requires a default_agent naming a configured recipe".into(),
+            ));
+        }
+        for recipe in raw.agents.values() {
+            if recipe.launch.is_empty()
+                || recipe.launch[0].is_empty()
+                || recipe.launch[0].starts_with('-')
+                || recipe.launch.iter().any(|arg| arg.contains('\0'))
+            {
+                return Err(Error(
+                    "agent launch must be a nonempty argv without NUL bytes".into(),
+                ));
+            }
+        }
         let mut endpoints = BTreeSet::new();
         let mut targets: BTreeSet<&str> = BTreeSet::new();
         for resource in &raw.resources {
@@ -298,10 +378,14 @@ impl TryFrom<Declaration> for Workspace {
         }
         Ok(Self {
             name: raw.name,
+            egress: raw.egress,
             memory_bytes: raw.memory_bytes,
             ssh: raw.ssh,
             ssh_config: raw.ssh_config,
             launch: raw.launch,
+            chat_launch: raw.chat_launch,
+            agents: raw.agents,
+            default_agent: raw.default_agent,
             packages: raw.packages,
             resources: raw.resources,
             private_web: raw.private_web,
@@ -315,10 +399,14 @@ impl From<Workspace> for Declaration {
         Self {
             version: 2,
             name: workspace.name,
+            egress: workspace.egress,
             memory_bytes: workspace.memory_bytes,
             ssh: workspace.ssh,
             ssh_config: workspace.ssh_config,
             launch: workspace.launch,
+            chat_launch: workspace.chat_launch,
+            agents: workspace.agents,
+            default_agent: workspace.default_agent,
             packages: workspace.packages,
             resources: workspace.resources,
             private_web: workspace.private_web,
@@ -342,6 +430,9 @@ impl Workspace {
     pub fn name(&self) -> &Name {
         &self.name
     }
+    pub fn egress(&self) -> Egress {
+        self.egress
+    }
     pub fn memory_bytes(&self) -> NonZeroU64 {
         self.memory_bytes
     }
@@ -350,6 +441,15 @@ impl Workspace {
     }
     pub fn launch(&self) -> &[String] {
         &self.launch
+    }
+    pub fn chat_launch(&self) -> Option<&ChatLaunch> {
+        self.chat_launch.as_ref()
+    }
+    pub fn agents(&self) -> &BTreeMap<Name, AgentRecipe> {
+        &self.agents
+    }
+    pub fn default_agent(&self) -> Option<&Name> {
+        self.default_agent.as_ref()
     }
     pub fn ssh_config(&self) -> Option<&HostPath> {
         self.ssh_config.as_ref()

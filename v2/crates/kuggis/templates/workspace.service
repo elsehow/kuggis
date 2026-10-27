@@ -1,8 +1,8 @@
 [Unit]
 Description=Kuggis persistent workspace
-Requires=kuggis-v2-wall.service kuggis-v2-proxy.service
+Requires=kuggis-v2-wall.service
 After=kuggis-v2-wall.service kuggis-v2-proxy.service
-Wants=@WEB_SOCKETS@
+Wants=kuggis-v2-proxy.service @WEB_SOCKETS@
 
 [Service]
 Type=notify

@@ -117,6 +117,16 @@ Pi's most recent conversation for the workspace; Kuggis never resubmits a prompt
 An SSH detach leaves Pi running. After a reboot, only explicit `connect` launches
 it again. These flags are described in [Pi's CLI documentation](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/docs/cli.md).
 
+The create recipe also sets `chat_launch` to Pi with `--offline --session-dir
+/home/agent/.kuggis/chats/{chat} --continue`. Use `kuggis connect NAME --chat
+research` for a separate persistent process and native session directory. The
+default launch/history stays unchanged. A new name begins with an empty history;
+reconnecting to an existing name attaches to its process or resumes its latest
+saved conversation if that process exited. `/new`, `/name`, and `/resume` remain
+native Pi commands within that history directory. These chats share project files
+and Pi credentials/settings. Never point two named-chat recipes at the same
+session file or shared `--continue` directory.
+
 ## Test status
 
 For a repeatable live check, upload `smoke.py` with `kuggis put` and run it

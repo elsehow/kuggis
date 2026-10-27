@@ -1,9 +1,9 @@
 # Kuggis v2 onboarding
 
-Status: the initial exe/Pi create flow is implemented. See the
+Status: exe creation with Pi or Codex and saved per-chat agent selection is implemented. See the
 [current CLI guide](../v2/README.md#create-an-exe-workspace) for supported inputs
-and prerequisites. The future agent/login section and `edit` command below
-remain a roadmap, not available options.
+and prerequisites. Claude Code, native login management, and the `edit` command
+below remain a roadmap, not available options.
 
 The initial recipe includes a private `preview` mapping (guest 3000, host 8000).
 `kuggis web NAME` opens it over SSH; `--no-open` and `--plan` support agents.
@@ -24,15 +24,15 @@ $ kuggis create bigbrain
 Host: exe.dev
 Repository: elsehow/BigBrain
 Repository access: read and write
-Agent: Pi
+Agents: Pi and Codex (select on first connection)
 Model: existing exe-managed integration
 
 Creating host...
 Configuring repository access...
-Installing workspace and Pi...
+Installing workspace, Pi and Codex...
 Cloning repository...
 Checking Git, model tools and isolation...
-Ready. Run: kuggis connect bigbrain
+Ready. Run: kuggis connect bigbrain --chat main --agent codex
 ```
 
 These are configuration questions. Once the required answers are supplied,
@@ -44,7 +44,7 @@ Equivalent unattended entry:
 
 ```sh
 kuggis create bigbrain --host exe --repo elsehow/BigBrain \
-  --github-access write --agent pi --model exe-managed --json
+  --github-access write --model exe-managed --json
 ```
 
 Also accept `kuggis create --file setup.json --json`. Flags, a declarative input
@@ -53,16 +53,18 @@ non-TTY invocations never prompt; missing inputs yield structured errors with
 field names and a nonzero exit. Progress goes to stderr, one final report to
 stdout. An agent does not need to drive a terminal wizard.
 
-The first version supports fresh exe hosts, Pi, the existing managed-model
+The current version installs Pi and Codex on fresh exe hosts, using the existing managed-model
 integration, and one GitHub repository. Keep the existing advanced SSH setup
 command available. Other hosts and agent recipes can follow independently;
 do not present options that the implementation cannot actually install.
 
-## Later: choose an agent, then configure it inside
+## Choose an agent, then configure it inside
 
-Extend agent selection through tested installation recipes for Pi, Codex and
-Claude Code. Choosing a recipe installs the program, configures unattended tool
-execution within the workspace boundary, and sets its native terminal launch.
+Creation installs recipes for Pi and Codex. Extend this to Claude Code. Each
+recipe configures unattended tool execution within the workspace boundary and
+sets its native terminal launch. Select the agent with `connect --chat NAME --agent` on a
+chat's first connection; reconnects retain it. New chats without a selection use
+the declaration's `default_agent` (Pi unless `create --default-agent` changes it).
 The workspace, repository and files stay the same if the user later switches
 agents. Conversations remain in each agent's native format; do not promise
 cross-agent session conversion or interrupt a running session implicitly.

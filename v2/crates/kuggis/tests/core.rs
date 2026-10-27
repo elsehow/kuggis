@@ -315,7 +315,10 @@ fn ssh_is_noninteractive_for_auth_and_never_passes_launch_to_host_shell() {
     let mut value = example();
     value["launch"] = json!(["bash", "-c", "printf guest-only"]);
     let workspace = workspace(value);
-    let invocation = Invocation::for_request(&workspace, &Request::Connect);
+    let invocation = Invocation::for_request(
+        &workspace,
+        &Request::Chat("default".to_owned().try_into().unwrap()),
+    );
     assert_eq!(invocation.args[0], "-tt");
     for option in [
         "BatchMode=yes",

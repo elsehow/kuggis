@@ -59,6 +59,7 @@ pub enum Host {
 pub enum Agent {
     #[default]
     Pi,
+    Codex,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -88,7 +89,7 @@ pub struct CreateRequest {
     pub github_access: Access,
     #[serde(default)]
     pub host: Host,
-    #[serde(default)]
+    #[serde(default, alias = "default_agent")]
     pub agent: Agent,
     #[serde(default)]
     pub model: Model,
@@ -131,17 +132,32 @@ impl CreateRequest {
                 "destination":{"kind":"pinned","addresses":["169.254.169.254"]}
             }]}
         ]);
-        resources
-            .as_array_mut()
-            .unwrap()
-            .push(serde_json::from_str(include_str!(
-                "../../../recipes/pi/exe-resource.json"
-            ))?);
+        let models: Value =
+            serde_json::from_str(include_str!("../../../recipes/pi/exe-resource.json"))?;
+        resources.as_array_mut().unwrap().push(models);
+        let agents = json!({
+            "pi": {
+                "launch":["/home/agent/.local/bin/pi","--offline","--continue"],
+                "chat_launch":["/home/agent/.local/bin/pi","--offline","--session-dir","/home/agent/.kuggis/chats/{chat}","--continue"]
+            },
+            "codex": {
+                "launch":["/home/agent/.local/bin/kuggis-codex","default"],
+                "chat_launch":["/home/agent/.local/bin/kuggis-codex","{chat}"]
+            }
+        });
+        let agent = match self.agent {
+            Agent::Pi => "pi",
+            Agent::Codex => "codex",
+        };
+        let launch = &agents[agent]["launch"];
+        let chat_launch = &agents[agent]["chat_launch"];
         Workspace::parse(
             &json!({
                 "version":2, "name":self.name, "ssh":format!("{}.exe.xyz",self.vm()),
                 "ssh_config":ssh_config,
-                "launch":["/home/agent/.local/bin/pi","--offline","--continue"],
+                "launch":launch, "chat_launch":chat_launch,
+                "default_agent":agent,
+                "agents":agents,
                 "memory_bytes":(u64::from(self.memory_gib)-2)*1024*1024*1024,
                 "packages":["fd-find","ripgrep"], "resources":resources,
                 "private_web":[{"name":"preview","guest_port":3000,"host_port":8000}]
@@ -230,9 +246,13 @@ pub fn create(args: &[String]) -> Result<()> {
                     return Err(Error(format!("duplicate {arg}")));
                 }
             }
-            "--repo" | "--host" | "--agent" | "--model" | "--github-access" | "--cpus"
-            | "--memory-gib" => {
-                let key = arg.trim_start_matches("--").replace('-', "_");
+            "--repo" | "--host" | "--agent" | "--default-agent" | "--model" | "--github-access"
+            | "--cpus" | "--memory-gib" => {
+                let key = if arg == "--default-agent" {
+                    "agent".to_owned()
+                } else {
+                    arg.trim_start_matches("--").replace('-', "_")
+                };
                 let value = args
                     .next()
                     .ok_or_else(|| Error(format!("missing value for {arg}")))?;
@@ -277,7 +297,7 @@ pub fn create(args: &[String]) -> Result<()> {
     }
     let interactive = std::io::stdin().is_terminal() && !json_output;
     if interactive {
-        eprintln!("Create a workspace. Available recipe: exe.dev / Pi / managed models.");
+        eprintln!("Create a workspace on exe.dev with managed models.");
         for (key, label, default) in [
             ("name", "Workspace name", ""),
             ("repo", "GitHub repository (OWNER/REPO)", ""),
@@ -318,16 +338,26 @@ pub fn create(args: &[String]) -> Result<()> {
                 .join("x86_64-unknown-linux-musl/release/kuggis")
         }
     });
+    let recipes = json!({
+        "pi": {
+            "install.py":include_str!("../../../recipes/pi/install.py"),
+            "release.json":include_str!("../../../recipes/pi/release.json"),
+            "settings.json":include_str!("../../../recipes/pi/settings.json"),
+            "models.json":include_str!("../../../recipes/pi/exe-models.json"),
+            "smoke.py":include_str!("../../../recipes/pi/smoke.py")
+        },
+        "codex": {
+            "install.py":include_str!("../../../recipes/codex/install.py"),
+            "release.json":include_str!("../../../recipes/codex/release.json"),
+            "config.toml":include_str!("../../../recipes/codex/config.toml"),
+            "models.json":include_str!("../../../recipes/codex/models.json"),
+            "launch.py":include_str!("../../../recipes/codex/launch.py"),
+            "smoke.py":include_str!("../../../recipes/codex/smoke.py")
+        }
+    });
     let payload = json!({"request":request,"workspace":workspace,"directory":directory,
     "binary":binary,"cli":exe,"ssh_config":ssh_config,"json_output":json_output,
-    "host_executor":crate::deploy::HOST_EXECUTOR,
-    "recipes":{
-        "install.py":include_str!("../../../recipes/pi/install.py"),
-        "release.json":include_str!("../../../recipes/pi/release.json"),
-        "settings.json":include_str!("../../../recipes/pi/settings.json"),
-        "models.json":include_str!("../../../recipes/pi/exe-models.json"),
-        "smoke.py":include_str!("../../../recipes/pi/smoke.py")
-    }});
+    "host_executor":crate::deploy::HOST_EXECUTOR,"recipes":recipes});
     let mut child = Command::new("python3")
         .args(["-c", include_str!("../runtime/onboard.py")])
         .stdin(Stdio::piped())

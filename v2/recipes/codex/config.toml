@@ -1,0 +1,12 @@
+model = "gpt-6.1-sol"
+model_provider = "exe"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+web_search = "disabled"
+model_catalog_json = "/home/agent/.local/share/kuggis/codex/models.json"
+
+[model_providers.exe]
+name = "exe managed models"
+base_url = "https://llm.int.exe.xyz/openai/v1"
+wire_api = "responses"
+requires_openai_auth = false

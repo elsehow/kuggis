@@ -314,3 +314,89 @@ the client exits, and preservation/update of existing agent instructions.
 Formatting, Clippy and matching packaged local/Linux builds also pass. New
 wizard workspaces now declare preview port 3000; this change was checked in the
 configuration tests, without creating another disposable VM.
+
+## Named chats
+
+On 2026-10-27, Merrillfront's helpers and declarative chat recipe were updated
+without restarting its default Pi process (PID 160 before and after). Two named
+chats began with empty, separate history directories, each completed a bounded
+model exchange, and neither contained the other's message. Detach/reconnect
+kept the same Pi process. After one Pi exited, two simultaneous connect calls
+resumed one replacement process and restored its original session file and
+response. The other chat and default Pi retained their process IDs. Trial
+services were stopped afterward; synthetic histories remain outside the default
+history directory. No guest reboot was performed for this change.
+
+43 Rust and 47 Python tests pass, plus formatting, Clippy and matching packaged
+local/Linux builds. Coverage includes validated names/argv recipes, legacy
+config round trips, default alias compatibility, missing-recipe errors,
+separate guest service selection, and serialized dead-pane recovery. The Pi
+recipe supplies history-directory isolation; other agents need their own
+declarative chat recipe. Receipts are in ignored `.kuggis/chat-acceptance.json`
+and `.kuggis/chat-upgrade-receipt.json`.
+
+## Public internet egress
+
+On 2026-10-27, Merrillfront was changed to `egress: "internet"`. Guest HTTP and
+HTTPS requests through the proxy returned 200; direct HTTP returned 200, direct
+HTTPS reached a 301 redirect, and direct IPv4 DNS resolved successfully. The
+private repository's HEAD remained readable and a sessionless Pi request through
+the existing model resource returned its expected answer. Policy (PID 160), VT
+(PID 87055), and the guest leader remained running through the update. All four
+live boundary checks passed, including rejection of management and ungranted
+metadata access. Preview visibility was not changed.
+
+The first live attempt exposed an output-hook ordering issue: reply filtering
+at conntrack's own priority could reject the proxy's SYN-ACK after NAT was
+registered. Output filtering now runs strictly after conntrack. Firewall batches
+also replace the whole Kuggis table atomically, so switching back to restricted
+mode removes the NAT chain. Applying internet → restricted → internet rules in
+a disposable Linux network namespace verified this cleanup. The unsuccessful
+attempts were rolled back; final installed state matches the declared policy.
+
+47 Rust and 48 Python tests pass, plus formatting, Clippy and packaged local/Linux
+builds. New coverage includes public target policy, preserved private pins,
+HTTP header rewriting and credential stripping, response/connection completion,
+legacy restricted defaults, and mode-specific forwarding. No guest reboot was
+performed. Direct IPv6 is not configured; public IPv6 remains available through
+the proxy only when supported by the host. Receipts are in ignored
+`.kuggis/internet-upgrade-receipt.json` and `.kuggis/internet-acceptance.json`.
+
+## Agent selection and chat discovery
+
+On 2026-10-27, a fresh disposable exe host completed creation with **both Pi and
+Codex** installed. Both agents passed a real tool/file round trip through the
+managed gateway; Git read access and all boundary checks passed. Reapplying the
+latest helper passed, and bare `connect --json` returned an empty chat list with
+both available agents without starting either one. The trial uses the existing
+read-only Git integration; no push was attempted. Its receipt is in ignored
+`.kuggis/workspaces/agents-trial/receipt.json`.
+The test VM and its repository attachment were removed after verification;
+the reusable Git integration was retained.
+
+Merrillfront's runtime was updated without restarting its guest or its active Pi
+chats. Existing bindings stayed Pi when the new-chat default became Codex.
+Codex 0.165.0 passed real tool/file checks with Sol 6.1, Terra 6.1, Astra 6, and
+Sol 6. Its native `/model` picker displayed those four entries. A fresh chat
+opened without folder-trust or action-approval questions. After that Codex
+process exited, explicit reconnect resumed the same native session and recalled
+the synthetic marker from its earlier exchange.
+Synthetic chat histories were archived outside the active chat list. Final
+discovery returned only `default`, `research`, and `vt`; all retained their Pi
+bindings. Local receipts are in ignored `.kuggis/agents-acceptance.json`.
+
+Bare `connect` now lists chats; opening or creating a chat requires `--chat`.
+Tests verify that listing neither starts services nor writes bindings, that
+explicit agent mismatches fail, and that concurrent creation saves one binding.
+The wizard has no agent question. `--default-agent` configures the fallback for
+new named chats; connect's `--agent` selects the saved agent per chat.
+
+49 Rust and 57 Python tests pass, as do formatting, Clippy, and packaged native
+and static Linux builds. CI now runs these v2 checks. The CI workflow itself has
+not run on GitHub yet. Claude Code and native OAuth setup remain unimplemented.
+
+Policy and VT have **not** been switched to Codex. Policy was actively working;
+VT received a new task during handoff preparation. The source-digest check
+rejected that stale handoff, leaving its Pi binding untouched. Their native Pi
+histories remain available; migration requires refreshed context after their
+active turns finish.

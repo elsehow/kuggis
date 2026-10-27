@@ -1,4 +1,4 @@
-"""Local exe/Pi setup effects. Input is compiled and validated by Rust.
+"""Local exe setup effects. Input is compiled and validated by Rust.
 
 No daemon or guest management credentials. All guest programs run through the
 existing host helper, after namespace entry and the drop to the agent user.
@@ -91,10 +91,13 @@ def check_grants(integrations, vm, request, github_name):
     return sorted(names)
 
 
-STAGE = '/home/agent/.local/share/kuggis/setup/pi'
+STAGE = '/home/agent/.local/share/kuggis/setup/agents'
 PREPARE = '''from pathlib import Path
-p=Path('/home/agent/.local/share/kuggis/setup/pi');p.mkdir(parents=True,exist_ok=True)
+import sys
+p=Path('/home/agent/.local/share/kuggis/setup/agents');p.mkdir(parents=True,exist_ok=True)
+(p/sys.argv[1]).mkdir(exist_ok=True)
 link=Path('/home/agent/workspace/.kuggis-setup')
+if link.is_symlink() and str(link.readlink())=='/home/agent/.local/share/kuggis/setup/pi':link.unlink()
 if link.is_symlink():
     assert link.readlink()==p, 'setup staging link belongs to another target'
 elif link.exists():
@@ -105,7 +108,7 @@ CLONE = '''import os,subprocess as sp,tempfile,sys,json
 from pathlib import Path
 root=Path('/home/agent/workspace'); url=sys.argv[1]
 link=root/'.kuggis-setup'
-if link.is_symlink() and str(link.readlink())=='/home/agent/.local/share/kuggis/setup/pi':link.unlink()
+if link.is_symlink() and str(link.readlink()) in ('/home/agent/.local/share/kuggis/setup/pi','/home/agent/.local/share/kuggis/setup/agents'):link.unlink()
 env=dict(os.environ,GIT_TERMINAL_PROMPT='0')
 if (root/'.git').exists():
     actual=sp.check_output(['git','-C',str(root),'remote','get-url','origin'],env=env,text=True).strip()
@@ -204,16 +207,16 @@ class Setup:
     def guest(self, *argv, timeout=120):
         return self.cli('exec','--',*argv,timeout=timeout)
 
-    def download(self):
-        release = json.loads(self.p['recipes']['release.json'])
+    def download(self, agent):
+        release = json.loads(self.p['recipes'][agent]['release.json'])
         spec = release['archives']['x86_64']
-        archive = self.directory/'pi.tar.gz'
+        archive = self.directory/(agent+'.tar.gz')
         if not archive.exists() or digest(archive) != spec['sha256']:
-            partial = self.directory/'pi.tar.gz.partial'
+            partial = archive.with_suffix('.gz.partial')
             self.run(['curl','--fail','--location','--silent','--show-error','--retry','2',
                       '--connect-timeout','20','--max-time','300',spec['url'],'--output',partial],timeout=660)
             if digest(partial) != spec['sha256']:
-                raise Failure('checksum_mismatch','Pi archive checksum does not match the pinned release.')
+                raise Failure('checksum_mismatch','Agent archive checksum does not match the pinned release.')
             os.replace(partial,archive)
         return archive
 
@@ -262,7 +265,7 @@ class Setup:
         for grant in integrations:
             if 'auto:all' in (grant.get('attachments') or []) and grant['name']!='llm' and not exact_github(grant,self.request):
                 raise Failure('broader_gateway_grant','Account-wide integration '+grant['name']+' would broaden this workspace. Adjust its attachment first.')
-        archive = self.download()
+        archives = {agent:self.download(agent) for agent in self.p['recipes']}
         github = select_github(integrations,self.request)
         if not github:
             key = hashlib.sha256((self.request['repo'].lower()+':'+self.request['github_access']).encode()).hexdigest()[:16]
@@ -308,7 +311,7 @@ class Setup:
                        'namespace["safe_directory"]("/etc/kuggis/recipes",0o700)\n'
                        'namespace["atomic_write"]("/etc/kuggis/recipes/pi-models.json",sys.stdin.buffer.read(),0o600)\n')
         self.ssh(self.vm+'.exe.xyz',['sudo','-n','python3','-c',host_script],
-                 data=self.p['recipes']['models.json'].encode(),generated=True)
+                 data=self.p['recipes']['pi']['models.json'].encode(),generated=True)
         setup_digest = hashlib.sha256((digest(binary)+json.dumps(self.p['workspace'],sort_keys=True)).encode()).hexdigest()
         install = self.receipt.get('setup_digest') != setup_digest
         if not install:
@@ -320,22 +323,28 @@ class Setup:
         if install:
             self.cli('setup','--bin',binary,timeout=1800)
             self.checkpoint(setup_digest=setup_digest)
-        self.progress('install_agent','Installing pinned Pi recipe…')
-        self.guest('/usr/bin/python3','-c',PREPARE)
-        for name,content in self.p['recipes'].items():
-            path = self.directory/name
-            atomic(path,content.encode())
-            if name!='models.json': self.cli('put',path,'.kuggis-setup/'+name,'--replace')
-        self.cli('put',archive,'.kuggis-setup/pi.tar.gz','--replace',timeout=300)
-        self.guest('/usr/bin/python3',STAGE+'/install.py',STAGE+'/pi.tar.gz')
+        for agent, recipes in self.p['recipes'].items():
+            self.progress('install_agent','Installing pinned '+agent+' recipe…')
+            self.guest('/usr/bin/python3','-c',PREPARE,agent)
+            local = self.directory/'recipes'/agent
+            local.mkdir(parents=True,exist_ok=True)
+            for name,content in recipes.items():
+                path = local/name
+                atomic(path,content.encode())
+                if name!='models.json' or agent=='codex':
+                    self.cli('put',path,'.kuggis-setup/'+agent+'/'+name,'--replace')
+            self.cli('put',archives[agent],'.kuggis-setup/'+agent+'/agent.tar.gz','--replace',timeout=300)
+            self.guest('/usr/bin/python3',STAGE+'/'+agent+'/install.py',STAGE+'/'+agent+'/agent.tar.gz')
         self.guest('/usr/bin/python3','-c',DEFAULT_MODEL)
         self.progress('repository','Preparing repository and checking Git access…')
         self.guest('/usr/bin/python3','-c',CLONE,'https://github.int.exe.xyz/'+self.request['repo']+'.git',timeout=300)
         self.progress('verify','Checking isolation and a real model/tool round trip…')
         boundary = json.loads(self.cli('check').stdout)
         if not boundary.get('ok'): raise Failure('boundary_failed','Boundary check did not pass.')
-        smoke = json.loads(self.guest('/usr/bin/python3',STAGE+'/smoke.py','exe/gpt-6.1-sol',timeout=240).stdout)
-        if not smoke.get('ok'): raise Failure('model_failed','Model/tool check did not pass.')
+        smoke = {}
+        for agent in self.p['recipes']:
+            smoke[agent] = json.loads(self.guest('/usr/bin/python3',STAGE+'/'+agent+'/smoke.py','exe/gpt-6.1-sol',timeout=240).stdout)
+            if not smoke[agent].get('ok'): raise Failure('model_failed',agent+' model/tool check did not pass.')
         self.checkpoint(status='ready',checks={'boundary':boundary,'model':smoke,'git_read':'verified',
                                               'github_access':self.request['github_access'],'git_push':'not_tested'})
         return {'ok':True,'name':self.request['name'],'status':'ready','vm':self.vm,

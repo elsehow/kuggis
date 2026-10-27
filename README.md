@@ -1,9 +1,26 @@
 # kuggis
 
-The next version is being drafted independently in [v2/](v2/README.md): flat,
-configured workspaces for agent-native terminal interfaces, with no runtime
-approval workflow. See the [v2 implementation plan](docs/v2-plan.md). The
-implementation and instructions below describe v1.
+Kuggis prepares persistent, isolated workspaces for coding agents. Use Pi or
+Codex through its native terminal interface; configure repository access,
+network access, and deployment resources in the environment. No nested cells
+or runtime approval workflow.
+
+**Start with [v2](v2/README.md)** for setup, named chats, file transfers, and
+private web previews. See its [testing guide](v2/TESTING.md) and
+[implementation plan](docs/v2-plan.md).
+
+```sh
+sh v2/scripts/package.sh dist
+dist/kuggis create my-project --repo owner/repository
+dist/kuggis connect my-project --chat main --agent codex
+dist/kuggis connect my-project --chat research --agent codex
+```
+
+The v2 crate lives in its own Cargo workspace. The legacy implementation remains
+in `cell/`, `web/`, and `deploy/` while existing cells transition. Its instructions
+follow for maintenance; use v2 for new workspaces.
+
+## Legacy v1
 
 Kuggis runs coding agents in cells on exe.dev VMs. Each cell declares its
 grants, runs behind a network wall, and speaks through a signed statement

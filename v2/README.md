@@ -31,17 +31,17 @@ agent workloads belong inside the guest, and the host remains trusted.
 
 ## Create an exe workspace
 
-The initial wizard installs Pi, grants access to one GitHub repository and uses
+The wizard installs Pi and Codex, grants access to one GitHub repository and uses
 exe's existing managed model integration. It handles the VM, SSH trust, complete
 configuration, agent files, repository clone and model/tool checks in one run:
 
 ```sh
 v2/target/debug/kuggis create bigbrain
-v2/target/debug/kuggis connect bigbrain
+v2/target/debug/kuggis connect bigbrain --chat main --agent codex
 ```
 
-The wizard asks for the repository and read/write scope; read is the default.
-This first recipe uses exe, Pi and managed models. It creates `kuggis-bigbrain`
+The wizard asks for the repository and read/write scope. Both agents use exe
+managed models; select an agent on the first connection to each chat. It creates `kuggis-bigbrain`
 as the provider VM name, leaving any VM named `bigbrain` alone. Defaults are
 2 CPUs, 8 GiB VM memory and a 6 GiB guest limit. It configures Pi's initial model
 as `exe/gpt-6.1-sol` without forcing a model on every launch or overwriting the
@@ -51,10 +51,12 @@ For an agent or script, supply the same inputs without a wizard:
 
 ```sh
 kuggis create bigbrain --repo elsehow/BigBrain --github-access write --json
+kuggis create another --repo owner/repo --json
+kuggis connect another --chat main --agent codex
 ```
 
 `--file setup.json` accepts the same fields (`name`, `repo`, `github_access`,
-`host`, `agent`, `model`, `cpus`, `memory_gib`, `version`). `--plan` validates and
+`host`, `default_agent`, `model`, `cpus`, `memory_gib`, `version`). `--plan` validates and
 prints the resolved request/declaration without provisioning anything. `--json`
 and non-TTY input never prompt. Progress goes to stderr; stdout contains one
 structured result, including the failed step and receipt on an error. Missing
@@ -94,13 +96,75 @@ a ready pair, run `sh v2/scripts/package.sh OUTPUT_DIRECTORY` and keep `kuggis`
 and `kuggis-linux-x86_64` together. Recipes and their checksums are embedded in
 the client. The wizard detects a missing helper before allocating a VM.
 
-Other agents, native provider login profiles, a deferred-login mode, editable
+Claude Code, native provider login profiles, a deferred-login mode, editable
 setup forms and custom preview-port options remain in the
 [onboarding roadmap](../docs/v2-onboarding.md). The initial recipe installs base
-workspace utilities and Pi; project-specific language toolchains, dependency
+workspace utilities and both agents; project-specific language toolchains, dependency
 endpoints and deployment resources remain environment configuration.
 
 ## Commands
+
+List chats, then explicitly select one or create a new name:
+
+```sh
+kuggis connect my-workspace
+kuggis connect my-workspace --chat research --agent codex
+kuggis connect my-workspace --chat research
+kuggis connect my-workspace --chat implementation --agent pi
+```
+
+Plain `connect` lists chats with their saved agent and running/stopped status,
+then shows commands to open or create one. `connect NAME --json` returns the
+same typed inventory for scripts. Listing never starts an agent or creates a
+chat. `--chat default` explicitly opens the original legacy terminal and history.
+The first connection to another name starts a separate agent; using the same name
+again attaches to that running agent. Detach with Ctrl-B then D. Each named chat
+has its own persistent tmux service and, with the Pi recipe, its own history
+directory. If the agent exits, reconnecting restarts it using that history.
+After a guest reboot, chats start only when explicitly connected; prompts are
+never replayed by Kuggis. Chat names use 1–48 lowercase letters, digits and
+hyphens, starting with a letter and ending with a letter or digit.
+
+When `agents` is configured, every chat saves its agent on first connection.
+`--agent codex` selects an installed recipe for a new chat. Subsequent connects
+remember it; omitting the flag never changes an existing chat's agent. Supplying
+a different agent for an existing name fails with a migration explanation.
+New chats without `--agent` use `default_agent`. Changing that default affects
+only new chats. `--agent` requires `--chat`; there is no implicit default chat.
+
+Bindings are ordinary versioned JSON in `~/.kuggis/chat-bindings/NAME.json` in
+the guest. The Rust core validates agent IDs and recipe arguments; each recipe
+owns native history and model/login configuration. Choose models inside the
+agent's own UI. See the [Codex recipe](recipes/codex/README.md), including its
+explicit Pi handoff procedure. The wizard installs both supported agents;
+`--agent` on connect does not install software or grant new access. Explicit new
+chats without `--agent` use Pi by default for compatibility; `create --default-agent codex`
+sets a different fallback without adding a wizard question. The earlier create
+flag/JSON field `agent` is retained as an alias for this default (and remains the
+serialized setup-receipt field for compatibility).
+
+Chats share the checkout, resources, credentials and servers. Model settings
+are owned by the recipe (Codex keeps them per chat; Pi uses shared settings).
+Use separate Git worktrees inside the cell for independent concurrent edits.
+In Pi, `/new` and `/resume` work within that named chat's history directory.
+Changing a Pi session's display name does not rename its Kuggis chat.
+
+The create wizard supplies the named-chat recipe automatically. Existing configs
+need an optional `chat_launch` argv and an updated setup. For Pi:
+
+```json
+"chat_launch": [
+  "/home/agent/.local/bin/pi", "--offline",
+  "--session-dir", "/home/agent/.kuggis/chats/{chat}", "--continue"
+]
+```
+
+The validated name replaces `{chat}` in arguments without shell evaluation.
+Keep `launch` unchanged to preserve existing default history, and retain any
+model flags needed by your environment in `chat_launch`. The recipe owns the
+agent's history-selection flags; Kuggis sets `KUGGIS_CHAT` and manages terminal
+lifetime. It does not translate agent conversation formats. A named request
+without a recipe fails explicitly rather than attaching to the default chat.
 
 From the repository root, after building:
 
@@ -166,6 +230,14 @@ Use the [synthetic example](examples/workspace.json) for the schema, or the
   run inside the guest, including first setup, and need the appropriate network grants.
   Agent-installed packages are not removed by setup.
 - `resources`: named bundles of exact endpoint pairs and credential sources.
+- `egress`: defaults to `"restricted"` (only declared proxy endpoints). Set
+  `"internet"` to allow all public destinations and ports: direct IPv4 traffic
+  including DNS, TCP and UDP, plus arbitrary public HTTP/HTTPS through the proxy.
+  Existing proxy environment variables can remain set. Private/link-local
+  services still require exact pinned resource grants through the proxy, and
+  host management access stays blocked. This does not expose inbound ports or
+  change preview visibility. Direct IPv6 is not configured in the initial guest
+  network; proxy connections can use IPv6 where the host supports it.
 - `private_web`: explicit guest/host port pairs; host relays bind loopback only.
 - `ingress`: defaults to `{"kind":"tunnel"}`. For exe, use
   `{"kind":"exe","vm":"example-vm","web":"preview"}`, where `preview`
@@ -205,9 +277,10 @@ exclude local, metadata and conservative special-use addresses; pins can allow
 explicit private or IPv4 link-local platform destinations. These are TCP grants:
 application authorization, including access through a shared gateway, belongs to
 the destination. The live proxy also rejects host-owned and guest
-boundary addresses and dials the checked IP without resolving again. HTTP clients
-use HTTPS CONNECT; outbound SSH uses a guest OpenSSH ProxyCommand through the same
-policy. Direct guest networking is blocked by the host firewall.
+boundary addresses and dials the checked IP without resolving again. HTTPS clients
+use CONNECT; outbound SSH uses a guest OpenSSH ProxyCommand through the same
+policy. Restricted mode blocks direct guest networking. Internet mode additionally
+supports ordinary HTTP proxy requests and direct public IPv4 traffic.
 
 Credential sources are protected root-owned files on the **deployment host**,
 not implicit laptop credentials. Targets are relative to the guest agent's home.
