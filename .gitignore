@@ -1,4 +1,5 @@
 cell/target/
+v2/target/
 cell/bindings/
 web/node_modules/
 web/dist/

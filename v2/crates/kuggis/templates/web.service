@@ -1,0 +1,12 @@
+[Unit]
+Description=Kuggis private @NAME@ relay
+BindsTo=kuggis-v2.service
+After=kuggis-v2.service
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 10.205.0.2:@GUEST_PORT@
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

@@ -1,0 +1,15 @@
+[Unit]
+Description=Kuggis private @NAME@ listener
+# The listener starts after a service, so it must not also precede sockets.target.
+DefaultDependencies=no
+BindsTo=kuggis-v2.service
+After=kuggis-v2.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Socket]
+ListenStream=127.0.0.1:@HOST_PORT@
+NoDelay=true
+
+[Install]
+WantedBy=multi-user.target

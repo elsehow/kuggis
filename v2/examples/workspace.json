@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "name": "project",
+  "ssh": "project-dev",
+  "launch": ["bash", "-l"],
+  "resources": [
+    {
+      "name": "source",
+      "endpoints": [{"host": "github.com", "port": 443}],
+      "credentials": []
+    },
+    {
+      "name": "deploy",
+      "endpoints": [
+        {
+          "host": "production.example",
+          "port": 22,
+          "destination": {"kind": "pinned", "addresses": ["10.20.30.40"]}
+        }
+      ],
+      "credentials": [
+        {"source": "/etc/kuggis/credentials/project-deploy", "target": ".ssh/deploy"}
+      ]
+    }
+  ],
+  "private_web": [{"name": "preview", "guest_port": 3000, "host_port": 8000}]
+}

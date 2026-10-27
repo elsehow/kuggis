@@ -1,0 +1,22 @@
+[Unit]
+Description=Kuggis persistent workspace
+Requires=kuggis-v2-wall.service kuggis-v2-proxy.service
+After=kuggis-v2-wall.service kuggis-v2-proxy.service
+Wants=@WEB_SOCKETS@
+
+[Service]
+Type=notify
+Delegate=yes
+KillMode=mixed
+TimeoutStartSec=180
+TimeoutStopSec=30
+ExecStartPre=/usr/local/libexec/kuggis-host guard
+ExecStart=/usr/bin/systemd-nspawn --quiet --keep-unit --boot --settings=no --machine=kuggis-v2 --directory=/var/lib/kuggis/rootfs --private-users=524288:65536 --private-users-ownership=chown --private-network --network-veth-extra=kv2-host:eth0 --link-journal=no --resolv-conf=off --bind-ro=/usr/local/lib/kuggis-v2:/run/kuggis-runtime
+ExecStartPost=/usr/local/libexec/kuggis-host network
+MemoryMax=@MEMORY_BYTES@
+TasksMax=2048
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

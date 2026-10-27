@@ -1,0 +1,11 @@
+[Unit]
+Description=Kuggis workspace firewall
+Before=kuggis-v2.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/kuggis/wall.nft
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,10 @@
 # kuggis
 
+The next version is being drafted independently in [v2/](v2/README.md): flat,
+configured workspaces for agent-native terminal interfaces, with no runtime
+approval workflow. See the [v2 implementation plan](docs/v2-plan.md). The
+implementation and instructions below describe v1.
+
 Kuggis runs coding agents in cells on exe.dev VMs. Each cell declares its
 grants, runs behind a network wall, and speaks through a signed statement
 log. Cells form a tree: a child can hold only grants its parent covers.

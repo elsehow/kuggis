@@ -1,0 +1,13 @@
+{
+  "version": "1.3.0",
+  "archives": {
+    "x86_64": {
+      "url": "https://github.com/earendil-works/pi/releases/download/v1.3.0/pi-linux-x64.tar.gz",
+      "sha256": "24f5be328b66d4da36876296989501974f43ab8434fbb57c35c523a3ea505ded"
+    },
+    "aarch64": {
+      "url": "https://github.com/earendil-works/pi/releases/download/v1.3.0/pi-linux-arm64.tar.gz",
+      "sha256": "7fd2ea14fca390ebf9f47438baaef07c4b3d13db7cc8e459831118391b7ea65b"
+    }
+  }
+}

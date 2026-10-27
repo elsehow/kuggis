@@ -1,0 +1,10 @@
+{
+  "providers": {
+    "exe": {
+      "baseUrl": "https://llm.int.exe.xyz/openai/v1",
+      "api": "openai-responses",
+      "apiKey": "exe-managed",
+      "models": [{"id": "gpt-6.1-sol", "reasoning": true}]
+    }
+  }
+}

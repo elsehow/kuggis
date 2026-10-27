@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "name": "v2-acceptance",
+  "ssh": "kuggis-v2-test",
+  "launch": ["/bin/bash", "-l"],
+  "packages": [],
+  "resources": [
+    {
+      "name": "ubuntu-packages",
+      "endpoints": [
+        {"host": "archive.ubuntu.com", "port": 443},
+        {"host": "ports.ubuntu.com", "port": 443}
+      ]
+    }
+  ],
+  "private_web": [{"name": "preview", "guest_port": 3000, "host_port": 8000}]
+}

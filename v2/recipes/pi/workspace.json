@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "name": "pi-workspace",
+  "ssh": "pi-workspace",
+  "launch": ["/home/agent/.local/bin/pi", "--offline", "--continue"],
+  "packages": ["fd-find", "ripgrep"],
+  "resources": [
+    {
+      "name": "ubuntu-packages",
+      "endpoints": [
+        {"host": "archive.ubuntu.com", "port": 443},
+        {"host": "ports.ubuntu.com", "port": 443}
+      ]
+    }
+  ]
+}

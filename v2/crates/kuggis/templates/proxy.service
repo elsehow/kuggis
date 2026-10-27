@@ -1,0 +1,19 @@
+[Unit]
+Description=Kuggis permitted outbound connections
+Requires=kuggis-v2-wall.service
+After=kuggis-v2-wall.service
+
+[Service]
+User=kuggis-proxy
+ExecStart=/usr/local/lib/kuggis-v2/kuggis proxy /etc/kuggis/workspace.json
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

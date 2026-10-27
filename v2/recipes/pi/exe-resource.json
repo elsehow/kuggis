@@ -1,0 +1,12 @@
+{
+  "name": "exe-models",
+  "endpoints": [{
+    "host": "llm.int.exe.xyz",
+    "port": 443,
+    "destination": {"kind": "pinned", "addresses": ["169.254.169.254"]}
+  }],
+  "credentials": [{
+    "source": "/etc/kuggis/recipes/pi-models.json",
+    "target": ".pi/agent/models.json"
+  }]
+}

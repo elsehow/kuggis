@@ -1,0 +1,26 @@
+table inet kuggis_v2 {}
+flush table inet kuggis_v2
+table inet kuggis_v2 {
+ chain input {
+  type filter hook input priority -200; policy accept;
+  iifname "kv2-host" ip daddr 10.205.0.1 tcp dport 3128 accept
+  iifname "kv2-host" ct state established,related accept
+  iifname "kv2-host" counter reject
+  iifname != "kv2-host" tcp dport 3128 counter reject
+ }
+ chain forward {
+  type filter hook forward priority -200; policy accept;
+  iifname "kv2-host" counter reject
+  oifname "kv2-host" counter reject
+ }
+ chain output {
+  type filter hook output priority -200; policy accept;
+  meta skuid "kuggis-proxy" oifname "kv2-host" ip daddr 10.205.0.2 tcp sport 3128 ct state established accept
+  meta skuid "kuggis-proxy" udp dport 53 accept
+  meta skuid "kuggis-proxy" tcp dport 53 accept
+  meta skuid "kuggis-proxy" fib daddr type local counter reject
+  meta skuid "kuggis-proxy" ip daddr 10.205.0.0/30 counter reject
+  meta skuid "kuggis-proxy" meta l4proto tcp accept
+  meta skuid "kuggis-proxy" counter reject
+ }
+}
