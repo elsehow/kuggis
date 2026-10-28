@@ -1,0 +1,22 @@
+[Unit]
+Description=Kuggis GitHub credential relay
+ConditionPathExists=/etc/kuggis/github-connection.json
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/kuggis-v2/github_host.py serve
+Restart=on-failure
+RestartSec=3
+UMask=0077
+RuntimeDirectory=kuggis-github
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/kuggis-github
+
+[Install]
+WantedBy=multi-user.target
