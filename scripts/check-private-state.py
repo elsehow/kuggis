@@ -14,7 +14,7 @@ import sys
 def private_path(name):
     parts = PurePosixPath(name).parts
     return (
-        any(p in {".kuggis", ".pins"} for p in parts)
+        any(p in {".kuggis", ".pins", ".identities.json", ".identity-migrations", ".resources.json", "resource-providers.json", "resource-providers.lock", "resource-actions"} for p in parts)
         or parts[:1] == ("tree",)
         or parts[:3] in {
             ("bench", "environment", "observations"),

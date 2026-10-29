@@ -10,3 +10,7 @@
 /bench/environment/acceptance.json
 
 __pycache__/
+
+# Legacy identity mappings and migration receipts remain private deployment state.
+**/.identities.json
+**/.identity-migrations/
