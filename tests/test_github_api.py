@@ -302,6 +302,11 @@ class APIGrants(unittest.TestCase):
         try:
             cli('github', 'connect', '--url', url, '--admin-token-file', admin)
             self.assertEqual(cli('github', 'api-status')['login'], 'operator')
+            grouped = cli('access', 'grant', workspace, 'repo', 'owner/b', '--role', 'develop', '--json')
+            self.assertTrue(grouped['ok'])
+            self.assertEqual(next(r for r in grouped['repositories'] if r['repo'] == 'owner/b')['api_permissions']['pull_requests'], 'write')
+            self.assertTrue(cli('access', 'check', workspace, 'repo', 'owner/b', '--json')['ok'])
+            self.assertTrue(cli('access', 'revoke', workspace, 'repo', 'owner/b', '--json')['ok'])
             added = cli('repo', 'add', workspace, 'owner/b', '--role', 'develop')
             grant = next(row for row in added['repositories'] if row['repo'] == 'owner/b')
             self.assertEqual(grant['permissions']['contents'], 'write')

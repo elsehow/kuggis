@@ -213,6 +213,17 @@ class ClientInterop(unittest.TestCase):
         self.cli('get', "files/a'b.bin", output)
         self.assertEqual(source.read_bytes(), output.read_bytes())
 
+    def test_grouped_file_commands_preserve_transfer_protocol_and_report_json(self):
+        source, output = self.root / 'source', self.root / 'output'
+        source.write_bytes(b'\0grouped\xff')
+        for args in [('put', self.config, str(source), 'grouped.bin'),
+                     ('get', self.config, 'grouped.bin', str(output))]:
+            result = subprocess.run([self.binary, 'file', *args, '--json'], env=self.env,
+                                    capture_output=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr.decode() + result.stdout.decode())
+            self.assertTrue(json.loads(result.stdout)['ok'])
+        self.assertEqual(output.read_bytes(), source.read_bytes())
+
     def test_omitted_destination_uses_basename_and_preserves_collision_check(self):
         source = self.root / "a ' $(literal).txt"
         source.write_bytes(b'original')

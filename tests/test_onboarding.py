@@ -77,6 +77,8 @@ class Fake(o.Setup):
         self.remote['calls'].append(('github-cli', *map(str, args)))
         if self.remote.pop('fail_github', False):
             raise o.Failure('command_failed', 'GitHub broker unavailable')
+        if args == ('github', 'status') and self.remote.get('github_transport'):
+            return sp.CompletedProcess([], 0, json.dumps({'transport': self.remote['github_transport']}).encode(), b'')
         return sp.CompletedProcess([], 0, b'{"ok":true}', b'')
 
 
@@ -102,6 +104,15 @@ class SetupEffects(unittest.TestCase):
             self.assertTrue(any(c[:2]==('cli','put') and '.kuggis-setup/'+agent+'/install.py' in c for c in calls))
         self.assertTrue(any(c[:2]==('cli','put') and '.kuggis-setup/codex/models.json' in c for c in calls))
         self.assertTrue(any(o.DEFAULT_MODEL in c for c in calls))
+
+    def test_ssh_creation_seeds_full_role_and_restart_requires_explicit_input(self):
+        self.remote['github_transport'] = 'ssh-gateway'
+        self.p['request']['github_access'] = 'write'
+        self.p['allow_restart'] = True
+        self.assertTrue(self.run_setup()['ok'])
+        self.assertTrue(any(c[:3] == ('github-cli', 'repo', 'add') and c[-2:] == ('--role', 'develop')
+                            for c in self.remote['calls']))
+        self.assertTrue(any(c[:2] == ('cli', 'setup') and '--restart' in c for c in self.remote['calls']))
 
     def test_creation_timeout_reconciles_owned_host_instead_of_duplicate(self):
         self.remote['lose_create_response']=True

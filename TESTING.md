@@ -19,6 +19,61 @@ complete stream, and private ingress ordering. The fake transport never connects
 to an external host or installs privileged files. Rust proxy tests use real local
 sockets with injected DNS/dial effects, preserving production address policy.
 
+## Grouped CLI and management workflows
+
+The public CLI now groups commands under `cell`, `chat`, `access`, `file`, and
+`admin`, retaining legacy spellings. Validation includes routing and literal guest
+arguments; actual compiled CLI/file transfer compatibility; real HTTPS broker
+role grant/check/revoke; and the management SSH protocol with a controlled host
+fixture. Management tests exercise network grant/revoke, idempotence, retained
+unrelated resources, stale host revisions, proxy-start rollback, JSON errors,
+configuration plans, explicit restart authorization, full installation revision
+checks, and concurrent read locks. Creation tests cover full SSH repository roles.
+
+Validation on 2026-10-28: 57 Rust tests and 123 Python tests pass. Formatting and
+Clippy pass; native macOS ARM and static x86-64 Linux release builds are produced.
+Read-only live checks through the new commands on FRI verified service status,
+all four existing boundary checks, combined repository/network listing, and a
+successful proxy CONNECT to `api.anthropic.com:443`. The application-authentication
+result remains `not_checked`. No cell, proxy, or broker was restarted during
+this refactor's live validation. Configuration mutations and rollback were tested
+with fixtures; no unrelated live grants were added or removed.
+
+The grouped operator embeds its host-management program, so these commands work
+with the existing installed host runtime. A full runtime upgrade remains an
+explicit operation requiring `--restart`; the refactor does not deploy one.
+
+## Shared Codex browser login
+
+`kuggis login CELL --agent codex` uses native app-server account APIs and relays
+the browser callback over SSH into the guest. Tests exercise a complete browser
+callback and success redirect through the compiled CLI, fake SSH, real adapter,
+and a controlled native-login server. They cover cached-login reuse, provider
+selection, one proxy update for required endpoints, idempotence, plans without
+mutations, occupied callback ports, Ctrl-C cleanup, rejected callback targets,
+and suppression of credentials and callback codes from command output.
+
+Migration tests keep legacy databases and configs byte-identical, preserve
+paginated history stores and old JSONL handoffs, maintain independent chat
+session IDs, track native SessionStart events, retain model profiles, and handle
+concurrent migration plus legacy chats that continue working before handover.
+
+Validated on 2026-10-29: 57 Rust tests and 139 Python tests pass, with formatting,
+Clippy, native macOS ARM and static x86-64 Linux release builds, and release
+checksum verification. A disposable directory inside a real guest exercised the
+pinned Codex 0.165.0 TUI, profile loading, and its actual SessionStart hook. Its
+inference endpoint was replaced with an unavailable loopback destination, so
+this check did not call a model service.
+
+The guest launcher was installed on two existing deployments. Before/after
+checks confirmed unchanged legacy configs, retained rollout files, and unchanged
+running tmux pane processes. Native `thread/read` from the shared Codex home
+verified all seven existing conversations using their original SQLite stores;
+the remaining two chat directories had no saved Codex session. An existing
+ChatGPT login passed native workspace discovery and was reused. The other cell
+is prepared for the user's browser sign-in. No cell or chat service was restarted.
+Raw deployment evidence remains in ignored local storage.
+
 ## Root workspace consolidation
 
 The former `v2/` workspace now lives at the repository root. The v1 Rust

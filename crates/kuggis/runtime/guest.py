@@ -63,7 +63,7 @@ def web_guidance(mappings):
             'Inspect existing listeners/services before starting another server. Reuse the project server when present.',
             'The host relay reaches 10.205.0.2 at the guest port. A new server should bind 0.0.0.0 or 10.205.0.2.',
             'A server bound only to 127.0.0.1 needs a guest relay; preserve an existing relay if one is already configured.',
-            'The user opens the preview on their own computer with `kuggis web CONFIG_OR_NAME` (optionally PREVIEW_NAME or --port LOCAL_PORT).',
+            'The user opens the preview on their own computer with `kuggis cell web CONFIG_OR_NAME` (optionally PREVIEW_NAME or --port LOCAL_PORT).',
             'Do not run that client command inside the cell. Report the preview name and guest port; the client prints the browser URL.',
             'Keep the server running with the project\'s existing service mechanism. Private preview access does not publish publicly.',
         ])

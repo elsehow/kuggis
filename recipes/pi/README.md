@@ -27,11 +27,11 @@ Download the matching architecture's URL from `release.json` on the operator
 machine. Upload it and the three small recipe files with ordinary transfers:
 
 ```sh
-kuggis put CONFIG pi-linux-x64.tar.gz .setup/pi/pi.tar.gz --replace
-kuggis put CONFIG recipes/pi/release.json .setup/pi/release.json --replace
-kuggis put CONFIG recipes/pi/settings.json .setup/pi/settings.json --replace
-kuggis put CONFIG recipes/pi/install.py .setup/pi/install.py --replace
-kuggis shell CONFIG
+kuggis file put CONFIG pi-linux-x64.tar.gz .setup/pi/pi.tar.gz --replace
+kuggis file put CONFIG recipes/pi/release.json .setup/pi/release.json --replace
+kuggis file put CONFIG recipes/pi/settings.json .setup/pi/settings.json --replace
+kuggis file put CONFIG recipes/pi/install.py .setup/pi/install.py --replace
+kuggis cell shell CONFIG
 ```
 
 Inside that shell:
@@ -59,7 +59,7 @@ with root ownership and mode 0600, under a protected root-owned directory.
 Merge `exe-resource.json` into the declaration's `resources`, and append
 `"--model", "exe/gpt-6.1-sol"` to `launch`. Setup provisions the model file using
 the existing protected-file mechanism, just like a credential file. Then run
-`kuggis setup CONFIG --bin LINUX_BIN` and `kuggis connect CONFIG`.
+`kuggis setup CONFIG --bin LINUX_BIN` and `kuggis chat list CONFIG`.
 
 The exe endpoint resolves to link-local `169.254.169.254`. The declaration pins
 that address for `llm.int.exe.xyz:443`; default public rules still reject it.
@@ -118,7 +118,7 @@ An SSH detach leaves Pi running. After a reboot, only explicit `connect` launche
 it again. These flags are described in [Pi's CLI documentation](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/docs/cli.md).
 
 The create recipe also sets `chat_launch` to Pi with `--offline --session-dir
-/home/agent/.kuggis/chats/{chat} --continue`. Use `kuggis connect NAME --chat
+/home/agent/.kuggis/chats/{chat} --continue`. Use `kuggis chat list NAME --chat
 research` for a separate persistent process and native session directory. The
 default launch/history stays unchanged. A new name begins with an empty history;
 reconnecting to an existing name attaches to its process or resumes its latest

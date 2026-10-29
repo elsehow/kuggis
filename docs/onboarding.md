@@ -2,11 +2,13 @@
 
 Status: exe creation with Pi or Codex and saved per-chat agent selection is implemented. See the
 [current CLI guide](../README.md#create-an-exe-workspace) for supported inputs
-and prerequisites. Claude Code, native login management, and the `edit` command
-below remain a roadmap, not available options.
+and prerequisites. `kuggis login CELL --agent codex` now supplies laptop browser
+sign-in shared by the cell's Codex chats and shells; see [agent login](cli.md#agent-login).
+Claude Code, other provider login adapters, and the `edit` command below remain
+a roadmap, not available options.
 
 The initial recipe includes a private `preview` mapping (guest 3000, host 8000).
-`kuggis web NAME` opens it over SSH; `--no-open` and `--plan` support agents.
+`kuggis cell web NAME` opens it over SSH; `--no-open` and `--plan` support agents.
 Custom preview ports remain available through the deployment configuration.
 
 The BigBrain trial exposed an incomplete product flow. Creating one workspace
@@ -20,7 +22,7 @@ print another checklist for the operator.
 Human entry:
 
 ```text
-$ kuggis create bigbrain
+$ kuggis cell create bigbrain
 Host: exe.dev
 Repository: elsehow/BigBrain
 Repository access: read and write
@@ -32,7 +34,7 @@ Configuring repository access...
 Installing workspace, Pi and Codex...
 Cloning repository...
 Checking Git, model tools and isolation...
-Ready. Run: kuggis connect bigbrain --chat main --agent codex
+Ready. Run: kuggis chat open bigbrain main --agent codex
 ```
 
 These are configuration questions. Once the required answers are supplied,
@@ -43,11 +45,11 @@ its authority. There is no approval mode inside the workspace.
 Equivalent unattended entry:
 
 ```sh
-kuggis create bigbrain --host exe --repo elsehow/BigBrain \
+kuggis cell create bigbrain --host exe --repo elsehow/BigBrain \
   --github-access write --model exe-managed --json
 ```
 
-Also accept `kuggis create --file setup.json --json`. Flags, a declarative input
+Also accept `kuggis cell create --file setup.json --json`. Flags, a declarative input
 file and interactive answers produce the same validated request. `--json` and
 non-TTY invocations never prompt; missing inputs yield structured errors with
 field names and a nonzero exit. Progress goes to stderr, one final report to

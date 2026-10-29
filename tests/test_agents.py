@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import subprocess
+import uuid
 import unittest
 from unittest.mock import patch
 from test_runtime import g, h, ROOT
@@ -104,7 +105,7 @@ class Agents(unittest.TestCase):
 
 
 class CodexRecipe(unittest.TestCase):
-    def test_native_sessions_are_isolated_and_model_changes_preserved(self):
+    def test_shared_auth_keeps_explicit_chat_sessions_and_native_model_profiles(self):
         spec = importlib.util.spec_from_file_location('codex_launcher', ROOT/'recipes/codex/launch.py')
         launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(launcher)
@@ -116,13 +117,16 @@ class CodexRecipe(unittest.TestCase):
             default = launcher.prepare(home, 'default', home/'workspace')
             vt = launcher.prepare(home, 'vt', home/'workspace')
             self.assertNotEqual(default, vt)
-            self.assertEqual(len(launcher.command(home, vt)), 1)
-            self.assertIn('[projects.'+json.dumps(str(home/'workspace'))+']', (vt/'config.toml').read_text())
-            self.assertIn('trust_level = "trusted"', (vt/'config.toml').read_text())
-            (vt/'sessions').mkdir()
-            (vt/'sessions/rollout-test.jsonl').write_text('{}\n')
-            self.assertEqual(launcher.command(home, vt)[1:], ['resume','--last','--all','--include-non-interactive'])
-            self.assertEqual(len(launcher.command(home, default)), 1)
-            (vt/'config.toml').write_text('model = "gpt-6.1-terra"\n')
+            profile = home/'.codex/kuggis-vt.config.toml'
+            self.assertIn('[projects.'+json.dumps(str(home/'workspace'))+']', profile.read_text())
+            self.assertIn('trust_level = "trusted"', profile.read_text())
+            self.assertNotIn('resume', launcher.command(home, vt))
+            session_id = str(uuid.uuid4())
+            launcher.bind(home, 'vt', {'hook_event_name':'SessionStart', 'session_id':session_id})
+            self.assertEqual(launcher.command(home, vt)[-2:], ['resume',session_id])
+            self.assertNotIn('--last', launcher.command(home, vt))
+            self.assertNotIn('resume', launcher.command(home, default))
+            profile.write_text(profile.read_text().replace('gpt-6.1-sol','gpt-6.1-terra'))
             launcher.prepare(home, 'vt', home/'workspace')
-            self.assertIn('terra', (vt/'config.toml').read_text())
+            self.assertIn('terra', profile.read_text())
+            self.assertIn('sqlite_home='+json.dumps(str(vt)), launcher.command(home, vt))

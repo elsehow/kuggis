@@ -11,51 +11,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const USAGE: &str = "kuggis — configured autonomous workspaces
-
-  kuggis github connect --url HTTPS_ORIGIN --admin-token-file FILE
-  kuggis github attach CONFIG_OR_NAME
-  kuggis github serve --config BROKER_JSON
-  kuggis github api-status
-  kuggis repo add CONFIG_OR_NAME OWNER/REPO --role read|develop
-  kuggis repo add CONFIG_OR_NAME OWNER/REPO --access read|write [--workflows]
-  kuggis repo api CONFIG_OR_NAME OWNER/REPO --issues none|read|write --pull-requests none|read|write [--merge]
-  kuggis repo remove CONFIG_OR_NAME OWNER/REPO
-  kuggis repo list CONFIG_OR_NAME [--json]
-  kuggis create [NAME] [--repo OWNER/REPO] [--host exe] [--default-agent pi|codex]
-                [--github-access read|write] [--model exe-managed]
-                [--file SETUP_JSON] [--json] [--plan]
-                [--cpus N] [--memory-gib N]
-                [--ssh-config FILE] [--bin LINUX_BINARY]
-  kuggis exec CONFIG_OR_NAME -- PROGRAM [ARG...]
-  kuggis web CONFIG_OR_NAME [PREVIEW] [--port PORT] [--no-open] [--plan]
-  kuggis validate CONFIG
-  kuggis render CONFIG
-  kuggis bundle CONFIG
-  kuggis setup CONFIG --bin LINUX_BINARY
-  kuggis connect CONFIG_OR_NAME [--chat NAME] [--agent AGENT]
-  kuggis connect CONFIG_OR_NAME --json
-  kuggis archive CONFIG_OR_NAME --chat NAME
-  kuggis shell CONFIG
-  kuggis check CONFIG
-  kuggis put CONFIG_OR_NAME LOCAL_FILE [GUEST_PATH] [--chat NAME] [--replace]
-  kuggis put CONFIG_OR_NAME --paste [--chat NAME]
-  kuggis get CONFIG GUEST_PATH LOCAL_FILE [--replace]
-  kuggis ssh-command CONFIG connect|shell|check
-  kuggis ssh-command CONFIG connect [--chat NAME] [--agent AGENT]
-  kuggis ssh-command CONFIG put GUEST_PATH [--replace]
-  kuggis ssh-command CONFIG get GUEST_PATH
-
-Host services: proxy CONFIG; normalize-nft (JSON on stdin).
-render, bundle and ssh-command are descriptions, not live boundary checks.
-Setup needs a dedicated Ubuntu 24.04 host and preconfigured SSH authentication.";
+const USAGE: &str = kuggis::cli::HELP;
 
 enum Operation {
     Chats(bool),
     Validate,
     Render,
     Bundle,
-    Setup(PathBuf),
+    Setup {
+        binary: PathBuf,
+        restart: bool,
+        revision: Option<String>,
+    },
     Remote(Request),
     Put(kuggis::upload::Options),
     Get {
@@ -70,7 +37,10 @@ enum Operation {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let json = args.first().is_some_and(|s| s == "create") && args.iter().any(|s| s == "--json");
+    let json = args
+        .iter()
+        .take_while(|s| s.as_str() != "--")
+        .any(|s| s == "--json");
     if let Err(error) = run(args) {
         if json {
             println!(
@@ -84,9 +54,26 @@ fn main() {
     }
 }
 
-fn run(args: Vec<String>) -> kuggis::Result<()> {
-    if args.is_empty() || args == ["--help"] || args == ["help"] || args == ["create", "--help"] {
-        println!("{USAGE}");
+fn run(mut args: Vec<String>) -> kuggis::Result<()> {
+    if args.is_empty() || args == ["--help"] || args == ["help"] {
+        println!("{}", kuggis::cli::HELP);
+        return Ok(());
+    }
+    if args[0] == "login" {
+        return kuggis::login::run(&args[1..]);
+    }
+    if kuggis::cli::group(&args[0]) {
+        match kuggis::cli::route(&args)? {
+            kuggis::cli::Route::Help(help) => {
+                println!("{help}");
+                return Ok(());
+            }
+            kuggis::cli::Route::Manage(args) => return kuggis::management::run(&args),
+            kuggis::cli::Route::Legacy(legacy) => args = legacy,
+        }
+    }
+    if args == ["create", "--help"] {
+        println!("{}", kuggis::cli::help("cell"));
         return Ok(());
     }
     if args[0] == "create" {
@@ -118,7 +105,11 @@ fn run(args: Vec<String>) -> kuggis::Result<()> {
         ),
         Operation::Render => print_json(&Environment::describe(&workspace))?,
         Operation::Bundle => print_json(&Bundle::compile(&workspace))?,
-        Operation::Setup(binary) => client::setup(&workspace, &binary)?,
+        Operation::Setup {
+            binary,
+            restart,
+            revision,
+        } => client::setup_checked(&workspace, &binary, restart, revision.as_deref())?,
         Operation::Remote(request) => client::enter(&workspace, request)?,
         Operation::Put(options) => kuggis::upload::run(&workspace, options)?,
         Operation::Get {
@@ -154,7 +145,7 @@ fn parse_operation(verb: &str, args: &[String]) -> kuggis::Result<Operation> {
         ("bundle", []) => Ok(Operation::Bundle),
         ("proxy", []) => Ok(Operation::Proxy),
         ("web", rest) => Ok(Operation::Web(kuggis::web::Options::parse(rest)?)),
-        ("setup", [flag, binary]) if flag == "--bin" => Ok(Operation::Setup(binary.into())),
+        ("setup", rest) => setup_options(rest),
         ("connect", []) => Ok(Operation::Chats(false)),
         ("connect", [flag]) if flag == "--json" => Ok(Operation::Chats(true)),
         ("connect", rest) => Ok(Operation::Remote(connect_request(rest)?)),
@@ -188,6 +179,42 @@ fn parse_operation(verb: &str, args: &[String]) -> kuggis::Result<Operation> {
         }),
         _ => Err(Error(USAGE.into())),
     }
+}
+
+fn setup_options(args: &[String]) -> kuggis::Result<Operation> {
+    let (mut binary, mut restart, mut revision) = (None, false, None);
+    let mut words = args.iter();
+    while let Some(flag) = words.next() {
+        match flag.as_str() {
+            "--bin" if binary.is_none() => {
+                binary = Some(PathBuf::from(
+                    words
+                        .next()
+                        .ok_or_else(|| Error("--bin requires a path".into()))?,
+                ))
+            }
+            "--restart" if !restart => restart = true,
+            "--expect-revision" if revision.is_none() => {
+                let value = words
+                    .next()
+                    .ok_or_else(|| Error("missing revision".into()))?;
+                if value.len() != 64 || !value.bytes().all(|c| c.is_ascii_hexdigit()) {
+                    return Err(Error("invalid configuration revision".into()));
+                }
+                revision = Some(value.clone());
+            }
+            _ => {
+                return Err(Error(
+                    "expected setup CELL --bin LINUX_BINARY [--restart]".into(),
+                ))
+            }
+        }
+    }
+    Ok(Operation::Setup {
+        binary: binary.ok_or_else(|| Error("setup requires --bin LINUX_BINARY".into()))?,
+        restart,
+        revision,
+    })
 }
 
 fn parse_request(args: &[String]) -> kuggis::Result<Request> {

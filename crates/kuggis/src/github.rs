@@ -18,7 +18,7 @@ pub const GIT: &str = include_str!("../runtime/github_git.py");
 pub const API: &str = include_str!("../runtime/github_api.py");
 pub const COLLAB: &str = include_str!("../runtime/github_collab.py");
 
-fn bootstrap(source: &str) -> String {
+pub(crate) fn bootstrap(source: &str) -> String {
     let mut program = String::from("import sys, types\n");
     for (name, module) in [
         ("github_common", COMMON),

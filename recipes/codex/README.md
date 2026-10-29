@@ -1,9 +1,10 @@
 # Codex recipe
 
 ```sh
-kuggis create example --repo owner/repo --json
-kuggis connect example --chat main --agent codex
-kuggis connect example --chat research --agent codex
+kuggis cell create example --repo owner/repo --json
+kuggis login example --agent codex
+kuggis chat open example main --agent codex
+kuggis chat open example research --agent codex
 ```
 
 The wizard installs Pi and the checksum-pinned **complete** Codex package, including its
@@ -18,13 +19,37 @@ requests through exe's managed gateway; no laptop login
 or management credentials are copied. Native web search is initially disabled;
 shell-based fetching follows the cell's configured network policy.
 
-`kuggis-codex CHAT` gives each chat a native Codex home under
-`~/.kuggis/agents/codex/CHAT/`. It starts a new conversation on first connection,
-then uses `codex resume --last --all --include-non-interactive` (so prepared
-handoffs are resumable too). Each chat has its own sessions and config;
-`/model` choices survive reconnects. Config is seeded once from
-`~/.local/share/kuggis/codex/config.toml`. This first recipe uses managed gateway
-authentication; shared native OAuth login management is not implemented.
+Run `kuggis login CELL --agent codex` on your laptop to use your ChatGPT account.
+Kuggis opens the normal browser sign-in and relays its localhost callback over
+SSH into the guest. Device codes and manual callback copying are unnecessary.
+It grants `auth.openai.com:443`, `chatgpt.com:443`, and the exact public workspace
+backend returned by native account discovery. Only the outbound proxy restarts
+when grants change; the cell and chat processes stay running. `--plan` previews
+the change, `--no-open` prints the browser URL, `--status` checks the shared login,
+and `--force` signs in again to switch accounts. A cached ChatGPT login is reused.
+
+All chats and ordinary guest shells use the cell user's `~/.codex` for native
+authentication. Codex owns credential storage and refresh; credentials never
+need to be copied from your laptop or into individual chats. Login selects the
+native `openai` provider for the cell. Before login, the recipe still supports
+the managed exe gateway.
+
+`kuggis-codex CHAT` retains each chat's native databases under
+`~/.kuggis/agents/codex/CHAT/` using Codex's `sqlite_home` setting. Existing
+rollouts, paginated histories, credentials and legacy config files are retained
+in place. Per-chat settings are copied once to native profiles at
+`~/.codex/kuggis-CHAT.config.toml`; `/model` choices continue to persist. An
+explicit session ID binds each chat, and a native SessionStart hook updates it
+on new conversations, resume, `/new`, and forks. No shared `resume --last` is used.
+Chats run with `--no-daemon` so their native profile and database settings stay
+independent. The hook runs without another trust prompt inside the existing
+guest boundary, using the same unrestricted guest authority as the agent.
+
+Login installs this launcher without stopping active chats. Exit Codex and
+reopen an already-running chat to adopt the shared account; attaching to its
+existing tmux pane does not replace the running process. The first handover
+rechecks its legacy session ID so work done after login setup is retained.
+The old launcher and shared configuration are backed up before replacement.
 
 `models.json` is a filtered copy of the official
 [0.165.0 bundled catalog](https://github.com/openai/codex/blob/rust-v0.165.0/codex-rs/models-manager/models.json).

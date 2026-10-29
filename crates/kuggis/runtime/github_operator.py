@@ -23,6 +23,9 @@ def options(args):
     check.add_argument('--repo', required=True)
     check.add_argument('--access', choices=('read', 'write'), default='read')
     github.add_parser('api-status', help='check the broker GitHub API login')
+    github.add_parser('status', help='check broker connectivity and available capabilities')
+    for command in github.choices.values():
+        command.add_argument('--json', action='store_true')
     repos = groups.add_parser('repo').add_subparsers(dest='action', required=True)
     for action in ('list', 'add', 'remove', 'api'):
         command = repos.add_parser(action)
@@ -56,7 +59,7 @@ class Operator:
         try:
             config = json.loads(private_read(self.settings))
         except FileNotFoundError:
-            raise Failure('configure GitHub first: kuggis github connect --url HTTPS_ORIGIN --admin-token-file FILE') from None
+            raise Failure('configure GitHub first: kuggis admin github connect --url HTTPS_ORIGIN --admin-token-file FILE') from None
         url = broker_url(config['url'])
         token = private_read(config['admin_token_file']).decode().strip()
         return url, token
@@ -103,9 +106,12 @@ class Operator:
         atomic_json(config, workspace)
         atomic_json(receipt, {'url': url, 'cell': state['cell']})
         pending.unlink(missing_ok=True)
-        return {'connected': True, 'cell': state['cell'], 'workspace': workspace['name']}
+        return {'connected': True, 'cell': state['cell'], 'workspace': workspace['name'],
+                'restarted_services': ['proxy', 'github_relay'] if enrollment else []}
 
     def run(self, args):
+        if args.group == 'github' and args.action == 'status':
+            return self.api('/admin/status', {})
         if args.group == 'github' and args.action == 'api-status':
             return self.api('/admin/api/status', {})
         if args.group == 'github' and args.action == 'connect':
@@ -127,7 +133,7 @@ class Operator:
         try:
             cell = json.loads(private_read(config.with_name(config.name + '.github.json')))
         except FileNotFoundError:
-            raise Failure('connect this cell first: kuggis github attach CONFIG_OR_NAME') from None
+            raise Failure('connect this cell first: kuggis admin github attach CONFIG_OR_NAME') from None
         if cell['url'] != self.configured()[0]:
             raise Failure('cell belongs to another broker; reconnect the operator to that broker')
         body = {'cell': cell['cell']}

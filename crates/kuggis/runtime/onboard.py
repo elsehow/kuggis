@@ -252,6 +252,8 @@ class Setup:
             if 'auto:all' in (grant.get('attachments') or []) and grant['name']!='llm':
                 raise Failure('broader_gateway_grant','Account-wide integration '+grant['name']+' would broaden this workspace. Adjust its attachment first.')
         archives = {agent:self.download(agent) for agent in self.p['recipes']}
+        broker = json.loads(self.github('github', 'status').stdout)
+        self.github_transport = broker.get('transport', 'github')
         self.github("github", "check", "--repo", self.request["repo"], "--access", self.request["github_access"])
         if vm is None:
             if self.receipt.get('creation_started'):
@@ -295,11 +297,14 @@ class Setup:
                 if not install: self.cli('check')
             except (Failure,ValueError): install=True
         if install:
-            self.cli('setup','--bin',binary,timeout=1800)
+            flags = ['--restart'] if self.p.get('allow_restart') else []
+            self.cli('setup','--bin',binary,*flags,timeout=1800)
             self.checkpoint(setup_digest=setup_digest)
         self.github("github", "attach", self.config)
         if not self.receipt.get("github_initialized"):
-            self.github("repo", "add", self.config, self.request["repo"], "--access", self.request["github_access"])
+            flags = (['--role', 'develop' if self.request['github_access'] == 'write' else 'read']
+                     if self.github_transport == 'ssh-gateway' else ['--access', self.request['github_access']])
+            self.github("repo", "add", self.config, self.request["repo"], *flags)
             self.checkpoint(github_initialized=True)
         for agent, recipes in self.p['recipes'].items():
             self.progress('install_agent','Installing pinned '+agent+' recipe…')
@@ -326,7 +331,7 @@ class Setup:
         self.checkpoint(status='ready',checks={'boundary':boundary,'model':smoke,'git_read':'verified',
                                               'github_access':self.request['github_access'],'git_push':'not_tested'})
         return {'ok':True,'name':self.request['name'],'status':'ready','vm':self.vm,
-                'configuration':str(self.config),'connect':'kuggis connect '+self.request['name'],
+                'configuration':str(self.config),'connect':'kuggis chat list '+self.request['name'],
                 'model':'exe/gpt-6.1-sol','github_access':self.request['github_access'],
                 'effective_integrations':self.receipt['effective_integrations']}
 

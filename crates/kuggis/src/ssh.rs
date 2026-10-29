@@ -60,6 +60,23 @@ pub enum Stream {
 }
 
 impl Invocation {
+    pub fn for_management(workspace: &Workspace) -> Self {
+        Self::remote(
+            workspace,
+            vec![
+                "sudo".into(),
+                "-n".into(),
+                "--".into(),
+                "/usr/bin/python3".into(),
+                "-c".into(),
+                crate::management::HOST.into(),
+            ],
+            false,
+            Stream::InstallFrame,
+            Stream::JsonReport,
+            true,
+        )
+    }
     pub fn for_github(workspace: &Workspace, action: &str) -> Self {
         Self::remote(
             workspace,

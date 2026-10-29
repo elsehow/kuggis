@@ -256,12 +256,13 @@ fn ask(label: &str, default: &str) -> Result<String> {
 pub fn create(args: &[String]) -> Result<()> {
     let mut fields = serde_json::Map::new();
     let (mut file, mut ssh_config, mut binary) = (None, None, None);
-    let (mut json_output, mut plan) = (false, false);
+    let (mut json_output, mut plan, mut restart) = (false, false, false);
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--json" => json_output = true,
             "--plan" => plan = true,
+            "--restart" => restart = true,
             "--file" | "--ssh-config" | "--bin" => {
                 let value = args
                     .next()
@@ -386,7 +387,7 @@ pub fn create(args: &[String]) -> Result<()> {
     });
     let payload = json!({"request":request,"workspace":workspace,"directory":directory,
     "binary":binary,"cli":exe,"ssh_config":ssh_config,"json_output":json_output,
-    "host_executor":crate::deploy::HOST_EXECUTOR,"recipes":recipes});
+    "host_executor":crate::deploy::HOST_EXECUTOR,"recipes":recipes,"allow_restart":restart});
     let mut child = Command::new("python3")
         .args(["-c", include_str!("../runtime/onboard.py")])
         .stdin(Stdio::piped())

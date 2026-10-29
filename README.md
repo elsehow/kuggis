@@ -7,6 +7,24 @@ login UI, or agent conversation protocol.
 The [architecture guide](docs/architecture.md) records the scope. The
 [testing guide](TESTING.md) covers local checks and the disposable exe trial.
 
+The CLI has five groups: **cell, chat, access, file, admin**. Start with
+`kuggis --help` or the [command guide](docs/cli.md). Repository and network grants
+are applied with `kuggis access`; configuration changes report restart
+requirements, and restarting an existing cell requires `--restart`.
+
+Sign Codex into a cell using your laptop browser:
+
+```sh
+kuggis login fri --agent codex
+kuggis login merrillfront --agent codex
+```
+
+Each cell shares one native ChatGPT login across its Codex chats and shells.
+Kuggis handles the guest callback and provider network grants. Existing chats
+keep their histories and model choices; exit and reopen running Codex processes
+to adopt the login. See [agent login](docs/cli.md#agent-login) for status, plans,
+and account switching. Device codes are not required.
+
 ## Build and install
 
 The repository root is the Cargo workspace. Requires Rust 1.89 or newer;
@@ -62,8 +80,8 @@ exe's existing managed model integration. It handles the VM, SSH trust, complete
 configuration, agent files, repository clone and model/tool checks in one run:
 
 ```sh
-target/debug/kuggis create bigbrain
-target/debug/kuggis connect bigbrain --chat main --agent codex
+target/debug/kuggis cell create bigbrain
+target/debug/kuggis chat open bigbrain main --agent codex
 ```
 
 The wizard asks for the repository and read/write scope. Both agents use exe
@@ -76,9 +94,9 @@ user's subsequent selection.
 For an agent or script, supply the same inputs without a wizard:
 
 ```sh
-kuggis create bigbrain --repo elsehow/BigBrain --github-access write --json
-kuggis create another --repo owner/repo --json
-kuggis connect another --chat main --agent codex
+kuggis cell create bigbrain --repo elsehow/BigBrain --github-access write --json
+kuggis cell create another --repo owner/repo --json
+kuggis chat open another main --agent codex
 ```
 
 `--file setup.json` accepts the same fields (`name`, `repo`, `github_access`,
@@ -92,7 +110,7 @@ not an option.
 Prerequisites: Python 3.11+, OpenSSH, curl, working batch SSH to `exe.dev`, its
 trusted host key, a configured Kuggis GitHub broker, and the managed `llm`
 integration. GitHub access uses the same broker on exe and other SSH hosts.
-The wizard seeds one repository grant; `repo add/remove/list` manage any number
+The wizard seeds one repository grant; `access grant/revoke/list` manage any number
 of grants afterward, with independent permissions in each cell. See the
 [GitHub setup and migration guide](docs/github.md). It rejects additional
 exe gateway integrations that would broaden the requested authority. Grant and
@@ -133,7 +151,7 @@ a ready pair, run `sh scripts/package.sh OUTPUT_DIRECTORY` and keep `kuggis`
 and `kuggis-linux-x86_64` together. Recipes and their checksums are embedded in
 the client. The wizard detects a missing helper before allocating a VM.
 
-Claude Code, native provider login profiles, a deferred-login mode, editable
+Claude Code, non-Codex provider login profiles, a deferred-login mode, editable
 setup forms and custom preview-port options remain in the
 [onboarding roadmap](docs/onboarding.md). The initial recipe installs base
 workspace utilities and both agents; project-specific language toolchains, dependency
@@ -144,14 +162,14 @@ endpoints and deployment resources remain environment configuration.
 List chats, then explicitly select one or create a new name:
 
 ```sh
-kuggis connect my-workspace
-kuggis connect my-workspace --chat research --agent codex
-kuggis connect my-workspace --chat research
-kuggis connect my-workspace --chat implementation --agent pi
+kuggis chat list my-workspace
+kuggis chat open my-workspace research --agent codex
+kuggis chat open my-workspace research
+kuggis chat open my-workspace implementation --agent pi
 ```
 
-Plain `connect` lists chats with their saved agent and running/stopped status,
-then shows commands to open or create one. `connect NAME --json` returns the
+`chat list` lists chats with their saved agent and running/stopped status,
+then shows commands to open or create one. `chat list NAME --json` returns the
 same typed inventory for scripts. Listing never starts an agent or creates a
 chat. `--chat default` explicitly opens the original legacy terminal and history.
 The first connection to another name starts a separate agent; using the same name
@@ -172,14 +190,15 @@ only new chats. `--agent` requires `--chat`; there is no implicit default chat.
 Archive a chat without deleting its binding or agent history:
 
 ```sh
-kuggis archive my-workspace --chat research
+kuggis chat archive my-workspace research
 ```
 
 This stops its agent (disconnecting any attached terminals) and hides it from
-`connect`, including `--json`. Repeating the command is safe. Explicitly opening
-`kuggis connect my-workspace --chat research` restores the same chat and history.
+`chat list`, including `--json`. Repeating the command is safe. Explicitly opening
+`kuggis chat open my-workspace research` restores the same chat and history.
 Other chats and workspace files are preserved. Updated host/guest helpers must
-be installed with `setup` before using this command on an existing cell.
+be installed with `admin upgrade CELL --bin LINUX_BINARY --restart` before using
+this command on an existing cell that lacks archive support.
 
 Bindings are ordinary versioned JSON in `~/.kuggis/chat-bindings/NAME.json` in
 the guest. The Rust core validates agent IDs and recipe arguments; each recipe
@@ -220,27 +239,28 @@ From the repository root, after building:
 
 ```sh
 cargo build --locked
-target/debug/kuggis validate examples/workspace.json
-target/debug/kuggis render examples/workspace.json
-target/debug/kuggis bundle examples/workspace.json
+target/debug/kuggis admin debug validate examples/workspace.json
+target/debug/kuggis admin debug render examples/workspace.json
+target/debug/kuggis admin debug bundle examples/workspace.json
 ```
 
 `render` describes the environment. `bundle` prints the exact generated files as
 JSON. Both are pure descriptions: neither says a live boundary passed checks.
 
-On a dedicated Ubuntu 24.04 host with noninteractive SSH/sudo configured:
+For an initial installation on a dedicated Ubuntu 24.04 host with noninteractive
+SSH/sudo configured (updating an existing cell additionally requires `--restart`):
 
 ```sh
 kuggis setup workspace.json --bin path/to/linux/kuggis
-kuggis connect workspace.json --chat default
-kuggis shell workspace.json
-kuggis check workspace.json
-kuggis exec workspace.json -- git status --short
-kuggis put workspace.json ./design.png inputs/design.png
-kuggis get workspace.json output/report.pdf ./report.pdf
+kuggis chat open workspace.json default
+kuggis cell shell workspace.json
+kuggis cell status workspace.json --check
+kuggis cell exec workspace.json -- git status --short
+kuggis file put workspace.json ./design.png inputs/design.png
+kuggis file get workspace.json output/report.pdf ./report.pdf
 ```
 
-`connect` starts or attaches to a guest tmux server owned by a separate guest
+`chat open` starts or attaches to a guest tmux server owned by a separate guest
 service. Detaching does not kill that server. The service is not enabled at boot;
 restart never automatically replays the launch command. A dead pane remains
 available until explicitly replaced. `shell` opens a separate guest shell.
@@ -259,11 +279,11 @@ Uploads can omit the destination, insert a reference into a running chat, or
 capture the local clipboard:
 
 ```sh
-kuggis put merrillfront ./design.png
-kuggis put merrillfront ./design.png --chat vt
-kuggis put merrillfront --chat vt --paste
+kuggis file put merrillfront ./design.png
+kuggis file put merrillfront ./design.png --chat vt
+kuggis file put merrillfront --chat vt --paste
 # An explicit destination still works:
-kuggis put merrillfront ./design.png inputs/design.png --chat vt --replace
+kuggis file put merrillfront ./design.png inputs/design.png --chat vt --replace
 ```
 
 Without a destination, files land at the workspace root with their original
@@ -331,11 +351,11 @@ credentials never enter the guest. VM creation remains outside this installer.
 A tunnel configuration supplies loopback relays. From your own computer, run:
 
 ```sh
-kuggis web my-workspace
+kuggis cell web my-workspace
 # Existing path-based configurations work too:
-kuggis web .kuggis/merrillfront-v2.json
+kuggis cell web .kuggis/merrillfront-v2.json
 # Select a mapping and a different local port; useful for agents/headless clients:
-kuggis web my-workspace preview --port 18080 --no-open
+kuggis cell web my-workspace preview --port 18080 --no-open
 ```
 
 The command opens a loopback-only SSH tunnel and your browser. Leave it running;

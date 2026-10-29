@@ -2,7 +2,8 @@
 
 Kuggis uses one broker on exe.dev and ordinary SSH hosts. Every cell has its own
 repository grants, with independent read/write access and no fixed repository
-count. `repo add`, `repo remove`, and `repo list` manage those grants.
+count. `access grant CELL repo`, `access revoke CELL repo`, and `access list CELL`
+manage those grants. See the [CLI guide](cli.md) for the complete command structure.
 
 The **SSH gateway** works with a developer's GitHub SSH identity. No organization
 GitHub App installation is needed. The broker holds the SSH private key and
@@ -67,7 +68,7 @@ regular file, not writable by other users. Back up the database securely.
 Run under your service manager:
 
 ```sh
-kuggis github serve --config /etc/kuggis-github/broker.json
+kuggis admin github serve --config /etc/kuggis-github/broker.json
 ```
 
 The broker serves HTTPS directly. With a publicly trusted certificate, bind a
@@ -114,9 +115,9 @@ through that public hostname before attaching production cells.
 On your own computer:
 
 ```sh
-kuggis github connect --url https://YOUR-BROKER-HOSTNAME \
+kuggis admin github connect --url https://YOUR-BROKER-HOSTNAME \
   --admin-token-file /secure/local/github-admin-token
-kuggis github check --repo owner/project-a --access write
+kuggis admin github check --repo owner/project-a --access write
 ```
 
 `connect` verifies the broker and records its URL and admin credential file path
@@ -124,17 +125,19 @@ in the workspace state directory. With SSH, `check` verifies that the broker can
 read the repository; GitHub checks actual write permission on push.
 
 For an existing cell, first install matching updated client/Linux artifacts with
-`kuggis setup CONFIG --bin LINUX_BINARY`. This one-time upgrade restarts the guest
-and mounts the credential socket. Then attach each cell once:
+`kuggis admin upgrade CONFIG --bin LINUX_BINARY --restart`. This one-time upgrade
+restarts the guest and mounts the credential socket. Existing cells already using
+the broker need no upgrade for the grouped CLI. `access grant` enrolls a cell
+automatically if needed; explicit enrollment is also available:
 
 ```sh
-kuggis github attach fri
-kuggis github attach merrillfront
-kuggis repo add fri owner/project-a --role read
-kuggis repo add fri owner/project-b --role develop
-kuggis repo add merrillfront owner/project-a --role develop
-kuggis repo list fri
-kuggis repo remove fri owner/project-a
+kuggis admin github attach fri
+kuggis admin github attach merrillfront
+kuggis access grant fri repo owner/project-a --role read
+kuggis access grant fri repo owner/project-b --role develop
+kuggis access grant merrillfront repo owner/project-a --role develop
+kuggis access list fri
+kuggis access revoke fri repo owner/project-a
 ```
 
 All commands accept a workspace JSON path instead of its name. On the SSH gateway,
@@ -145,7 +148,7 @@ choose a role to set Git and PR/issue access in one atomic grant:
 | `read` | Read | Read | Disabled |
 | `develop` | Read/write | Read/write | Disabled |
 
-For example, `kuggis repo add fri forecastingresearch/forecastbench-sim --role develop`
+For example, `kuggis access grant fri repo forecastingresearch/forecastbench-sim --role develop`
 connects that repository to FRI for development. A grant covers all its PRs and
 issues and persists until changed or removed. No cell restart or per-repository
 login is needed. The broker needs its one-time API login described below before
@@ -169,7 +172,7 @@ Repo commands do not require a live cell host. Preserve the adjacent
 `workspace.json.github.json` receipt identifying its broker enrollment. A failed
 attach retains a private enrollment file for retry, removed after success.
 
-New `kuggis create NAME --repo OWNER/REPO` workspaces use the configured broker
+New `kuggis cell create NAME --repo OWNER/REPO` workspaces use the configured broker
 and seed one grant. Preflight checks happen before allocating an exe VM. Repeating
 creation preserves later operator changes. Granting a repository does not clone it.
 
@@ -227,17 +230,17 @@ Verify authentication from the configured operator, then set per-repository API
 permissions independently of Git access:
 
 ```sh
-kuggis github api-status
-kuggis repo api fri forecastingresearch/airo --issues write --pull-requests write
-kuggis repo api fri owner/reference --issues write --pull-requests read
+kuggis admin github api-status
+kuggis access configure fri repo forecastingresearch/airo --issues write --pull-requests write
+kuggis access configure fri repo owner/reference --issues write --pull-requests read
 ```
 
-These independent API controls are optional when using `repo add --role`.
-The repository must already be attached with `repo add`. New Git-only grants
+These independent API controls are optional when using `access grant ... --role`.
+The repository must already be granted. New legacy Git-only grants
 created with `--access` default API permissions to `none`. Each `repo api`
 command sets both API levels; add `--merge` only when PR merging should also be
-allowed. Omitting `--merge` disables it. `repo add` preserves API permissions;
-`repo remove` removes Git and API authority together. Replacing a removed grant
+allowed. Omitting `--merge` disables it. Legacy `repo add --access` preserves API permissions;
+`access revoke CELL repo REPO` removes Git and API authority together. Replacing a removed grant
 starts with the permissions specified by the new role, or API access disabled
 when using `--access`.
 

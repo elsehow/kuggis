@@ -3,11 +3,14 @@
 //! Pure configuration/policy compilation is separate from SSH and Linux effects.
 //! A rendered description is not evidence that a live boundary has passed checks.
 
+pub mod cli;
 pub mod client;
 pub mod config;
 pub mod deploy;
 pub mod environment;
 pub mod github;
+pub mod login;
+pub mod management;
 pub mod network;
 pub mod onboarding;
 pub mod proxy;

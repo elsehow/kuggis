@@ -88,9 +88,9 @@ pub fn chats(workspace: &Workspace, target: &str, json: bool) -> Result<()> {
                 if chat.running { "running" } else { "stopped" }
             );
         }
-        println!("\nOpen a chat: kuggis connect {} --chat NAME", target);
+        println!("\nOpen a chat: kuggis chat open {} NAME", target);
         println!(
-            "Create one:  kuggis connect {} --chat new-chat{}",
+            "Create one:  kuggis chat open {} new-chat{}",
             target,
             index
                 .default_agent
@@ -208,9 +208,21 @@ struct Installation<'a> {
     bundle: Bundle<'a>,
     binary_size: u64,
     sha256: String,
+    allow_restart: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expected_revision: Option<&'a str>,
 }
 
 pub fn setup(workspace: &Workspace, binary: &Path) -> Result<()> {
+    setup_checked(workspace, binary, false, None)
+}
+
+pub fn setup_checked(
+    workspace: &Workspace,
+    binary: &Path,
+    allow_restart: bool,
+    expected_revision: Option<&str>,
+) -> Result<()> {
     let mut binary = File::open(binary)?;
     let length = binary.metadata()?.len();
     if !binary.metadata()?.is_file() || length == 0 || length > 64 * 1024 * 1024 {
@@ -228,6 +240,8 @@ pub fn setup(workspace: &Workspace, binary: &Path) -> Result<()> {
         bundle: Bundle::compile(workspace),
         binary_size: length,
         sha256: transfer::digest(&mut binary)?,
+        allow_restart,
+        expected_revision,
     };
     let header = serde_json::to_vec(&request)?;
     if header.len() >= 1024 * 1024 {

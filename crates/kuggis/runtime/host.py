@@ -248,6 +248,16 @@ def verify_bundle(bundle):
             raise ValueError('unsafe deployment artifact')
 
 
+def check_update(request, old, workspace):
+    if old and old['name'] != workspace['name']:
+        raise RuntimeError('this host already belongs to another workspace')
+    if request.get('expected_revision') is not None:
+        if old is None or hashlib.sha256(trusted_bytes(CONFIG)).hexdigest() != request['expected_revision']:
+            raise RuntimeError('configuration changed concurrently; rerun the plan before applying')
+    if old and request.get('allow_restart') is not True:
+        raise RuntimeError('updating an existing cell restarts it; pass --restart explicitly')
+
+
 def install(stream):
     line = stream.readline(1024 * 1024 + 1)
     if len(line) > 1024 * 1024 or not line.endswith(b'\n'):
@@ -299,8 +309,7 @@ def install(stream):
         with os.fdopen(lock, 'wb') as locked:
             fcntl.flock(locked, fcntl.LOCK_EX | fcntl.LOCK_NB)
             old = load() if CONFIG.exists() else None
-            if old and old['name'] != workspace['name']:
-                raise RuntimeError('this host already belongs to another workspace')
+            check_update(request, old, workspace)
             previous = web_units(old) if old else []
             run('systemctl', 'stop', *previous, ENVIRONMENT, 'kuggis-v2-proxy.service', check=False)
             # Fresh Ubuntu images need systemd-container installed below before

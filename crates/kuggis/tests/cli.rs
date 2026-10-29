@@ -59,3 +59,71 @@ fn invalid_calls_and_unavailable_transport_fail_without_prompting() {
         assert!(output.stdout.is_empty());
     }
 }
+
+#[test]
+fn grouped_help_and_debug_are_discoverable_without_external_programs() {
+    let output = command().arg("--help").output().unwrap();
+    let help = String::from_utf8(output.stdout).unwrap();
+    for group in ["cell", "chat", "access", "file", "admin"] {
+        assert!(help.contains(&format!("kuggis {group}")));
+        assert!(command()
+            .args([group, "--help"])
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    assert!(!help.contains("normalize-nft"));
+    assert!(help.contains("kuggis login CELL --agent codex"));
+    let login_help = command().args(["login", "--help"]).output().unwrap();
+    assert!(login_help.status.success());
+    assert!(String::from_utf8_lossy(&login_help.stdout).contains("laptop browser"));
+    let output = command()
+        .args(["admin", "debug", "render", &fixture()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["status"],
+        "configuration_only"
+    );
+    let output = command()
+        .args(["cell", "web", &fixture(), "--plan"])
+        .output()
+        .unwrap();
+    // Planning a preview never invokes SSH or a browser.
+    assert!(output.status.success());
+}
+
+#[test]
+fn grouped_routes_preserve_literal_guest_arguments_and_chat_selection() {
+    use kuggis::cli::{route, Route};
+    let strings = |words: &[&str]| words.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let Route::Legacy(args) = route(&strings(&[
+        "cell",
+        "exec",
+        "fri",
+        "--",
+        "printf",
+        "--help",
+        "$(literal)",
+    ]))
+    .unwrap() else {
+        panic!("expected legacy route")
+    };
+    assert_eq!(
+        args,
+        strings(&["exec", "fri", "--", "printf", "--help", "$(literal)"])
+    );
+    let Route::Legacy(args) = route(&strings(&[
+        "chat", "open", "fri", "research", "--agent", "codex",
+    ]))
+    .unwrap() else {
+        panic!("expected chat route")
+    };
+    assert_eq!(
+        args,
+        strings(&["connect", "fri", "--chat", "research", "--agent", "codex"])
+    );
+    assert!(route(&strings(&["chat", "list", "fri", "--chat", "research"])).is_err());
+}
