@@ -109,6 +109,31 @@ class ChatMigration(unittest.TestCase):
         self.assertEqual(tomllib.loads(first)['model'], 'custom')
         self.assertEqual((common/'config.before-kuggis-login.toml').read_bytes(), backup)
 
+    def test_existing_shell_login_keeps_the_guest_execution_defaults_for_new_chats(self):
+        self.template.write_text(self.template.read_text()+'approval_policy="never"\nsandbox_mode="danger-full-access"\n')
+        common=self.home/'.codex'
+        common.mkdir()
+        (common/'config.toml').write_text('model_provider="openai"\nmodel="custom"\n')
+        state=recipe.prepare(self.home,'new')
+        shared=tomllib.loads((common/'config.toml').read_text())
+        self.assertEqual(shared['sandbox_mode'],'danger-full-access')
+        self.assertEqual(shared['approval_policy'],'never')
+        self.assertEqual(shared['model_provider'],'openai')
+        self.assertEqual(shared['model'],'custom')
+        profile=tomllib.loads((common/'kuggis-new.config.toml').read_text())
+        self.assertEqual(profile['sandbox_mode'],'danger-full-access')
+        self.assertEqual(profile['approval_policy'],'never')
+
+    def test_existing_explicit_execution_policy_is_preserved(self):
+        self.template.write_text(self.template.read_text()+'approval_policy="never"\nsandbox_mode="danger-full-access"\n')
+        common=self.home/'.codex'
+        common.mkdir()
+        (common/'config.toml').write_text('model_provider="openai"\nsandbox_mode="workspace-write"\napproval_policy="on-request"\n')
+        recipe.prepare(self.home,'new')
+        shared=tomllib.loads((common/'config.toml').read_text())
+        self.assertEqual(shared['sandbox_mode'],'workspace-write')
+        self.assertEqual(shared['approval_policy'],'on-request')
+
     def test_concurrent_migration_preserves_one_binding_and_profile(self):
         state, session = self.legacy('one')
         with ThreadPoolExecutor(max_workers=4) as pool:

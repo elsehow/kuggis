@@ -67,6 +67,21 @@ def shared_home(home, work=None):
         template = (home / '.local/share/kuggis/codex/config.toml').read_text()
         template += '\n[projects.' + json.dumps(str(work or home / 'workspace')) + ']\ntrust_level = "trusted"\n'
         atomic(config, template)
+    else:
+        # A shell login can create a minimal native config before Kuggis runs.
+        # Authentication must not silently replace the guest recipe's execution
+        # defaults with Codex's laptop sandbox defaults. Keep explicit choices.
+        text = config.read_text()
+        current = tomllib.loads(text)
+        template = tomllib.loads((home / '.local/share/kuggis/codex/config.toml').read_text())
+        missing = {key: template[key] for key in ('sandbox_mode', 'approval_policy')
+                   if key not in current and key in template}
+        if missing:
+            updated = root_values(text, missing)
+            backup = state / 'config.before-kuggis-defaults.toml'
+            if not backup.exists():
+                atomic(backup, text)
+            atomic(config, updated)
     return state
 
 
