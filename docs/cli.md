@@ -1,8 +1,64 @@
 # Kuggis command guide
 
-Kuggis has five public command groups. `kuggis --help` lists them; each group has
-its own `--help`. The top-level `login` command signs an agent into a cell.
-A cell argument accepts a saved name or a workspace JSON path.
+Positionals select a cell and chat: `kuggis CELL CHAT` opens the agent's native
+terminal UI over SSH. Trailing verbs act on that chat; flags select cell
+operations. `kuggis --help` lists the syntax. A cell argument accepts a saved
+name or a workspace JSON path. There is no Kuggis browser chat UI.
+
+```sh
+kuggis --list                       # saved cells, without connecting
+kuggis fri                          # list this cell's chats
+kuggis fri --list --json             # the same inventory for scripts
+kuggis fri research --agent codex    # create/open a terminal chat
+kuggis fri research                  # resume the same chat
+kuggis fri research archive --json   # stop and hide it, retaining history
+kuggis fri --put ./image.png         # upload to the workspace
+kuggis fri --put --paste --chat research
+kuggis fri --get output.pdf ./output.pdf
+```
+
+Chat names are exact validated names, not titles or fuzzy matches. Opening a new
+name creates a chat using `--agent` or the cell's configured default. Opening an
+archived name restores it. `open` is also accepted as an explicit trailing verb.
+Supported chat verbs are `open` and `archive`; unknown verbs, including `delete`
+and `rename`, fail without attaching or changing a chat. Permanent history
+deletion is not implemented. Listing never starts an agent.
+
+Cell operations use the flag immediately after CELL:
+
+| Operation | Syntax |
+| --- | --- |
+| Create | `kuggis --create NAME --repo OWNER/REPO [OPTIONS]` |
+| List cells | `kuggis --list [--json]` |
+| List chats | `kuggis CELL --list [--json]` |
+| Upload | `kuggis CELL --put LOCAL [REMOTE] [--chat CHAT] [--replace] [--json]` |
+| Clipboard upload | `kuggis CELL --put --paste [--chat CHAT] [--json]` |
+| Download | `kuggis CELL --get REMOTE LOCAL [--replace] [--json]` |
+| Shell | `kuggis CELL --shell` |
+| Execute | `kuggis CELL --exec -- PROGRAM [ARG...]` |
+| Status | `kuggis CELL --status [--check] [--json]` |
+| Boundary checks | `kuggis CELL --check [--json]` |
+| Agent login | `kuggis CELL --login --agent codex [OPTIONS]` |
+| App preview | `kuggis CELL --web [PREVIEW] [--port PORT] [--no-open] [--plan]` |
+| Configure | `kuggis CELL --configure --file PATCH.json [OPTIONS]` |
+| Upgrade | `kuggis CELL --upgrade --bin BIN [--plan] [--restart] [--json]` |
+| Access | `kuggis CELL --access ACTION [OPTIONS]` |
+| Grant | `kuggis CELL --grant repo OWNER/REPO --role read\|develop [--plan] [--json]` |
+| Grant network | `kuggis CELL --grant network HOST:PORT [--plan] [--json]` |
+| Revoke | `kuggis CELL --revoke repo OWNER/REPO [--plan] [--json]` |
+| Revoke network | `kuggis CELL --revoke network HOST:PORT [--plan] [--json]` |
+
+Access actions are `list`, `grant`, `revoke`, `check`, and `configure`.
+`--grant` and `--revoke` are direct shortcuts for the matching access actions. Options
+and behavior are shared with the compatible commands below. Provider sign-in and
+app previews can use a browser; chats always use the terminal.
+Existing groups and legacy command words remain reserved at the start of a
+command. For a cell named `chat`, `login`, or another reserved word, use its
+workspace JSON path, or `kuggis chat open CELL CHAT`.
+`--help` is available after a cell or chat. Arguments after `--exec --` pass
+literally to the guest, including `--help` and shell metacharacters.
+
+The five command groups remain available for compatibility and detailed help:
 
 | Group | Purpose |
 | --- | --- |
@@ -15,18 +71,18 @@ A cell argument accepts a saved name or a workspace JSON path.
 ## Everyday work
 
 ```sh
-kuggis cell create fri --repo forecastingresearch/airo --github-access write
-kuggis cell list
-kuggis cell status fri --check
-kuggis login fri --agent codex
-kuggis chat list fri
-kuggis chat open fri research --agent codex
-kuggis cell shell fri
-kuggis cell exec fri -- git status
-kuggis cell web fri
-kuggis file put fri ./results.csv inputs/results.csv
-kuggis file get fri outputs/report.pdf ./report.pdf
-kuggis chat archive fri research
+kuggis --create fri --repo forecastingresearch/airo --github-access write
+kuggis --list
+kuggis fri --status --check
+kuggis fri --login --agent codex
+kuggis fri --list
+kuggis fri research --agent codex
+kuggis fri --shell
+kuggis fri --exec -- git status
+kuggis fri --web
+kuggis fri --put ./results.csv inputs/results.csv
+kuggis fri --get outputs/report.pdf ./report.pdf
+kuggis fri research archive
 ```
 
 Creating a cell is the existing exe onboarding workflow. It enrolls the cell

@@ -78,6 +78,18 @@ class ManagementCLI(unittest.TestCase):
         self.assertEqual(self.cli('access', 'check', 'fri', 'network', 'api.anthropic.com:443', ok=False)['reason'], 'not_granted')
         self.assertEqual(self.calls(), ['restart-proxy', 'restart-proxy'])
 
+    def test_positional_grant_and_revoke_share_existing_access_workflow(self):
+        report = self.cli('fri', '--grant', 'network', 'api.anthropic.com:443', '--plan')
+        self.assertEqual(report['restart'], 'proxy')
+        self.assertEqual(self.calls(), [])
+        report = self.cli('fri', '--grant', 'network', 'api.anthropic.com:443')
+        self.assertTrue(report['verification']['reachable'])
+        self.assertTrue(self.cli('access', 'check', 'fri', 'network', 'api.anthropic.com:443')['granted'])
+        report = self.cli('fri', '--revoke', 'network', 'api.anthropic.com:443')
+        self.assertEqual(report['verification']['proxy_status'], 403)
+        self.assertFalse(self.cli('access', 'check', 'fri', 'network', 'api.anthropic.com:443', ok=False)['ok'])
+        self.assertEqual(self.calls(), ['restart-proxy', 'restart-proxy'])
+
     def test_failed_proxy_restart_restores_host_and_leaves_operator_unchanged(self):
         original = self.config.read_bytes()
         (self.remote / 'fail-restart').touch()

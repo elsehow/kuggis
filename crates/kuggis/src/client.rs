@@ -71,6 +71,14 @@ pub fn chats(workspace: &Workspace, target: &str, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&index)?);
     } else {
+        let opener = if crate::cli::group(target)
+            || crate::cli::legacy_command(target)
+            || target == "help"
+        {
+            "kuggis chat open"
+        } else {
+            "kuggis"
+        };
         let target = if Name::try_from(target.to_owned()).is_ok() {
             target.to_owned()
         } else {
@@ -88,9 +96,9 @@ pub fn chats(workspace: &Workspace, target: &str, json: bool) -> Result<()> {
                 if chat.running { "running" } else { "stopped" }
             );
         }
-        println!("\nOpen a chat: kuggis chat open {} NAME", target);
+        println!("\nOpen a chat: {opener} {target} NAME");
         println!(
-            "Create one:  kuggis chat open {} new-chat{}",
+            "Create one:  {opener} {} new-chat{}",
             target,
             index
                 .default_agent

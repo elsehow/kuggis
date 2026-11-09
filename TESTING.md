@@ -19,6 +19,19 @@ complete stream, and private ingress ordering. The fake transport never connects
 to an external host or installs privileged files. Rust proxy tests use real local
 sockets with injected DNS/dial effects, preserving production address policy.
 
+## Positional CLI
+
+`kuggis CELL CHAT` opens the native agent terminal through the existing SSH
+transport. Cell flags route to the same implementations as their grouped and
+legacy counterparts, including `--grant`/`--revoke` for access management.
+Those earlier command spellings remain supported.
+
+Validated on 2026-11-09: 59 Rust tests and 151 Python tests pass; formatting and
+Clippy pass. Tests cover terminal selection, agent bindings, read-only inventories,
+archive routing, literal guest arguments, binary file transfer and overwrite
+rules, and grant/plan/revoke behavior through fake SSH transports. Unsupported
+chat verbs fail before attaching. No live cell was changed during validation.
+
 ## Grouped CLI and management workflows
 
 The public CLI now groups commands under `cell`, `chat`, `access`, `file`, and

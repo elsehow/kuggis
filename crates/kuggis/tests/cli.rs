@@ -127,3 +127,137 @@ fn grouped_routes_preserve_literal_guest_arguments_and_chat_selection() {
     );
     assert!(route(&strings(&["chat", "list", "fri", "--chat", "research"])).is_err());
 }
+
+#[test]
+fn positional_routes_select_scope_and_preserve_arguments() {
+    use kuggis::cli::{route, Route};
+    for (input, expected, managed) in [
+        (
+            vec!["fri", "research"],
+            vec!["connect", "fri", "--chat", "research"],
+            false,
+        ),
+        (
+            vec!["fri", "research", "--agent", "codex"],
+            vec!["connect", "fri", "--chat", "research", "--agent", "codex"],
+            false,
+        ),
+        (
+            vec!["fri", "research", "open"],
+            vec!["connect", "fri", "--chat", "research"],
+            false,
+        ),
+        (
+            vec!["fri", "research", "archive", "--json"],
+            vec!["chat", "archive", "fri", "research", "--json"],
+            true,
+        ),
+        (vec!["fri"], vec!["connect", "fri"], false),
+        (
+            vec!["fri", "--list", "--json"],
+            vec!["connect", "fri", "--json"],
+            false,
+        ),
+        (
+            vec!["--list", "--json"],
+            vec!["cell", "list", "--json"],
+            true,
+        ),
+        (
+            vec!["--create", "fri", "--plan"],
+            vec!["create", "fri", "--plan"],
+            false,
+        ),
+        (
+            vec![
+                "fri",
+                "--put",
+                "a b.png",
+                "images/a'b.png",
+                "--chat",
+                "vt",
+                "--replace",
+            ],
+            vec![
+                "file",
+                "put",
+                "fri",
+                "a b.png",
+                "images/a'b.png",
+                "--chat",
+                "vt",
+                "--replace",
+            ],
+            true,
+        ),
+        (
+            vec!["fri", "--put", "--paste", "--chat", "vt"],
+            vec!["file", "put", "fri", "--paste", "--chat", "vt"],
+            true,
+        ),
+        (
+            vec!["fri", "--get", "out.pdf", "local.pdf"],
+            vec!["file", "get", "fri", "out.pdf", "local.pdf"],
+            true,
+        ),
+        (
+            vec!["fri", "--exec", "--", "printf", "--help", "$(literal)"],
+            vec!["exec", "fri", "--", "printf", "--help", "$(literal)"],
+            false,
+        ),
+        (
+            vec!["fri", "--check"],
+            vec!["cell", "status", "fri", "--check"],
+            true,
+        ),
+        (
+            vec![
+                "fri",
+                "--access",
+                "grant",
+                "network",
+                "example.com:443",
+                "--plan",
+            ],
+            vec![
+                "access",
+                "grant",
+                "fri",
+                "network",
+                "example.com:443",
+                "--plan",
+            ],
+            true,
+        ),
+    ] {
+        let args = input.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let route = route(&args).unwrap();
+        match route {
+            Route::Manage(args) if managed => assert_eq!(args, expected),
+            Route::Legacy(args) if !managed => assert_eq!(args, expected),
+            _ => panic!("unexpected route for {input:?}"),
+        }
+    }
+}
+
+#[test]
+fn unknown_operations_and_actions_fail_before_loading_a_cell() {
+    for args in [
+        vec!["missing", "research", "delete"],
+        vec!["missing", "research", "typo"],
+        vec!["missing", "../escape"],
+        vec!["missing", "--lst"],
+        vec!["missing", "--list", "research"],
+        vec!["--list", "missing"],
+    ] {
+        let output = command().args(&args).output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("No such file"),
+            "{args:?}"
+        );
+    }
+    for args in [vec!["fri", "--help"], vec!["fri", "research", "--help"]] {
+        assert!(command().args(args).output().unwrap().status.success());
+    }
+}

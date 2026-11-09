@@ -7,9 +7,13 @@ login UI, or agent conversation protocol.
 The [architecture guide](docs/architecture.md) records the scope. The
 [testing guide](TESTING.md) covers local checks and the disposable exe trial.
 
-The CLI has five groups: **cell, chat, access, file, admin**. Start with
-`kuggis --help` or the [command guide](docs/cli.md). Repository and network grants
-are applied with `kuggis access`; configuration changes report restart
+Use `kuggis CELL CHAT` to open or resume a terminal chat. A trailing verb such as
+`kuggis CELL CHAT archive` acts on that chat; cell operations use flags such as
+`kuggis CELL --list`, `--put`, and `--get`. `kuggis --list` lists saved cells.
+Start with `kuggis --help` or the [command guide](docs/cli.md). The existing
+**cell, chat, access, file, admin** command groups remain compatible.
+Repository and network grants are applied with `kuggis CELL --access`;
+configuration changes report restart
 requirements, and restarting an existing cell requires `--restart`.
 
 Sign Codex into a cell using your laptop browser:
@@ -162,16 +166,16 @@ endpoints and deployment resources remain environment configuration.
 List chats, then explicitly select one or create a new name:
 
 ```sh
-kuggis chat list my-workspace
-kuggis chat open my-workspace research --agent codex
-kuggis chat open my-workspace research
-kuggis chat open my-workspace implementation --agent pi
+kuggis my-workspace --list
+kuggis my-workspace research --agent codex
+kuggis my-workspace research
+kuggis my-workspace implementation --agent pi
 ```
 
-`chat list` lists chats with their saved agent and running/stopped status,
-then shows commands to open or create one. `chat list NAME --json` returns the
+`CELL --list` lists chats with their saved agent and running/stopped status,
+then shows commands to open or create one. `CELL --list --json` returns the
 same typed inventory for scripts. Listing never starts an agent or creates a
-chat. `--chat default` explicitly opens the original legacy terminal and history.
+chat. `kuggis CELL default` explicitly opens the original legacy terminal and history.
 The first connection to another name starts a separate agent; using the same name
 again attaches to that running agent. Detach with Ctrl-B then D. Each named chat
 has its own persistent tmux service and, with the Pi recipe, its own history
@@ -185,12 +189,12 @@ When `agents` is configured, every chat saves its agent on first connection.
 remember it; omitting the flag never changes an existing chat's agent. Supplying
 a different agent for an existing name fails with a migration explanation.
 New chats without `--agent` use `default_agent`. Changing that default affects
-only new chats. `--agent` requires `--chat`; there is no implicit default chat.
+only new chats. `--agent` requires a selected chat; there is no implicit default chat.
 
 Archive a chat without deleting its binding or agent history:
 
 ```sh
-kuggis chat archive my-workspace research
+kuggis my-workspace research archive
 ```
 
 This stops its agent (disconnecting any attached terminals) and hides it from
@@ -422,6 +426,6 @@ already-started guest may continue behind the newly installed firewall until
 stopped. It does not gain an approval/escalation path. Initial bootstrap failures
 are retained for inspection rather than silently deleting a partial rootfs.
 
-V1 remains in `../cell` and `../web`; there is no automatic migration or deletion
-of old data. Live declarations, receipts and credentials belong in ignored
-`.kuggis/` or outside the repository.
+The v1 runtime and browser UI have been removed from this repository. Existing
+remote data is not automatically migrated or deleted. Live declarations, receipts
+and credentials belong in ignored `.kuggis/` or outside the repository.

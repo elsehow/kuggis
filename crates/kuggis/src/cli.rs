@@ -1,8 +1,33 @@
-//! Public command groups. Legacy spellings remain accepted by the main router.
+//! Positional cell/chat commands, with compatible grouped and legacy spellings.
 use crate::{Error, Result};
 
 pub const HELP: &str = "Kuggis — cells for autonomous work
 
+  kuggis CELL CHAT [--agent AGENT]     open or resume a terminal chat
+  kuggis CELL CHAT archive [--json]    stop and archive a chat
+  kuggis CELL [--list] [--json]        list chats without starting an agent
+  kuggis --list [--json]              list saved cells
+  kuggis --create NAME [OPTIONS]      create a cell
+  kuggis CELL --put LOCAL [REMOTE] [--chat CHAT] [--replace] [--json]
+  kuggis CELL --put --paste [--chat CHAT] [--json]
+  kuggis CELL --get REMOTE LOCAL [--replace] [--json]
+  kuggis CELL --shell                 open a guest shell
+  kuggis CELL --exec -- PROGRAM [ARG...]
+  kuggis CELL --status [--check] [--json]
+  kuggis CELL --login --agent codex
+  kuggis CELL --web [PREVIEW] [--port PORT] [--no-open] [--plan]
+  kuggis CELL --configure --file PATCH.json [--plan] [--restart --bin BIN]
+  kuggis CELL --upgrade --bin BIN [--plan] [--restart] [--json]
+  kuggis CELL --access list|grant|revoke|check|configure [OPTIONS]
+  kuggis CELL --grant repo OWNER/REPO --role read|develop [--plan] [--json]
+  kuggis CELL --grant network HOST:PORT [--plan] [--json]
+  kuggis CELL --revoke repo OWNER/REPO [--plan] [--json]
+  kuggis CELL --revoke network HOST:PORT [--plan] [--json]
+
+Opening a new chat creates it; opening an existing chat resumes it over SSH.
+CELL accepts a saved name or workspace JSON path. Chat names are exact names.
+
+Compatible command groups:
   kuggis login CELL --agent codex
   kuggis cell    create, list, status, configure, shell, exec, web
   kuggis chat    list, open, archive
@@ -30,6 +55,115 @@ pub enum Route {
 
 pub fn group(name: &str) -> bool {
     matches!(name, "cell" | "chat" | "access" | "file" | "admin")
+}
+
+/// These words retain their original meaning at the start of a command.
+/// For a cell with a colliding name, use its workspace JSON path.
+pub fn legacy_command(name: &str) -> bool {
+    matches!(
+        name,
+        "login"
+            | "create"
+            | "github"
+            | "repo"
+            | "normalize-nft"
+            | "validate"
+            | "render"
+            | "bundle"
+            | "setup"
+            | "connect"
+            | "archive"
+            | "shell"
+            | "check"
+            | "exec"
+            | "ssh-command"
+            | "put"
+            | "get"
+            | "proxy"
+            | "web"
+    )
+}
+
+fn positional(args: &[String]) -> Result<Route> {
+    let words = |prefix: &[&str], rest: &[String]| {
+        prefix
+            .iter()
+            .map(|s| s.to_string())
+            .chain(rest.iter().cloned())
+            .collect()
+    };
+    let Some(cell) = args.first() else {
+        return Ok(Route::Help(HELP));
+    };
+    if cell == "--list" {
+        if args[1..].iter().any(|s| s != "--json") || args.len() > 2 {
+            return Err(Error("expected kuggis --list [--json]".into()));
+        }
+        return Ok(Route::Manage(words(&["cell", "list"], &args[1..])));
+    }
+    if cell == "--create" {
+        return Ok(Route::Legacy(words(&["create"], &args[1..])));
+    }
+    if cell.starts_with('-') {
+        return Err(Error(format!(
+            "unknown operation {cell}; run kuggis --help"
+        )));
+    }
+    let Some(operation) = args.get(1).map(String::as_str) else {
+        return Ok(Route::Legacy(words(&["connect", cell], &[])));
+    };
+    let rest = &args[2..];
+    match operation {
+        "--help" | "-h" => Ok(Route::Help(HELP)),
+        "--list" => {
+            if rest.len() > 1 || rest.first().is_some_and(|s| s != "--json") {
+                return Err(Error("expected kuggis CELL --list [--json]".into()));
+            }
+            Ok(Route::Legacy(words(&["connect", cell], rest)))
+        }
+        "--json" if rest.is_empty() => Ok(Route::Legacy(words(&["connect", cell, "--json"], rest))),
+        "--put" | "--get" => Ok(Route::Manage(words(&["file", &operation[2..], cell], rest))),
+        "--shell" | "--exec" | "--web" | "--login" => {
+            Ok(Route::Legacy(words(&[&operation[2..], cell], rest)))
+        }
+        "--status" | "--configure" => {
+            Ok(Route::Manage(words(&["cell", &operation[2..], cell], rest)))
+        }
+        "--check" => Ok(Route::Manage(words(
+            &["cell", "status", cell, "--check"],
+            rest,
+        ))),
+        "--upgrade" => Ok(Route::Manage(words(&["admin", "upgrade", cell], rest))),
+        "--access" => {
+            let action = rest.first().ok_or_else(|| Error(help("access").into()))?;
+            route(&words(&["access", action, cell], &rest[1..]))
+        }
+        "--grant" | "--revoke" => route(&words(&["access", &operation[2..], cell], rest)),
+        flag if flag.starts_with('-') => Err(Error(format!(
+            "unknown cell operation {flag}; run kuggis CELL --help"
+        ))),
+        chat => {
+            crate::config::Name::try_from(chat.to_owned())?;
+            match rest.first().map(String::as_str) {
+                Some("archive") => Ok(Route::Manage(words(
+                    &["chat", "archive", cell, chat],
+                    &rest[1..],
+                ))),
+                Some("open") => Ok(Route::Legacy(words(
+                    &["connect", cell, "--chat", chat],
+                    &rest[1..],
+                ))),
+                Some("--help" | "-h") => Ok(Route::Help(help("chat"))),
+                Some(action) if !action.starts_with('-') => Err(Error(format!(
+                    "unknown chat action {action}; supported actions: open, archive"
+                ))),
+                _ => Ok(Route::Legacy(words(
+                    &["connect", cell, "--chat", chat],
+                    rest,
+                ))),
+            }
+        }
+    }
 }
 
 pub fn help(name: &str) -> &'static str {
@@ -79,6 +213,9 @@ Shared broker setup stays on the operator machine. Upgrade plans require a live 
 
 pub fn route(args: &[String]) -> Result<Route> {
     let area = args.first().map(String::as_str).unwrap_or("");
+    if !group(area) {
+        return positional(args);
+    }
     if args.len() == 1
         || args
             .get(1)

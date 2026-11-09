@@ -55,14 +55,11 @@ fn main() {
 }
 
 fn run(mut args: Vec<String>) -> kuggis::Result<()> {
-    if args.is_empty() || args == ["--help"] || args == ["help"] {
+    if args.is_empty() || args == ["--help"] || args == ["-h"] || args == ["help"] {
         println!("{}", kuggis::cli::HELP);
         return Ok(());
     }
-    if args[0] == "login" {
-        return kuggis::login::run(&args[1..]);
-    }
-    if kuggis::cli::group(&args[0]) {
+    if kuggis::cli::group(&args[0]) || !kuggis::cli::legacy_command(&args[0]) {
         match kuggis::cli::route(&args)? {
             kuggis::cli::Route::Help(help) => {
                 println!("{help}");
@@ -71,6 +68,9 @@ fn run(mut args: Vec<String>) -> kuggis::Result<()> {
             kuggis::cli::Route::Manage(args) => return kuggis::management::run(&args),
             kuggis::cli::Route::Legacy(legacy) => args = legacy,
         }
+    }
+    if args[0] == "login" {
+        return kuggis::login::run(&args[1..]);
     }
     if args == ["create", "--help"] {
         println!("{}", kuggis::cli::help("cell"));

@@ -213,6 +213,22 @@ class ClientInterop(unittest.TestCase):
         self.cli('get', "files/a'b.bin", output)
         self.assertEqual(source.read_bytes(), output.read_bytes())
 
+    def test_positional_file_flags_round_trip_and_keep_create_only_default(self):
+        source, output = self.root / 'source', self.root / 'output'
+        source.write_bytes(b'\0positional\xff')
+        def call(*args, ok=True):
+            result = subprocess.run([self.binary, self.config, *map(str, args), '--json'],
+                                    env=self.env, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode == 0, ok, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+        self.assertTrue(call('--put', source, "a'b.bin")['ok'])
+        source.write_bytes(b'changed')
+        self.assertFalse(call('--put', source, "a'b.bin", ok=False)['ok'])
+        self.assertEqual((self.root / 'guest' / "a'b.bin").read_bytes(), b'\0positional\xff')
+        self.assertTrue(call('--put', source, "a'b.bin", '--replace')['ok'])
+        self.assertTrue(call('--get', "a'b.bin", output)['ok'])
+        self.assertEqual(output.read_bytes(), source.read_bytes())
+
     def test_grouped_file_commands_preserve_transfer_protocol_and_report_json(self):
         source, output = self.root / 'source', self.root / 'output'
         source.write_bytes(b'\0grouped\xff')
