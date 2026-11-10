@@ -182,6 +182,7 @@ fn positional_routes_select_scope_and_preserve_arguments() {
                 "file",
                 "put",
                 "fri",
+                "--items",
                 "a b.png",
                 "images/a'b.png",
                 "--chat",
@@ -192,12 +193,20 @@ fn positional_routes_select_scope_and_preserve_arguments() {
         ),
         (
             vec!["fri", "--put", "--paste", "--chat", "vt"],
-            vec!["file", "put", "fri", "--paste", "--chat", "vt"],
+            vec!["file", "put", "fri", "--items", "--paste", "--chat", "vt"],
             true,
         ),
         (
-            vec!["fri", "--get", "out.pdf", "local.pdf"],
-            vec!["file", "get", "fri", "out.pdf", "local.pdf"],
+            vec!["fri", "--get", "out.pdf", "--save-as", "local.pdf"],
+            vec![
+                "file",
+                "get",
+                "fri",
+                "--items",
+                "out.pdf",
+                "--save-as",
+                "local.pdf",
+            ],
             true,
         ),
         (

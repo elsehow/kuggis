@@ -8,9 +8,9 @@ pub const HELP: &str = "Kuggis — cells for autonomous work
   kuggis CELL [--list] [--json]        list chats without starting an agent
   kuggis --list [--json]              list saved cells
   kuggis --create NAME [OPTIONS]      create a cell
-  kuggis CELL --put LOCAL [REMOTE] [--chat CHAT] [--replace] [--json]
+  kuggis CELL --put LOCAL... [--save-as REMOTE...] [--chat CHAT] [--replace] [--json]
   kuggis CELL --put --paste [--chat CHAT] [--json]
-  kuggis CELL --get REMOTE LOCAL [--replace] [--json]
+  kuggis CELL --get REMOTE... [--save-as LOCAL...] [--replace] [--json]
   kuggis CELL --shell                 open a guest shell
   kuggis CELL --exec -- PROGRAM [ARG...]
   kuggis CELL --status [--check] [--json]
@@ -124,7 +124,11 @@ fn positional(args: &[String]) -> Result<Route> {
             Ok(Route::Legacy(words(&["connect", cell], rest)))
         }
         "--json" if rest.is_empty() => Ok(Route::Legacy(words(&["connect", cell, "--json"], rest))),
-        "--put" | "--get" => Ok(Route::Manage(words(&["file", &operation[2..], cell], rest))),
+        // Positionals are items; destinations come from --save-as.
+        "--put" | "--get" => Ok(Route::Manage(words(
+            &["file", &operation[2..], cell, "--items"],
+            rest,
+        ))),
         "--shell" | "--exec" | "--web" | "--login" => {
             Ok(Route::Legacy(words(&[&operation[2..], cell], rest)))
         }

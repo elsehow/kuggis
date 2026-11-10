@@ -221,13 +221,43 @@ class ClientInterop(unittest.TestCase):
                                     env=self.env, capture_output=True, timeout=30)
             self.assertEqual(result.returncode == 0, ok, result.stdout + result.stderr)
             return json.loads(result.stdout)
-        self.assertTrue(call('--put', source, "a'b.bin")['ok'])
+        self.assertTrue(call('--put', source, '--save-as', "a'b.bin")['ok'])
         source.write_bytes(b'changed')
-        self.assertFalse(call('--put', source, "a'b.bin", ok=False)['ok'])
+        self.assertFalse(call('--put', source, '--save-as', "a'b.bin", ok=False)['ok'])
         self.assertEqual((self.root / 'guest' / "a'b.bin").read_bytes(), b'\0positional\xff')
-        self.assertTrue(call('--put', source, "a'b.bin", '--replace')['ok'])
-        self.assertTrue(call('--get', "a'b.bin", output)['ok'])
+        self.assertTrue(call('--put', source, '--save-as', "a'b.bin", '--replace')['ok'])
+        self.assertTrue(call('--get', "a'b.bin", '--save-as', output)['ok'])
         self.assertEqual(output.read_bytes(), source.read_bytes())
+
+    def test_positional_file_flags_take_several_items_with_optional_save_as(self):
+        first, second = self.root / 'one.txt', self.root / 'two.txt'
+        first.write_bytes(b'one'); second.write_bytes(b'two')
+        guest, out = self.root / 'guest', self.root / 'out'
+        out.mkdir()
+        def call(*args, ok=True, cwd=None):
+            result = subprocess.run([self.binary, self.config, *map(str, args), '--json'],
+                                    env=self.env, capture_output=True, timeout=30, cwd=cwd)
+            self.assertEqual(result.returncode == 0, ok, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+        report = call('--put', first, second)
+        self.assertEqual([item['source'] for item in report['items']], [str(first), str(second)])
+        self.assertEqual(((guest / 'one.txt').read_bytes(), (guest / 'two.txt').read_bytes()), (b'one', b'two'))
+        self.assertTrue(call('--put', first, second, '--save-as', 'a.txt', 'b.txt')['ok'])
+        self.assertEqual((guest / 'b.txt').read_bytes(), b'two')
+        # Without --save-as, downloads land in the current directory by name.
+        self.assertTrue(call('--get', 'one.txt', 'b.txt', cwd=out)['ok'])
+        self.assertEqual(((out / 'one.txt').read_bytes(), (out / 'b.txt').read_bytes()), (b'one', b'two'))
+        self.assertTrue(call('--get', 'a.txt', 'two.txt', '--save-as', out / 'x', out / 'y')['ok'])
+        self.assertEqual(((out / 'x').read_bytes(), (out / 'y').read_bytes()), (b'one', b'two'))
+        # Destination counts must match, and nothing is transferred when they do not.
+        for args in (('--put', first, second, '--save-as', 'only'), ('--get', 'a.txt', '--save-as', out / 'p', out / 'q'),
+                     ('--get', 'a.txt', 'sub/a.txt'), ('--get',), ('--put', '--paste', first)):
+            self.assertFalse(call(*args, ok=False, cwd=out)['ok'], args)
+        self.assertFalse((guest / 'only').exists() or (out / 'p').exists() or (out / 'a.txt').exists())
+        # A later failure reports what already completed; create-only stays the default.
+        failed = call('--get', 'one.txt', 'missing.txt', '--save-as', out / 'ok', out / 'never', ok=False)
+        self.assertIn('1 of 2 items completed', failed['error']['message'])
+        self.assertEqual((out / 'ok').read_bytes(), b'one')
 
     def test_grouped_file_commands_preserve_transfer_protocol_and_report_json(self):
         source, output = self.root / 'source', self.root / 'output'

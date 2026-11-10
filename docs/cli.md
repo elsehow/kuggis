@@ -12,9 +12,9 @@ kuggis fri --list --json             # the same inventory for scripts
 kuggis fri research --agent codex    # create/open a terminal chat
 kuggis fri research                  # resume the same chat
 kuggis fri research archive --json   # stop and hide it, retaining history
-kuggis fri --put ./image.png         # upload to the workspace
+kuggis fri --put ./image.png ./notes.md   # upload one or more files
 kuggis fri --put --paste --chat research
-kuggis fri --get output.pdf ./output.pdf
+kuggis fri --get output.pdf --save-as ./report.pdf
 ```
 
 Chat names are exact validated names, not titles or fuzzy matches. Opening a new
@@ -31,9 +31,19 @@ Cell operations use the flag immediately after CELL:
 | Create | `kuggis --create NAME --repo OWNER/REPO [OPTIONS]` |
 | List cells | `kuggis --list [--json]` |
 | List chats | `kuggis CELL --list [--json]` |
-| Upload | `kuggis CELL --put LOCAL [REMOTE] [--chat CHAT] [--replace] [--json]` |
+| Upload | `kuggis CELL --put LOCAL... [--save-as REMOTE...] [--chat CHAT] [--replace] [--json]` |
 | Clipboard upload | `kuggis CELL --put --paste [--chat CHAT] [--json]` |
-| Download | `kuggis CELL --get REMOTE LOCAL [--replace] [--json]` |
+| Download | `kuggis CELL --get REMOTE... [--save-as LOCAL...] [--replace] [--json]` |
+
+`--put` and `--get` take any number of items; every path after the flag is an
+item, not a destination. Without `--save-as`, each item keeps its file name:
+uploads go to the workspace (or the chat with `--chat`), downloads to the
+current directory. `--save-as` takes one destination per item, in order, and
+must come after the items. Items transfer one at a time in the order given and
+stop at the first failure, which reports the items already completed. Existing
+files are not overwritten without `--replace`. The grouped `kuggis file put CELL
+LOCAL [REMOTE]` and `kuggis file get CELL REMOTE LOCAL` forms still take a single
+item with a positional destination.
 | Shell | `kuggis CELL --shell` |
 | Execute | `kuggis CELL --exec -- PROGRAM [ARG...]` |
 | Status | `kuggis CELL --status [--check] [--json]` |
@@ -80,8 +90,8 @@ kuggis fri research --agent codex
 kuggis fri --shell
 kuggis fri --exec -- git status
 kuggis fri --web
-kuggis fri --put ./results.csv inputs/results.csv
-kuggis fri --get outputs/report.pdf ./report.pdf
+kuggis fri --put ./results.csv ./notes.md --save-as inputs/results.csv inputs/notes.md
+kuggis fri --get outputs/report.pdf outputs/data.csv
 kuggis fri research archive
 ```
 
