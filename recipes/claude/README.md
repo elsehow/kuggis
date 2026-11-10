@@ -83,6 +83,20 @@ where the patch adds this entry to the declaration's existing `agents` object:
 
 Changing `agents` restarts the cell. Existing chats keep their saved agent.
 
+## Update Claude Code
+
+The pin follows Claude Code's `latest` channel, because new models can need a
+newer client than `stable` serves. Self-update is off, so a cell changes version
+only when the installer runs with a newer `release.json`. To move the pin, take
+the version from `https://downloads.claude.ai/claude-code-releases/latest` and
+the `linux-x64` checksum from that version's `manifest.json`.
+
+To update an existing cell, follow [Add to an existing cell](#add-to-an-existing-cell)
+with the new binary and `release.json`, skipping the `agents` registration. No
+cell restart is needed and the login is kept. Running chats keep the old binary
+until Claude Code exits; reopen each chat to resume it on the new version. This
+update path has not been run on a live cell.
+
 ## Test status
 
 Exercised on a disposable exe cell on 2026-11-10: creation with
