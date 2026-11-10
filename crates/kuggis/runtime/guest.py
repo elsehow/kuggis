@@ -290,6 +290,16 @@ set -g exit-empty off
 # modified keys even without negotiation, including Shift-Enter from Ghostty.
 set -s extended-keys always
 set -as terminal-features ',xterm*:extkeys'
+# The laptop terminal sees tmux as a full-screen program, so its own scrollback
+# and wheel never reach the chat's history. Keep that history in tmux and make
+# the wheel and Page Up reach it. Programs that take the mouse or the alternate
+# screen themselves (Claude Code's fullscreen view, editors) still get both.
+set -g history-limit 50000
+set -g mouse on
+bind -n PPage if -F '#{alternate_on}' 'send-keys PPage' 'copy-mode -eu'
+# Selections made with the mouse reach the laptop clipboard where supported.
+set -s set-clipboard on
+set -as terminal-features ',xterm*:clipboard'
 ''').encode())
     install_file('/etc/systemd/system/kuggis-terminal.service', terminal_unit('kuggis').encode())
     install_file('/etc/systemd/system/kuggis-chat@.service', terminal_unit('kuggis-chat-%i', ' %i').encode())
