@@ -128,11 +128,13 @@ def prepare(home, name, work=None):
 def command(home, state):
     common = shared_home(home)
     config = tomllib.loads((common / 'config.toml').read_text())
+    # Cells created before native-only login selected the removed exe gateway.
+    provider = config.get('model_provider', 'openai')
     argv = [str(home / '.local/bin/codex'), '--no-daemon', '--enable', 'hooks',
             '--dangerously-bypass-hook-trust', '-p', 'kuggis-' + state.name,
             '-c', 'sqlite_home=' + json.dumps(str(state)),
             '-c', 'log_dir=' + json.dumps(str(state / 'log')),
-            '-c', 'model_provider=' + json.dumps(config.get('model_provider', 'openai')),
+            '-c', 'model_provider=' + json.dumps('openai' if provider == 'exe' else provider),
             '-c', 'cli_auth_credentials_store="file"']
     binding = json.loads((state / 'kuggis-session.json').read_text())
     if binding.get('legacy_pending'):

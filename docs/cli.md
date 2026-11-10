@@ -38,7 +38,7 @@ Cell operations use the flag immediately after CELL:
 | Execute | `kuggis CELL --exec -- PROGRAM [ARG...]` |
 | Status | `kuggis CELL --status [--check] [--json]` |
 | Boundary checks | `kuggis CELL --check [--json]` |
-| Agent login | `kuggis CELL --login --agent codex [OPTIONS]` |
+| Agent login | `kuggis CELL --login --agent codex\|claude [OPTIONS]` |
 | App preview | `kuggis CELL --web [PREVIEW] [--port PORT] [--no-open] [--plan]` |
 | Configure | `kuggis CELL --configure --file PATCH.json [OPTIONS]` |
 | Upgrade | `kuggis CELL --upgrade --bin BIN [--plan] [--restart] [--json]` |
@@ -100,16 +100,31 @@ checks. Chat, shell, file, and preview commands retain their existing behavior.
 
 ```sh
 kuggis login fri --agent codex
-kuggis login merrillfront --agent codex
+kuggis login fri --agent claude
 kuggis login fri --agent codex --status
-kuggis login fri --agent codex --plan
+kuggis login fri --agent claude --plan
 ```
 
-Run these on your laptop. The current adapter supports Codex with ChatGPT
-browser authentication. Kuggis carries the normal OAuth callback over SSH into
-the guest, checks provider network access, and shares the native login across
-the cell's Codex chats and shells. Device-code authentication is not required.
-Each cell retains its own credentials, refreshed by Codex inside that cell.
+Run these on your laptop. Every agent authenticates with its own native login;
+Kuggis supplies no model credentials or managed model gateway, so a new cell has
+no model access until you sign in. Login grants only that provider's endpoints
+through the cell proxy, without restarting the cell.
+
+**Codex** uses ChatGPT browser authentication. Kuggis carries the normal OAuth
+callback over SSH into the guest, checks provider network access, and shares the
+native login across the cell's Codex chats and shells. Device-code
+authentication is not required. Each cell retains its own credentials, refreshed
+by Codex inside that cell.
+
+**Claude Code** signs in inside its own terminal. `kuggis login CELL --agent claude`
+grants `api.anthropic.com`, `claude.ai` and `platform.claude.com`, then reports
+whether the cell is already signed in. To sign in, open a chat with
+`kuggis CELL CHAT --agent claude`: Claude Code shows a link; open it on your
+laptop and paste the code it gives you back into the chat. No callback relay is
+needed. Use `/login` in a chat to switch accounts. The login lives in the cell
+user's `~/.claude` and is shared by every Claude Code chat and shell.
+
+The remaining paragraphs describe the Codex adapter's options.
 
 `--no-open` prints the sign-in URL instead of opening your browser. `--force`
 requests a fresh sign-in to switch accounts; otherwise a cached ChatGPT login is
@@ -123,8 +138,8 @@ Existing chats keep their native history and model preferences. Login updates
 the launcher and outbound proxy as needed, without restarting the cell or its
 chat processes. Exit and reopen already-running Codex processes to use the new
 account. New chats and plain `codex` in a fresh guest shell use the same login.
-The chosen cell-wide provider is `openai`; legacy exe-backed chats inherit it
-when relaunched. Per-chat databases remain separate native stores, while auth
+The cell-wide provider is always `openai`; chats created on the retired exe
+gateway use it when relaunched. Per-chat databases remain separate native stores, while auth
 uses the shared `~/.codex` home. See the [Codex recipe](../recipes/codex/README.md).
 
 ## Repository access
@@ -234,6 +249,12 @@ kuggis cell configure fri --file changes.json --restart --bin ./kuggis-linux-x86
 kuggis admin upgrade fri --bin ./kuggis-linux-x86_64 --plan
 kuggis admin upgrade fri --bin ./kuggis-linux-x86_64 --restart
 ```
+
+`admin upgrade` also removes the retired exe model gateway grant from the cell
+and says so in its plan. Agents that were still using it need `kuggis login`
+afterwards; their history is kept. The upgrade does not install new agent
+recipes: see the [Claude Code recipe](../recipes/claude/README.md) to add it to
+an existing cell.
 
 Full installation is disruptive: running agent processes stop. It checks the
 expected host revision under the installer lock before stopping anything. An

@@ -26,11 +26,11 @@ def payload(root):
     binary=root/'linux'
     binary.write_bytes(b'\x7fELF\x02\x01'+b'\0'*12+b'\x3e\0')
     return {'request':{'version':1,'name':'test','repo':'owner/repo','github_access':'read',
-                       'host':'exe','agent':'pi','model':'exe-managed','cpus':2,'memory_gib':8},
+                       'host':'exe','agent':'codex','cpus':2,'memory_gib':8},
             'directory':str(root/'workspace'),'binary':str(binary),'cli':'kuggis',
-            'workspace':{'version':2,'name':'test'},'ssh_config':str(root/'operator-ssh'),
+            'workspace':{'version':2,'name':'test','agents':{'codex':{},'claude':{}}},'ssh_config':str(root/'operator-ssh'),
             'json_output':True,'host_executor':'unused fake',
-            'recipes':{agent:{'release.json':'{}','install.py':'','models.json':'{}','smoke.py':''} for agent in ('pi','codex')}}
+            'recipes':{agent:{'release.json':'{}','install.py':'','smoke.py':''} for agent in ('codex','claude')}}
 
 
 class Fake(o.Setup):
@@ -41,7 +41,7 @@ class Fake(o.Setup):
     def progress(self, step, message): self.step=step
 
     def download(self, agent):
-        p=self.directory/(agent+'.tar.gz');p.write_bytes(b'archive');return p
+        p=self.directory/(agent+'.pkg');p.write_bytes(b'archive');return p
 
     def control(self, *words, as_json=False):
         self.remote['calls'].append(words)
@@ -69,8 +69,8 @@ class Fake(o.Setup):
 
     def cli(self, verb, *args, timeout=120):
         self.remote['calls'].append(('cli',verb,*map(str,args)))
-        if verb=='exec' and str(args[-2]).endswith('/smoke.py') and self.remote.pop('fail_model',False):
-            raise o.Failure('command_failed','model unavailable')
+        if verb=='exec' and str(args[-2]).endswith('/install.py') and self.remote.pop('fail_install',False):
+            raise o.Failure('command_failed','install unavailable')
         return sp.CompletedProcess([],0,b'{"ok":true}',b'')
 
     def github(self, *args):
@@ -86,9 +86,9 @@ class SetupEffects(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.root=Path(self.temp.name)
         self.p=payload(self.root)
+        # An account-wide llm attachment is tolerated but never used or required.
         self.remote={'vms':[],'calls':[],'integrations':[github(),
-            {'name':'llm','type':'llm','attachments':['auto:all'],
-             'config':{'providers':{'openai':{'enabled':True,'source':'managed'}}}}]}
+            {'name':'llm','type':'llm','attachments':['auto:all']}]}
         Path(self.p['directory']).mkdir()
 
     def tearDown(self): self.temp.cleanup()
@@ -96,14 +96,36 @@ class SetupEffects(unittest.TestCase):
     def run_setup(self): return Fake(copy.deepcopy(self.p),self.remote).provision()
 
     def test_both_agents_are_installed_regardless_of_default(self):
-        self.p['request']['agent']='codex'
+        self.p['request']['agent']='claude'
         result=self.run_setup()
         self.assertTrue(result['ok'])
+        self.assertEqual(result['login'],'kuggis login test --agent claude')
         calls=self.remote['calls']
-        for agent in ('pi','codex'):
+        for agent in ('codex','claude'):
             self.assertTrue(any(c[:2]==('cli','put') and '.kuggis-setup/'+agent+'/install.py' in c for c in calls))
-        self.assertTrue(any(c[:2]==('cli','put') and '.kuggis-setup/codex/models.json' in c for c in calls))
-        self.assertTrue(any(o.DEFAULT_MODEL in c for c in calls))
+            self.assertTrue(any(c[:2]==('cli','put') and '.kuggis-setup/'+agent+'/agent.pkg' in c for c in calls))
+
+    def test_creation_uses_no_model_gateway_and_makes_no_model_request(self):
+        self.remote['integrations']=[github()]
+        result=self.run_setup()
+        self.assertTrue(result['ok'])
+        self.assertNotIn('model',result)
+        self.assertEqual(result['effective_integrations'],[])
+        calls=self.remote['calls']
+        self.assertFalse(any(c[:2]==('integrations','attach') for c in calls))
+        # The post-login check is staged for later use, never run during creation.
+        self.assertFalse(any(c[:2]==('cli','exec') and 'smoke.py' in str(word) for c in calls for word in c))
+        receipt=json.loads((Path(self.p['directory'])/'receipt.json').read_text())
+        self.assertEqual(receipt['checks']['model'],'not_tested_until_login')
+
+    def test_legacy_saved_model_resumes_but_retired_agents_require_upgrade(self):
+        directory=Path(self.p['directory'])
+        (directory/'setup.json').write_text(json.dumps({**self.p['request'],'model':'exe-managed'}))
+        self.assertTrue(self.run_setup()['ok'])
+        (directory/'workspace.json').write_text(json.dumps({'version':2,'name':'test','agents':{'pi':{},'codex':{}}}))
+        before=len(self.remote['calls'])
+        with self.assertRaisesRegex(o.Failure,'--upgrade'): self.run_setup()
+        self.assertEqual(len(self.remote['calls']),before)
 
     def test_ssh_creation_seeds_full_role_and_restart_requires_explicit_input(self):
         self.remote['github_transport'] = 'ssh-gateway'
@@ -128,9 +150,9 @@ class SetupEffects(unittest.TestCase):
         with self.assertRaisesRegex(o.Failure,'No second VM'): self.run_setup()
         self.assertEqual(sum(c[0]=='new' for c in self.remote['calls']),1)
 
-    def test_retry_after_model_failure_preserves_host_and_skips_reinstall(self):
-        self.remote['fail_model']=True
-        with self.assertRaisesRegex(o.Failure,'model unavailable'): self.run_setup()
+    def test_retry_after_agent_install_failure_preserves_host_and_skips_reinstall(self):
+        self.remote['fail_install']=True
+        with self.assertRaisesRegex(o.Failure,'install unavailable'): self.run_setup()
         self.assertTrue(self.run_setup()['ok'])
         self.assertEqual(sum(c[:2]==('cli','setup') for c in self.remote['calls']),1)
         self.assertEqual(sum(c[0]=='new' for c in self.remote['calls']),1)
@@ -239,7 +261,7 @@ class InputsAndRecovery(unittest.TestCase):
         self.assertEqual(result.returncode,2)
         self.assertEqual(json.loads(result.stdout)['error']['code'],'missing_linux_helper')
 
-    def test_clone_retry_preserves_edits_and_model_default_preserves_selection(self):
+    def test_clone_retry_preserves_edits(self):
         env={**self.env,'PATH':'/usr/bin:/bin:/usr/sbin:/sbin'}
         source=self.root/'source';source.mkdir()
         def git(*args):return sp.run(['/usr/bin/git','-C',str(source),*args],env=env,check=True,capture_output=True)
@@ -255,10 +277,6 @@ class InputsAndRecovery(unittest.TestCase):
             sp.run([os.sys.executable,'-c',clone,source.as_uri()],env=env,check=True,capture_output=True)
             if not attempt:(workspace/'file').write_text('pending user work')
         self.assertEqual((workspace/'file').read_text(),'pending user work')
-        settings=home/'.pi/agent/settings.json';settings.parent.mkdir(parents=True)
-        settings.write_text('{"defaultProvider":"chosen","defaultModel":"chosen-model"}')
-        sp.run([os.sys.executable,'-c',o.DEFAULT_MODEL.replace('/home/agent',str(home))],env=env,check=True)
-        self.assertEqual(json.loads(settings.read_text())['defaultModel'],'chosen-model')
 
 
 if __name__=='__main__':unittest.main()

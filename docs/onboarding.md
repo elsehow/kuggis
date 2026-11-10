@@ -1,11 +1,12 @@
 # Kuggis onboarding
 
-Status: exe creation with Pi or Codex and saved per-chat agent selection is implemented. See the
+Status: exe creation with Codex and Claude Code and saved per-chat agent selection is implemented. See the
 [current CLI guide](../README.md#create-an-exe-workspace) for supported inputs
-and prerequisites. `kuggis login CELL --agent codex` now supplies laptop browser
-sign-in shared by the cell's Codex chats and shells; see [agent login](cli.md#agent-login).
-Claude Code, other provider login adapters, and the `edit` command below remain
-a roadmap, not available options.
+and prerequisites. Every agent uses its native login: creation grants no model
+access and uses no managed model gateway. `kuggis login CELL --agent codex|claude`
+grants the provider's endpoints and signs the cell in; see [agent login](cli.md#agent-login).
+Pi is no longer installed by creation. Other provider login adapters and the
+`edit` command below remain a roadmap, not available options.
 
 The initial recipe includes a private `preview` mapping (guest 3000, host 8000).
 `kuggis cell web NAME` opens it over SSH; `--no-open` and `--plan` support agents.
@@ -26,15 +27,15 @@ $ kuggis cell create bigbrain
 Host: exe.dev
 Repository: elsehow/BigBrain
 Repository access: read and write
-Agents: Pi and Codex (select on first connection)
-Model: existing exe-managed integration
+Agents: Codex and Claude Code (select on first connection)
 
 Creating host...
 Configuring repository access...
-Installing workspace, Pi and Codex...
+Installing workspace, Codex and Claude Code...
 Cloning repository...
-Checking Git, model tools and isolation...
-Ready. Run: kuggis chat open bigbrain main --agent codex
+Checking Git and isolation...
+Ready. Sign in first: kuggis login bigbrain --agent codex
+Then run: kuggis chat list bigbrain
 ```
 
 These are configuration questions. Once the required answers are supplied,
@@ -46,7 +47,7 @@ Equivalent unattended entry:
 
 ```sh
 kuggis cell create bigbrain --host exe --repo elsehow/BigBrain \
-  --github-access write --model exe-managed --json
+  --github-access write --json
 ```
 
 Also accept `kuggis cell create --file setup.json --json`. Flags, a declarative input
@@ -55,8 +56,8 @@ non-TTY invocations never prompt; missing inputs yield structured errors with
 field names and a nonzero exit. Progress goes to stderr, one final report to
 stdout. An agent does not need to drive a terminal wizard.
 
-The current version installs Pi and Codex on fresh exe hosts, using the existing managed-model
-integration, and seeds one GitHub repository grant through the host-independent
+The current version installs Codex and Claude Code on fresh exe hosts, with no
+model integration, and seeds one GitHub repository grant through the host-independent
 [GitHub broker](github.md). Additional repositories are managed with `repo add`,
 `repo remove`, and `repo list`. Keep the existing advanced SSH setup
 command available. Other hosts and agent recipes can follow independently;
@@ -64,18 +65,17 @@ do not present options that the implementation cannot actually install.
 
 ## Choose an agent, then configure it inside
 
-Creation installs recipes for Pi and Codex. Extend this to Claude Code. Each
+Creation installs recipes for Codex and Claude Code. Each
 recipe configures unattended tool execution within the workspace boundary and
 sets its native terminal launch. Select the agent with `connect --chat NAME --agent` on a
 chat's first connection; reconnects retain it. New chats without a selection use
-the declaration's `default_agent` (Pi unless `create --default-agent` changes it).
+the declaration's `default_agent` (Codex unless `create --default-agent` changes it).
 The workspace, repository and files stay the same if the user later switches
 agents. Conversations remain in each agent's native format; do not promise
 cross-agent session conversion or interrupt a running session implicitly.
 
-Model setup should offer an existing managed integration or the explicit choice
-to configure models and logins after connecting. The latter opens the selected
-agent's native setup/model/login interface where supported. Users can configure
+Model setup is always the agent's native login, completed after creation. There
+is no managed model integration and no Kuggis-supplied model credential. Users configure
 multiple supported accounts and models and change their selection there. Avoid
 implementing a parallel model catalog or OAuth client in Kuggis. Keep an agent's
 own selected model authoritative unless the operator explicitly chooses a fixed
@@ -96,12 +96,11 @@ snapshot. Keep secrets out of setup JSON, CLI arguments and result reports.
 Agent recipes must define and test how managed and native authentication coexist
 before advertising both options; not every agent supports the same login types.
 
-Report workspace readiness and model readiness separately. An explicit deferred
-login can yield `workspace: ready, model: needs_login` with a connect command.
-That is a completed workspace setup with deferred authentication, not a claim
-that inference passed. The unattended interface can supply an existing model
-resource or explicitly defer login using the same typed choice. Core boundary
-checks remain mandatory; model/tool checks run once credentials are configured.
+Report workspace readiness and model readiness separately. Creation reports the
+workspace ready with the model check `not_tested_until_login` and the login
+command to run. That is a completed workspace setup with deferred authentication,
+not a claim that inference passed. Core boundary checks remain mandatory; each
+recipe's `smoke.py` runs a real model/tool round trip once the agent is signed in.
 
 ## Complete the setup
 
@@ -120,7 +119,7 @@ checks remain mandatory; model/tool checks run once credentials are configured.
    host-key metadata. Pin it in a workspace-owned SSH configuration. A key scan
    alone is not verification. Never disable strict host-key checking; unknown
    identity is an actionable failure, not a hidden trust prompt.
-4. Resolve existing model access and account-wide grants. Record the effective
+4. Resolve account-wide grants; creation attaches no model integration. Record the effective
    grants: a shared gateway is not isolated by the hostname in a CONNECT rule.
    Keep account-management credentials on the operator side.
 5. Generate a complete validated Workspace declaration, with no hand-spliced
@@ -128,14 +127,14 @@ checks remain mandatory; model/tool checks run once credentials are configured.
    existing setup implementation once for the complete boundary.
    Enroll the host relay with the GitHub broker and seed the cell's first grant.
    The App key and broker admin credential stay outside cell hosts.
-6. Transfer and install the pinned Pi recipe inside the guest as the agent user.
+6. Transfer and install the pinned agent recipes inside the guest as the agent user.
    Clone into an empty project root; keep installation staging outside that
    root. Never execute uploaded guest helpers as host root or overwrite an
    existing checkout during a retry.
-7. Verify the boundary, repository access, installed Pi and model readiness
-   (or report the explicitly deferred authentication state described above).
-   Make a bounded real model/tool smoke call in disposable guest storage before
-   reporting model execution as verified. Record repository write scope from
+7. Verify the boundary, repository access and installed agents, and report the
+   deferred authentication state described above. Model execution is verified
+   only after native login, by a bounded real model/tool smoke call in
+   disposable guest storage. Record repository write scope from
    provider configuration separately from a read-only Git probe; do not claim
    that a push was tested. Do not start a coding task as part of setup.
 8. Publish the ready report with the workspace name and connect command. Only
@@ -202,7 +201,7 @@ services. Never infer retirement of a deployment from its repository name.
 1. Implement the typed request/resolver, atomic files and name lookup. Test
    malformed input, exact repository scope, capacity constraints, defaults and
    equivalence of interactive and unattended inputs.
-2. Add the exe/Pi creation sequence using existing recipes and boundary tools.
+2. Add the exe creation sequence using existing recipes and boundary tools.
    Test failures at external-operation boundaries, interruption/retry, ambiguous
    creation, existing-name conflicts and prevention of duplicate hosts. Validate
    provider response bodies as well as exit status.

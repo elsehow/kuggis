@@ -103,6 +103,19 @@ def merge_patch(original, patch):
     return result
 
 
+GATEWAY_HOST = 'llm.int.exe.xyz'
+
+
+def without_gateway(workspace):
+    """Drop the retired exe model gateway grant; agents use their native login."""
+    candidate = copy.deepcopy(workspace)
+    removed = [r['name'] for r in candidate.get('resources', [])
+               if any(e.get('host') == GATEWAY_HOST for e in r.get('endpoints', []))]
+    if removed:
+        candidate['resources'] = [r for r in candidate['resources'] if r['name'] not in removed]
+    return candidate, removed
+
+
 def non_network(workspace):
     result = copy.deepcopy(workspace)
     result['resources'] = [{k: v for k, v in r.items() if k != 'endpoints'}
@@ -287,6 +300,9 @@ class Management:
         if not isinstance(patch, dict):
             raise Failure('configuration patch must be a JSON object')
         candidate = merge_patch(current, patch)
+        retired = []
+        if upgrade:
+            candidate, retired = without_gateway(candidate)
         for key in ('version', 'name', 'ssh', 'ssh_config'):
             if candidate.get(key) != current.get(key):
                 raise Failure('configure cannot change cell identity or SSH routing')
@@ -296,6 +312,8 @@ class Management:
         plan = {'ok': True, 'cell': current['name'], 'status': 'plan', 'changed': changed or upgrade,
                 'restart': restart, 'changed_fields': sorted(k for k in set(current) | set(candidate)
                                                             if current.get(k) != candidate.get(k))}
+        if retired:
+            plan['removed_model_gateway'] = retired
         if self.args.plan:
             return plan
         if restart == 'cell':
@@ -402,6 +420,8 @@ def management_text(report):
             lines.append('  Enroll this cell with the configured GitHub broker.')
         if report.get('changed_fields'):
             lines.append('  Changed fields: ' + ', '.join(report['changed_fields']))
+        if report.get('removed_model_gateway'):
+            lines.append('  Removes the exe model gateway grant ('+', '.join(report['removed_model_gateway'])+'). Agents still using it need kuggis login CELL --agent AGENT; history is kept.')
         if report['restart'] == 'cell':
             lines.append('  Applying requires --restart and --bin LINUX_BINARY.')
         elif report['restart'] == 'proxy':
@@ -421,7 +441,9 @@ def management_text(report):
         return (f"Network access {report['action']}: {report['target']}. "
                 f"{'Verified' if report['ok'] else 'Saved, but connectivity verification failed'}. Restart: {report['restart']}.")
     if report.get('status') == 'applied':
-        return f"{report['cell']}: configuration applied. Restart: {report['restart']}."
+        note = ('\n  Removed the exe model gateway grant; sign agents in with kuggis login CELL --agent AGENT.'
+                if report.get('removed_model_gateway') else '')
+        return f"{report['cell']}: configuration applied. Restart: {report['restart']}.{note}"
     if 'archived' in report:
         return f"Archived {report['archived']} in {report['cell']}."
     return f"{report.get('operation', 'Operation')} completed for {report.get('cell', 'cell')}."

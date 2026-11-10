@@ -116,7 +116,7 @@ pinned Pi recipe and use a launch argv such as:
 [
   "/home/agent/.local/bin/pi", "--offline",
   "--session-dir", "/home/agent/.kuggis/chat/pi",
-  "--continue", "--model", "exe/gpt-6.1-sol"
+  "--continue", "--model", "PROVIDER/MODEL_ID"
 ]
 ```
 

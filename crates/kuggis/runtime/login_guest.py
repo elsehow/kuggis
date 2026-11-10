@@ -176,11 +176,31 @@ def callback(request):
         connection.close()
 
 
+def claude_status(home):
+    binary = home / '.local/bin/claude'
+    if not binary.exists():
+        raise ValueError('Claude Code is not installed in this cell; install the Claude Code recipe first')
+    try:
+        result = subprocess.run([str(binary), 'auth', 'status'], capture_output=True, timeout=60,
+                                stdin=subprocess.DEVNULL, env={**os.environ, 'DISABLE_UPDATES': '1'})
+    except subprocess.TimeoutExpired:
+        return {'event': 'status', 'authenticated': False, 'provider': 'unknown'}
+    try:
+        report = json.loads(result.stdout)
+    except ValueError:
+        report = None
+    # Exit status 0 means signed in; authMethod names how (claude.ai, api_key, ...).
+    return {'event': 'status', 'authenticated': result.returncode == 0,
+            'provider': report.get('authMethod', 'none') if isinstance(report, dict) else 'none'}
+
+
 def guest_login_main():
     request = json.loads(sys.stdin.buffer.readline(LOGIN_LIMIT + 1))
     home = Path.home()
     mode = sys.argv[1]
-    if mode == 'prepare':
+    if mode == 'claude-status':
+        emit(**claude_status(home))
+    elif mode == 'prepare':
         emit(**prepare_login(home, request))
     elif mode == 'callback':
         emit(**callback(request))
@@ -200,6 +220,6 @@ if __name__ == '__main__':
     except BaseException as error:
         message = ('another login is already running for this cell' if isinstance(error, BlockingIOError) else
                    str(error) if isinstance(error, (RuntimeError, ValueError, TimeoutError, InterruptedError)) else
-                   'cell login adapter failed; check the Codex installation and cell connectivity')
+                   'cell login adapter failed; check the agent installation and cell connectivity')
         emit(event='error', message=message)
         sys.exit(2)

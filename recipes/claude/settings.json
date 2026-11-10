@@ -1,0 +1,6 @@
+{
+  "env": {
+    "DISABLE_UPDATES": "1"
+  },
+  "skipDangerousModePermissionPrompt": true
+}

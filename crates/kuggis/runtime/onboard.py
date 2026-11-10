@@ -65,12 +65,12 @@ def effective_grants(integrations, vm):
 
 
 def check_grants(integrations, vm):
+    """Record what reaches the host. The workspace grants the guest no route to
+    exe's integration gateway, so an account-wide llm attachment is inert there."""
     grants = effective_grants(integrations, vm)
     for grant in grants:
         if grant["name"] != "llm" or grant.get("type") != "llm":
             raise Failure("broader_gateway_grant", "Additional integration reaches this host: " + grant["name"] + ". Remove its attachment before creating this workspace.")
-    if not any(g["name"] == "llm" for g in grants):
-        raise Failure("missing_attachment", "Model attachment was not observed on the new VM.")
     return sorted(g["name"] for g in grants)
 
 
@@ -105,16 +105,6 @@ else:
         os.rename(clone,root)
 sp.run(['git','-C',str(root),'ls-remote','origin','HEAD'],check=True,env=env,stdout=sp.DEVNULL)
 print(json.dumps({'repository_read':'verified'}))
-'''
-DEFAULT_MODEL = '''import json,os,tempfile
-from pathlib import Path
-p=Path('/home/agent/.pi/agent/settings.json')
-settings=json.loads(p.read_text())
-settings.setdefault('defaultProvider','exe')
-settings.setdefault('defaultModel','gpt-6.1-sol')
-with tempfile.NamedTemporaryFile(mode='w',dir=p.parent,delete=False) as f:
-    json.dump(settings,f); temporary=f.name
-os.replace(temporary,p)
 '''
 
 
@@ -196,11 +186,12 @@ class Setup:
     def download(self, agent):
         release = json.loads(self.p['recipes'][agent]['release.json'])
         spec = release['archives']['x86_64']
-        archive = self.directory/(agent+'.tar.gz')
+        # A release is one pinned file: an archive (Codex) or a native binary (Claude Code).
+        archive = self.directory/(agent+'.pkg')
         if not archive.exists() or digest(archive) != spec['sha256']:
-            partial = archive.with_suffix('.gz.partial')
+            partial = archive.with_suffix('.pkg.partial')
             self.run(['curl','--fail','--location','--silent','--show-error','--retry','2',
-                      '--connect-timeout','20','--max-time','300',spec['url'],'--output',partial],timeout=660)
+                      '--connect-timeout','20','--max-time','900',spec['url'],'--output',partial],timeout=1860)
             if digest(partial) != spec['sha256']:
                 raise Failure('checksum_mismatch','Agent archive checksum does not match the pinned release.')
             os.replace(partial,archive)
@@ -217,7 +208,14 @@ class Setup:
         if len(header)<20 or header[:6]!=b'\x7fELF\x02\x01' or int.from_bytes(header[18:20],'little')!=62:
             raise Failure('wrong_linux_helper','Expected the matching x86-64 Linux helper.')
         old = self.directory/'setup.json'
-        if old.exists() and json.loads(old.read_text()) != self.request:
+        saved = json.loads(old.read_text()) if old.exists() else None
+        # Setups saved before native-only login recorded the removed managed model.
+        if saved and saved.get('model') == 'exe-managed': del saved['model']
+        if self.config.exists():
+            retired = set(json.loads(self.config.read_text()).get('agents',{})) - set(self.p['workspace'].get('agents',{}))
+            if retired:
+                raise Failure('agents_changed','This cell has chats for agents create no longer installs ('+', '.join(sorted(retired))+'). Use kuggis CELL --upgrade instead of create.')
+        if saved is not None and saved != self.request:
             raise Failure('request_changed','An existing setup has different inputs. create resumes the saved request; it does not overwrite its configuration.')
         save(old,self.request)
         receipt = self.directory/'receipt.json'
@@ -240,14 +238,9 @@ class Setup:
         binary = self.prepare_local()
         self.progress('preflight','Checking provider access, repository scope and installation artifacts…')
         integrations = self.integrations()
-        llm = next((i for i in integrations if i['name']=='llm' and i.get('type')=='llm' and not i.get('isTeam')),None)
-        if not llm:
-            raise Failure('missing_model_integration','Configure the managed llm integration in exe.dev before creating a workspace.')
-        model_provider = llm.get('config',{}).get('providers',{}).get('openai',{})
-        if not model_provider.get('enabled') or model_provider.get('source')!='managed':
-            raise Failure('missing_model_integration','Enable the managed OpenAI provider in the exe llm integration before creating this recipe.')
         vm = owned_vm(self.vms(),self.vm,self.receipt)
-        # Auto-attached broad grants would become reachable at the same gateway.
+        # Agents sign in natively; creation neither requires nor attaches the
+        # managed llm integration. Other account-wide grants are still refused.
         for grant in integrations:
             if 'auto:all' in (grant.get('attachments') or []) and grant['name']!='llm':
                 raise Failure('broader_gateway_grant','Account-wide integration '+grant['name']+' would broaden this workspace. Adjust its attachment first.')
@@ -269,13 +262,8 @@ class Setup:
         if (vm.get('allocated_cpus',0)<self.request['cpus'] or
                 vm.get('memory_capacity_bytes',0)<self.request['memory_gib']*1024**3):
             raise Failure('insufficient_capacity','The allocated host has less CPU or memory than the requested profile.')
-        self.progress('resources','Configuring private host and repository/model access…')
+        self.progress('resources','Configuring private host and repository access…')
         self.control('share','set-private',self.vm)
-        for integration in ("llm",):
-            current = next(i for i in self.integrations() if i['name']==integration)
-            specs = set(current.get('attachments') or [])
-            if 'auto:all' not in specs and 'vm:'+self.vm not in specs:
-                self.control('integrations','attach',integration,'vm:'+self.vm)
         vm = owned_vm(self.vms(),self.vm,self.receipt)
         self.checkpoint(effective_integrations=check_grants(self.integrations(),vm))
         probe = "import json,platform;from pathlib import Path;print(json.dumps({'arch':platform.machine(),'os':Path('/etc/os-release').read_text()}))"
@@ -283,11 +271,6 @@ class Setup:
         if observed['arch']!='x86_64' or 'ID=ubuntu\n' not in observed['os'] or 'VERSION_ID="24.04"' not in observed['os']:
             raise Failure('unsupported_host','This recipe requires an x86-64 Ubuntu 24.04 host.')
         self.progress('install_workspace','Installing workspace boundary…')
-        host_script = ('import sys\nnamespace={"__name__":"kuggis_bootstrap"}\nexec('+repr(self.p['host_executor'])+',namespace)\n'
-                       'namespace["safe_directory"]("/etc/kuggis/recipes",0o700)\n'
-                       'namespace["atomic_write"]("/etc/kuggis/recipes/pi-models.json",sys.stdin.buffer.read(),0o600)\n')
-        self.ssh(self.vm+'.exe.xyz',['sudo','-n','python3','-c',host_script],
-                 data=self.p['recipes']['pi']['models.json'].encode(),generated=True)
         setup_digest = hashlib.sha256((digest(binary)+json.dumps(self.p['workspace'],sort_keys=True)).encode()).hexdigest()
         install = self.receipt.get('setup_digest') != setup_digest
         if not install:
@@ -314,25 +297,22 @@ class Setup:
             for name,content in recipes.items():
                 path = local/name
                 atomic(path,content.encode())
-                if name!='models.json' or agent=='codex':
-                    self.cli('put',path,'.kuggis-setup/'+agent+'/'+name,'--replace')
-            self.cli('put',archives[agent],'.kuggis-setup/'+agent+'/agent.tar.gz','--replace',timeout=300)
-            self.guest('/usr/bin/python3',STAGE+'/'+agent+'/install.py',STAGE+'/'+agent+'/agent.tar.gz')
-        self.guest('/usr/bin/python3','-c',DEFAULT_MODEL)
+                self.cli('put',path,'.kuggis-setup/'+agent+'/'+name,'--replace')
+            self.cli('put',archives[agent],'.kuggis-setup/'+agent+'/agent.pkg','--replace',timeout=900)
+            self.guest('/usr/bin/python3',STAGE+'/'+agent+'/install.py',STAGE+'/'+agent+'/agent.pkg',timeout=300)
         self.progress('repository','Preparing repository and checking Git access…')
         self.guest('/usr/bin/python3','-c',CLONE,'https://github.com/'+self.request['repo']+'.git',timeout=300)
-        self.progress('verify','Checking isolation and a real model/tool round trip…')
+        self.progress('verify','Checking isolation…')
         boundary = json.loads(self.cli('check').stdout)
         if not boundary.get('ok'): raise Failure('boundary_failed','Boundary check did not pass.')
-        smoke = {}
-        for agent in self.p['recipes']:
-            smoke[agent] = json.loads(self.guest('/usr/bin/python3',STAGE+'/'+agent+'/smoke.py','exe/gpt-6.1-sol',timeout=240).stdout)
-            if not smoke[agent].get('ok'): raise Failure('model_failed',agent+' model/tool check did not pass.')
-        self.checkpoint(status='ready',checks={'boundary':boundary,'model':smoke,'git_read':'verified',
+        # No model round trip here: agents have no credentials until their
+        # native sign-in. Each recipe's smoke.py checks one afterwards.
+        self.checkpoint(status='ready',checks={'boundary':boundary,'model':'not_tested_until_login','git_read':'verified',
                                               'github_access':self.request['github_access'],'git_push':'not_tested'})
-        return {'ok':True,'name':self.request['name'],'status':'ready','vm':self.vm,
-                'configuration':str(self.config),'connect':'kuggis chat list '+self.request['name'],
-                'model':'exe/gpt-6.1-sol','github_access':self.request['github_access'],
+        name, agent = self.request['name'], self.request['agent']
+        return {'ok':True,'name':name,'status':'ready','vm':self.vm,
+                'configuration':str(self.config),'login':'kuggis login '+name+' --agent '+agent,
+                'connect':'kuggis chat list '+name,'github_access':self.request['github_access'],
                 'effective_integrations':self.receipt['effective_integrations']}
 
 
@@ -346,7 +326,7 @@ def main(payload):
             except BlockingIOError: raise Failure('setup_busy','Another create is already running for this workspace.')
             report = setup.provision()
         if payload['json_output']: print(json.dumps(report))
-        else: print('\nReady. Run: '+report['connect'])
+        else: print('\nReady. Sign in first: '+report['login']+'\nThen run: '+report['connect'])
         return 0
     except (Exception,KeyboardInterrupt) as error:
         code = error.code if isinstance(error,Failure) else 'interrupted' if isinstance(error,KeyboardInterrupt) else 'setup_failed'

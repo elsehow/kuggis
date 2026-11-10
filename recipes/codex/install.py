@@ -50,8 +50,7 @@ def install(archive):
         os.replace(link, bin_dir/'codex')
     shared = Path.home() / '.local/share/kuggis/codex'
     shared.mkdir(parents=True, exist_ok=True, mode=0o700)
-    for name in ('config.toml', 'models.json'):
-        shutil.copyfile(recipe/name, shared/name)
+    shutil.copyfile(recipe/'config.toml', shared/'config.toml')
     shutil.copyfile(recipe/'launch.py', bin_dir/'kuggis-codex')
     (bin_dir/'kuggis-codex').chmod(0o755)
     print(json.dumps({'ok':True,'version':version,'executable':str(bin_dir/'codex')}))
