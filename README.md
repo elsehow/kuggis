@@ -16,18 +16,20 @@ Repository and network grants are applied with `kuggis CELL --access`;
 configuration changes report restart
 requirements, and restarting an existing cell requires `--restart`.
 
-Sign Codex into a cell using your laptop browser:
+Every agent uses its own native login. Kuggis supplies no model credentials and
+no managed model gateway: a new cell has no model access until you sign in.
 
 ```sh
 kuggis login fri --agent codex
-kuggis login merrillfront --agent codex
+kuggis login fri --agent claude
 ```
 
-Each cell shares one native ChatGPT login across its Codex chats and shells.
-Kuggis handles the guest callback and provider network grants. Existing chats
-keep their histories and model choices; exit and reopen running Codex processes
-to adopt the login. See [agent login](docs/cli.md#agent-login) for status, plans,
-and account switching. Device codes are not required.
+Each cell shares one native login per agent across that agent's chats and shells.
+Kuggis grants only that provider's network endpoints. For Codex it also relays
+the browser callback into the guest; Claude Code finishes its own sign-in inside
+a chat (a link, then a pasted code). Existing chats keep their histories and
+model choices. See [agent login](docs/cli.md#agent-login) for status, plans,
+and account switching.
 
 ## Build and install
 
@@ -69,9 +71,7 @@ a test transport. A static x86-64 Linux binary builds from macOS.
 namespace/network checks, real SSH transfers, interactive terminal persistence,
 reapply, full VM reboot, scoped resource changes, and authenticated private web
 ingress. See the [test evidence and remaining scope](TESTING.md#current-evidence-and-remaining-gates).
-The [Pi recipe](recipes/pi/README.md) launches its TUI and passed a real model/tool
-round trip using the existing exe-managed LLM integration. The
-[legacy duplication recipe](recipes/legacy/README.md) copies selected guest files
+The [legacy duplication recipe](recipes/legacy/README.md) copies selected guest files
 and native Pi sessions to a fresh Kuggis host with a verified manifest. Migration
 stays outside the Rust runtime; the installer refuses hosts containing a v1 cell.
 On exe images it disables the bundled Shelley socket/service when present;
@@ -79,21 +79,22 @@ agent workloads belong inside the guest, and the host remains trusted.
 
 ## Create an exe workspace
 
-The wizard installs Pi and Codex, grants access to one GitHub repository and uses
-exe's existing managed model integration. It handles the VM, SSH trust, complete
-configuration, agent files, repository clone and model/tool checks in one run:
+The wizard installs Codex and Claude Code and grants access to one GitHub
+repository. It handles the VM, SSH trust, complete configuration, agent files,
+repository clone and isolation checks in one run. It grants no model access:
+sign each agent in with its native login afterwards.
 
 ```sh
 target/debug/kuggis cell create bigbrain
+target/debug/kuggis login bigbrain --agent codex
 target/debug/kuggis chat open bigbrain main --agent codex
 ```
 
-The wizard asks for the repository and read/write scope. Both agents use exe
-managed models; select an agent on the first connection to each chat. It creates `kuggis-bigbrain`
+The wizard asks for the repository and read/write scope. Select an agent on the
+first connection to each chat. It creates `kuggis-bigbrain`
 as the provider VM name, leaving any VM named `bigbrain` alone. Defaults are
-2 CPUs, 8 GiB VM memory and a 6 GiB guest limit. It configures Pi's initial model
-as `exe/gpt-6.1-sol` without forcing a model on every launch or overwriting the
-user's subsequent selection.
+2 CPUs, 8 GiB VM memory and a 6 GiB guest limit. Choose models inside each
+agent's own UI.
 
 For an agent or script, supply the same inputs without a wizard:
 
@@ -104,7 +105,7 @@ kuggis chat open another main --agent codex
 ```
 
 `--file setup.json` accepts the same fields (`name`, `repo`, `github_access`,
-`host`, `default_agent`, `model`, `cpus`, `memory_gib`, `version`). `--plan` validates and
+`host`, `default_agent`, `cpus`, `memory_gib`, `version`). `--plan` validates and
 prints the resolved request/declaration without provisioning anything. `--json`
 and non-TTY input never prompt. Progress goes to stderr; stdout contains one
 structured result, including the failed step and receipt on an error. Missing
@@ -112,14 +113,16 @@ fields and unsupported options fail validation. Runtime approval prompts are
 not an option.
 
 Prerequisites: Python 3.11+, OpenSSH, curl, working batch SSH to `exe.dev`, its
-trusted host key, a configured Kuggis GitHub broker, and the managed `llm`
-integration. GitHub access uses the same broker on exe and other SSH hosts.
+trusted host key, and a configured Kuggis GitHub broker. No exe model
+integration is required or attached. GitHub access uses the same broker on exe and other SSH hosts.
 The wizard seeds one repository grant; `access grant/revoke/list` manage any number
 of grants afterward, with independent permissions in each cell. See the
-[GitHub setup and migration guide](docs/github.md). It rejects additional
-exe gateway integrations that would broaden the requested authority. Grant and
-model checks run before reporting readiness; Git read access and configured
-write scope are reported separately, without pushing to the repository.
+[GitHub setup and migration guide](docs/github.md). It rejects
+exe gateway integrations that would broaden the requested authority. Grant
+checks run before reporting readiness; Git read access and configured
+write scope are reported separately, without pushing to the repository. Model
+access is reported as not tested until login; each recipe's `smoke.py` checks a
+real model/tool round trip after sign-in.
 
 The generated SSH configuration uses `HostKeyAlias exe.dev` for the new VM,
 reusing the operator's trusted provider identity with strict checking. See
@@ -169,7 +172,7 @@ List chats, then explicitly select one or create a new name:
 kuggis my-workspace --list
 kuggis my-workspace research --agent codex
 kuggis my-workspace research
-kuggis my-workspace implementation --agent pi
+kuggis my-workspace implementation --agent claude
 ```
 
 `CELL --list` lists chats with their saved agent and running/stopped status,
@@ -178,8 +181,7 @@ same typed inventory for scripts. Listing never starts an agent or creates a
 chat. `kuggis CELL default` explicitly opens the original legacy terminal and history.
 The first connection to another name starts a separate agent; using the same name
 again attaches to that running agent. Detach with Ctrl-B then D. Each named chat
-has its own persistent tmux service and, with the Pi recipe, its own history
-directory. If the agent exits, reconnecting restarts it using that history.
+has its own persistent tmux service and its own native session history. If the agent exits, reconnecting restarts it using that history.
 After a guest reboot, chats start only when explicitly connected; prompts are
 never replayed by Kuggis. Chat names use 1–48 lowercase letters, digits and
 hyphens, starting with a letter and ending with a letter or digit.
@@ -207,29 +209,24 @@ this command on an existing cell that lacks archive support.
 Bindings are ordinary versioned JSON in `~/.kuggis/chat-bindings/NAME.json` in
 the guest. The Rust core validates agent IDs and recipe arguments; each recipe
 owns native history and model/login configuration. Choose models inside the
-agent's own UI. See the [Codex recipe](recipes/codex/README.md), including its
-explicit Pi handoff procedure. The wizard installs both supported agents;
+agent's own UI. See the [Codex](recipes/codex/README.md) and
+[Claude Code](recipes/claude/README.md) recipes. The wizard installs both supported agents;
 `--agent` on connect does not install software or grant new access. Explicit new
-chats without `--agent` use Pi by default for compatibility; `create --default-agent codex`
+chats without `--agent` use Codex by default; `create --default-agent claude`
 sets a different fallback without adding a wizard question. The earlier create
 flag/JSON field `agent` is retained as an alias for this default (and remains the
 serialized setup-receipt field for compatibility).
 
 Chats share the checkout, resources, credentials and servers. Model settings
-are owned by the recipe (Codex keeps them per chat; Pi uses shared settings).
+are owned by the recipe (Codex keeps them per chat; Claude Code uses shared settings).
 Use separate Git worktrees inside the cell for independent concurrent edits.
 The left side of the tmux status bar shows the cell name.
-In Pi, `/new` and `/resume` work within that named chat's history directory.
-Changing a Pi session's display name does not rename its Kuggis chat.
 
 The create wizard supplies the named-chat recipe automatically. Existing configs
-need an optional `chat_launch` argv and an updated setup. For Pi:
+need an optional `chat_launch` argv and an updated setup. For Claude Code:
 
 ```json
-"chat_launch": [
-  "/home/agent/.local/bin/pi", "--offline",
-  "--session-dir", "/home/agent/.kuggis/chats/{chat}", "--continue"
-]
+"chat_launch": ["/home/agent/.local/bin/kuggis-claude", "{chat}"]
 ```
 
 The validated name replaces `{chat}` in arguments without shell evaluation.
@@ -395,10 +392,11 @@ managed credential files are removed on reapply, but an agent can copy credentia
 it can read: actual revocation still belongs to the destination or credential
 expiry. Configuration and management credentials stay outside the guest.
 
-The basic example launches a shell. The [Pi deployment recipe](recipes/pi/README.md)
-adds a pinned guest installation, declarative project trust and a TUI launch.
-Provider authentication remains an explicitly configured resource; the core has
-no agent enum.
+The basic example launches a shell. The [Codex](recipes/codex/README.md) and
+[Claude Code](recipes/claude/README.md) recipes add a pinned guest installation
+and a TUI launch. Provider authentication is each agent's native login; the core
+has no agent enum. [Pi](recipes/pi/README.md) remains a manual recipe: it is no
+longer installed by creation, and existing Pi chats keep their history.
 
 ## Implementation
 

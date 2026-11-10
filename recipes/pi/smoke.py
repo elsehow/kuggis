@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory(prefix='.pi-smoke-', dir=Path.cwd()) as directo
          'Then use the bash tool to cat result.txt and verify it. Reply READY. Do not inspect other files.'],
         cwd=directory, stdin=subprocess.DEVNULL, capture_output=True, timeout=180)
     if result.returncode:
-        raise SystemExit(f'Pi failed with status {result.returncode}; check model authentication and endpoint grants')
+        raise SystemExit(f'Pi failed with status {result.returncode}; check your provider credential and endpoint grants')
     events = [json.loads(line) for line in result.stdout.splitlines() if line.startswith(b'{')]
     tools = sorted({event['toolName'] for event in events if event.get('type') == 'tool_execution_start'})
     if not {'write', 'bash'} <= set(tools) or (Path(directory) / 'result.txt').read_bytes() != b'kuggis-pi-ok\n':

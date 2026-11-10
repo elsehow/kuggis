@@ -43,22 +43,31 @@ fn agent_recipes_are_validated_and_selected_without_shell_arguments() {
 #[test]
 fn onboarding_installs_both_recipes_and_selects_only_the_default() {
     let request =
-        CreateRequest::parse(json!({"name":"demo","repo":"owner/repo","agent":"codex"})).unwrap();
+        CreateRequest::parse(json!({"name":"demo","repo":"owner/repo","agent":"claude"})).unwrap();
     let value = serde_json::to_value(
         request
             .workspace(Path::new("/operator/ssh-config"))
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(value["default_agent"], "codex");
+    assert_eq!(value["default_agent"], "claude");
     assert_eq!(
         value["agents"]["codex"]["chat_launch"],
         json!(["/home/agent/.local/bin/kuggis-codex", "{chat}"])
     );
-    assert!(value["agents"].get("pi").is_some());
-    assert!(value.to_string().contains("pi-models"));
+    assert_eq!(
+        value["launch"],
+        json!(["/home/agent/.local/bin/kuggis-claude", "default"])
+    );
+    // Agents use their native logins: creation installs no Pi and grants no
+    // model gateway or provider endpoint.
+    assert!(value["agents"].get("pi").is_none());
+    for retired in ["llm.int.exe.xyz", "pi-models", "169.254.169.254"] {
+        assert!(!value.to_string().contains(retired), "{retired}");
+    }
+    assert!(CreateRequest::parse(json!({"name":"demo","repo":"owner/repo","agent":"pi"})).is_err());
     let alias =
-        CreateRequest::parse(json!({"name":"demo","repo":"owner/repo","default_agent":"codex"}))
+        CreateRequest::parse(json!({"name":"demo","repo":"owner/repo","default_agent":"claude"}))
             .unwrap();
     assert_eq!(
         serde_json::to_value(alias.workspace(Path::new("/operator/ssh-config")).unwrap()).unwrap(),
@@ -120,12 +129,12 @@ fn recipe_requires_a_valid_argv_and_an_explicit_chat_binding() {
     let value = serde_json::to_value(workspace).unwrap();
     assert_eq!(
         value["launch"],
-        json!(["/home/agent/.local/bin/pi", "--offline", "--continue"])
+        json!(["/home/agent/.local/bin/kuggis-codex", "default"])
     );
-    assert!(value["chat_launch"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("/home/agent/.kuggis/chats/{chat}")));
+    assert_eq!(
+        value["chat_launch"],
+        json!(["/home/agent/.local/bin/kuggis-codex", "{chat}"])
+    );
 }
 
 #[test]

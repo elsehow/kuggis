@@ -7,16 +7,16 @@ kuggis chat open example main --agent codex
 kuggis chat open example research --agent codex
 ```
 
-The wizard installs Pi and the checksum-pinned **complete** Codex package, including its
+The wizard installs the checksum-pinned **complete** Codex package, including its
 code-mode host. Installing only the standalone executable can produce fluent
-answers while tool execution fails. The readiness check requires a successful
-shell tool call and independently verifies the resulting file.
+answers while tool execution fails. Codex has no model access until
+`kuggis login`: there is no managed gateway. After signing in, `smoke.py`
+requires a successful shell tool call and independently verifies the resulting file.
 
 The deployment boundary supplies authority: native Codex uses `approval_policy =
 "never"` and `sandbox_mode = "danger-full-access"` inside the isolated guest. The
-recipe records native trust for the configured workspace and routes Responses
-requests through exe's managed gateway; no laptop login
-or management credentials are copied. Native web search is initially disabled;
+recipe records native trust for the configured workspace and selects the native
+`openai` provider; no laptop login or management credentials are copied. Native web search is initially disabled;
 shell-based fetching follows the cell's configured network policy.
 
 Run `kuggis login CELL --agent codex` on your laptop to use your ChatGPT account.
@@ -30,9 +30,9 @@ and `--force` signs in again to switch accounts. A cached ChatGPT login is reuse
 
 All chats and ordinary guest shells use the cell user's `~/.codex` for native
 authentication. Codex owns credential storage and refresh; credentials never
-need to be copied from your laptop or into individual chats. Login selects the
-native `openai` provider for the cell. Before login, the recipe still supports
-the managed exe gateway.
+need to be copied from your laptop or into individual chats. The cell always
+uses the native `openai` provider. A cell created on the retired exe gateway is
+moved to it when its chats relaunch; `admin upgrade` removes the gateway grant.
 
 `kuggis-codex CHAT` retains each chat's native databases under
 `~/.kuggis/agents/codex/CHAT/` using Codex's `sqlite_home` setting. Existing
@@ -51,19 +51,12 @@ existing tmux pane does not replace the running process. The first handover
 rechecks its legacy session ID so work done after login setup is retained.
 The old launcher and shared configuration are backed up before replacement.
 
-`models.json` is a filtered copy of the official
-[0.165.0 bundled catalog](https://github.com/openai/codex/blob/rust-v0.165.0/codex-rs/models-manager/models.json).
-It keeps Sol 6.1, Terra 6.1, Astra 6, and Sol 6; preserves their upstream
-instructions and capabilities; and clears upgrade and service-tier suggestions.
-Those routes were advertised by the acceptance gateway. The file is a pinned
-snapshot, not live account discovery. Recheck gateway availability when updating
-the recipe. See OpenAI's [gateway configuration](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway)
-and [catalog specification](https://learn.chatgpt.com/docs/model-catalogs).
+The recipe ships no model catalog: Codex uses its bundled catalog and the
+signed-in account's own model availability.
 
 For an existing SSH cell, install the recipe as `agent` inside the guest, using
-the package specified in `release.json`. Adapt the gateway URL in `config.toml`
-to the deployment environment before installation. Register this recipe in the
-workspace declaration, preserving the existing Pi recipe exactly:
+the package specified in `release.json`. Register this recipe in the
+workspace declaration, preserving any existing recipes exactly:
 
 ```json
 "codex": {

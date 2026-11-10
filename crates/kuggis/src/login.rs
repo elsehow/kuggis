@@ -21,10 +21,9 @@ pub fn run(args: &[String]) -> Result<()> {
             _ => return Err(Error(crate::cli::LOGIN_HELP.into())),
         }
     }
-    if agent != Some("codex") {
+    if !matches!(agent, Some("codex" | "claude")) {
         return Err(Error(
-            "login currently supports --agent codex; other agents keep their native login flows"
-                .into(),
+            "login requires --agent codex or --agent claude".into(),
         ));
     }
     let path = onboarding::config_path(&args[0])?;
@@ -35,7 +34,7 @@ pub fn run(args: &[String]) -> Result<()> {
         "settings": onboarding::state_root()?.join("github-operator.json"),
         "host": ([vec![host.program.to_owned()], host.args].concat()),
         "launcher": include_str!("../../../recipes/codex/launch.py")});
-    for mode in ["prepare", "login", "callback", "status"] {
+    for mode in ["prepare", "login", "callback", "status", "claude-status"] {
         let invocation = Invocation::for_request(
             &workspace,
             &Request::Exec(vec![

@@ -132,15 +132,12 @@ pub fn serve(workspace: Workspace) -> Result<()> {
     let active = Arc::new(AtomicUsize::new(0));
     for client in listener.incoming() {
         let client = client?;
-        if active
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                (n < 64).then_some(n + 1)
-            })
-            .is_err()
-        {
+        // Only this loop increments; workers only decrement, so the check holds.
+        if active.load(Ordering::SeqCst) >= 64 {
             refuse(client, 503);
             continue;
         }
+        active.fetch_add(1, Ordering::SeqCst);
         let workspace = Arc::clone(&workspace);
         let active = Arc::clone(&active);
         thread::spawn(move || {

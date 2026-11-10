@@ -8,13 +8,13 @@ pub const HELP: &str = "Kuggis — cells for autonomous work
   kuggis CELL [--list] [--json]        list chats without starting an agent
   kuggis --list [--json]              list saved cells
   kuggis --create NAME [OPTIONS]      create a cell
-  kuggis CELL --put LOCAL [REMOTE] [--chat CHAT] [--replace] [--json]
+  kuggis CELL --put LOCAL... [--save-as REMOTE...] [--chat CHAT] [--replace] [--json]
   kuggis CELL --put --paste [--chat CHAT] [--json]
-  kuggis CELL --get REMOTE LOCAL [--replace] [--json]
+  kuggis CELL --get REMOTE... [--save-as LOCAL...] [--replace] [--json]
   kuggis CELL --shell                 open a guest shell
   kuggis CELL --exec -- PROGRAM [ARG...]
   kuggis CELL --status [--check] [--json]
-  kuggis CELL --login --agent codex
+  kuggis CELL --login --agent codex|claude
   kuggis CELL --web [PREVIEW] [--port PORT] [--no-open] [--plan]
   kuggis CELL --configure --file PATCH.json [--plan] [--restart --bin BIN]
   kuggis CELL --upgrade --bin BIN [--plan] [--restart] [--json]
@@ -28,7 +28,7 @@ Opening a new chat creates it; opening an existing chat resumes it over SSH.
 CELL accepts a saved name or workspace JSON path. Chat names are exact names.
 
 Compatible command groups:
-  kuggis login CELL --agent codex
+  kuggis login CELL --agent codex|claude
   kuggis cell    create, list, status, configure, shell, exec, web
   kuggis chat    list, open, archive
   kuggis access  list, grant, revoke, check, configure
@@ -38,13 +38,15 @@ Compatible command groups:
 Run kuggis GROUP --help for commands and examples.
 Existing top-level commands remain compatibility aliases.";
 
-pub const LOGIN_HELP: &str = "kuggis login CELL --agent codex [--no-open] [--force] [--json]
-kuggis login CELL --agent codex --status [--json]
-kuggis login CELL --agent codex --plan [--json]
-Sign in using your laptop browser. All Codex chats and shells in this cell share the login.
-Existing chats retain their history. Running chats use it after exiting Codex and reopening.
---no-open prints the browser URL; --force signs in again to switch accounts.
-Login grants the provider's HTTPS endpoints and updates the guest launcher without restarting the cell.
+pub const LOGIN_HELP: &str = "kuggis login CELL --agent codex|claude [--no-open] [--force] [--json]
+kuggis login CELL --agent codex|claude --status [--json]
+kuggis login CELL --agent codex|claude --plan [--json]
+Every agent uses its own native login; a new cell has no model access until you sign in.
+All chats and shells of that agent in the cell share the login. Existing chats retain their history.
+codex: sign in using your laptop browser. Running chats use it after exiting Codex and reopening.
+  --no-open prints the browser URL; --force signs in again to switch accounts.
+claude: grants Claude Code's endpoints, then you finish its sign-in inside a chat (link and pasted code).
+Login grants the provider's HTTPS endpoints without restarting the cell.
 CELL accepts a saved name or workspace JSON path.";
 
 pub enum Route {
@@ -122,7 +124,11 @@ fn positional(args: &[String]) -> Result<Route> {
             Ok(Route::Legacy(words(&["connect", cell], rest)))
         }
         "--json" if rest.is_empty() => Ok(Route::Legacy(words(&["connect", cell, "--json"], rest))),
-        "--put" | "--get" => Ok(Route::Manage(words(&["file", &operation[2..], cell], rest))),
+        // Positionals are items; destinations come from --save-as.
+        "--put" | "--get" => Ok(Route::Manage(words(
+            &["file", &operation[2..], cell, "--items"],
+            rest,
+        ))),
         "--shell" | "--exec" | "--web" | "--login" => {
             Ok(Route::Legacy(words(&[&operation[2..], cell], rest)))
         }
@@ -169,7 +175,7 @@ fn positional(args: &[String]) -> Result<Route> {
 pub fn help(name: &str) -> &'static str {
     match name {
         "cell" => "kuggis cell create NAME --repo OWNER/REPO [--github-access read|write]
-                   [--host exe] [--default-agent pi|codex] [--model exe-managed]
+                   [--host exe] [--default-agent codex|claude]
                    [--cpus N] [--memory-gib N] [--file SETUP.json]
                    [--ssh-config FILE] [--bin LINUX_BINARY] [--plan] [--json] [--restart]
 kuggis cell list [--json]

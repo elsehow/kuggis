@@ -1,5 +1,10 @@
 # Pi deployment recipe
 
+Pi is a manual recipe. `kuggis cell create` no longer installs it, and Kuggis no
+longer supplies it a model through exe's managed gateway: `admin upgrade` removes
+that grant from existing cells. Existing Pi chats keep their history; give Pi a
+model by provisioning your own provider credential as described below.
+
 Pi is installed inside the guest as `agent`. Kuggis supplies its ordinary launch
 argv, package list, network endpoints and credential files. This recipe adds no
 Pi/provider enum, authentication UI, approval protocol or model client to Kuggis.
@@ -44,34 +49,6 @@ exit
 
 The installer is noninteractive and needs no network access. Downloading on the
 operator side avoids permanent GitHub/npm grants just to install the agent.
-
-## Use an existing exe LLM integration
-
-The live trial uses the account's existing managed `llm` integration, already
-attached to this VM. No new account integration or provider key was needed.
-`exe-models.json` configures Pi's standard Responses adapter and selects
-`exe/gpt-6.1-sol`; its `exe-managed` key is a harmless placeholder. Exe supplies
-the real upstream authentication and accounts for model usage. See the
-[exe LLM integration documentation](https://hub.exe.dev/docs/integrations-llm).
-
-Put `exe-models.json` at `/etc/kuggis/recipes/pi-models.json` on the trusted host
-with root ownership and mode 0600, under a protected root-owned directory.
-Merge `exe-resource.json` into the declaration's `resources`, and append
-`"--model", "exe/gpt-6.1-sol"` to `launch`. Setup provisions the model file using
-the existing protected-file mechanism, just like a credential file. Then run
-`kuggis setup CONFIG --bin LINUX_BIN` and `kuggis chat list CONFIG`.
-
-The exe endpoint resolves to link-local `169.254.169.254`. The declaration pins
-that address for `llm.int.exe.xyz:443`; default public rules still reject it.
-This grants a TCP tunnel to the platform gateway, not an application-level
-filter: the guest controls the bytes inside the tunnel, including TLS/HTTP host
-names. Exe's VM integration attachments determine the reachable services at that
-shared address. The account integration listing showed only the managed LLM
-integration attached to this trial. Account-wide or later VM attachments can broaden that gateway's
-authority. Host-owned addresses and direct guest routes remain blocked.
-
-The recipe needs no guest login or credential copying for this deployment.
-Use the following alternative only when supplying your own provider credential.
 
 ## Provision your own model credential
 
@@ -133,19 +110,16 @@ For a repeatable live check, upload `smoke.py` with `kuggis put` and run it
 inside the guest as `agent`:
 
 ```sh
-python3 .setup/pi/smoke.py exe/gpt-6.1-sol
+python3 .setup/pi/smoke.py PROVIDER/MODEL_ID
 ```
 
 This makes a real model request, verifies write/bash tool calls and exact file
 contents in a temporary directory, and removes its test files afterward.
 
-The x86-64 archive checksum and executable version were verified on the live exe
-guest, repeat installation passed, and `connect` opens Pi's TUI through Ghostty
-compatibility mode. A real `exe/gpt-6.1-sol` run used Pi's `write` and `bash` tools
-to create and read `acceptance-agent.txt`; its exact contents and the host boundary
-were verified afterward. The run required no login or approval prompt. Receipts
-are in ignored `.kuggis/pi-recipe/`. ARM and independent provider credentials
-have not been exercised.
+The x86-64 archive checksum and executable version were verified on a live exe
+guest, and `connect` opens Pi's TUI. The earlier model round trip used the
+retired exe gateway; ARM and independent provider credentials have not been
+exercised.
 
 The shell-only acceptance suite deliberately refuses a Pi launch configuration:
 it must never send its shell commands into an agent as prompts.

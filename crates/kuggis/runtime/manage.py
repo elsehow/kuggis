@@ -51,7 +51,17 @@ def management_options(argv):
         parser.add_argument('--plan', action='store_true')
         parser.add_argument('--restart', action='store_true')
         parser.add_argument('--bin', required=area == 'admin')
-    if area == 'file':
+    # CELL --put/--get: every positional is an item; --save-as names destinations.
+    many = area == 'file' and '--items' in argv[2:]
+    if many:
+        parser.add_argument('--items', action='store_true')
+        parser.add_argument('items_list', nargs='*', metavar='ITEM')
+        parser.add_argument('--save-as', nargs='+', metavar='DESTINATION')
+        if action == 'put':
+            parser.add_argument('--paste', action='store_true')
+            parser.add_argument('--chat')
+        parser.add_argument('--replace', action='store_true')
+    elif area == 'file':
         if action == 'put':
             parser.add_argument('source', nargs='?')
             parser.add_argument('destination', nargs='?')
@@ -63,8 +73,28 @@ def management_options(argv):
         parser.add_argument('--replace', action='store_true')
     if area == 'chat':
         parser.add_argument('chat')
-    result = parser.parse_args(argv[2:])
+    # Items and flags may interleave; before Python 3.13 plain parse_args
+    # rejects positionals that follow an option.
+    result = (parser.parse_intermixed_args if many else parser.parse_args)(argv[2:])
     result.area, result.action = area, action
+    if many:
+        items, names = result.items_list, result.save_as
+        result.source = result.destination = None
+        if getattr(result, 'paste', False):
+            if items or names:
+                parser.error('--paste cannot be combined with file paths')
+        elif not items:
+            parser.error('expected at least one ' + ('local file or --paste' if action == 'put' else 'guest path'))
+        elif names and len(names) != len(items):
+            parser.error(f'--save-as needs one destination per item: got {len(names)} for {len(items)} items')
+        # Downloads without --save-as land in the current directory by name.
+        result.transfers = list(zip(items, names or [
+            None if action == 'put' else os.path.basename(item.rstrip('/')) for item in items]))
+        if any(not destination for _, destination in result.transfers) and action == 'get':
+            parser.error('cannot derive a local name; name it with --save-as')
+        local = [destination for _, destination in result.transfers if destination]
+        if len(set(local)) != len(local):
+            parser.error('two items would be saved to the same destination; name them with --save-as')
     if area == 'access' and action == 'grant':
         if result.kind == 'repo' and result.role is None:
             parser.error('repository grants require --role read|develop')
@@ -101,6 +131,19 @@ def merge_patch(original, patch):
         else:
             result[key] = merge_patch(result.get(key), value)
     return result
+
+
+GATEWAY_HOST = 'llm.int.exe.xyz'
+
+
+def without_gateway(workspace):
+    """Drop the retired exe model gateway grant; agents use their native login."""
+    candidate = copy.deepcopy(workspace)
+    removed = [r['name'] for r in candidate.get('resources', [])
+               if any(e.get('host') == GATEWAY_HOST for e in r.get('endpoints', []))]
+    if removed:
+        candidate['resources'] = [r for r in candidate['resources'] if r['name'] not in removed]
+    return candidate, removed
 
 
 def non_network(workspace):
@@ -287,6 +330,9 @@ class Management:
         if not isinstance(patch, dict):
             raise Failure('configuration patch must be a JSON object')
         candidate = merge_patch(current, patch)
+        retired = []
+        if upgrade:
+            candidate, retired = without_gateway(candidate)
         for key in ('version', 'name', 'ssh', 'ssh_config'):
             if candidate.get(key) != current.get(key):
                 raise Failure('configure cannot change cell identity or SSH routing')
@@ -296,6 +342,8 @@ class Management:
         plan = {'ok': True, 'cell': current['name'], 'status': 'plan', 'changed': changed or upgrade,
                 'restart': restart, 'changed_fields': sorted(k for k in set(current) | set(candidate)
                                                             if current.get(k) != candidate.get(k))}
+        if retired:
+            plan['removed_model_gateway'] = retired
         if self.args.plan:
             return plan
         if restart == 'cell':
@@ -313,6 +361,25 @@ class Management:
         else:
             self.apply_network(snapshot, candidate)
         return {**plan, 'status': 'applied'}
+
+    def transfer_items(self, args):
+        """One ordinary transfer per item, in order; stop at the first failure."""
+        flags = [*(['--chat', args.chat] if getattr(args, 'chat', None) else []),
+                 *(['--replace'] if args.replace else [])]
+        done = []
+        for source, destination in args.transfers:
+            try:
+                self.cli(args.action, self.config, source, *([destination] if destination else []), *flags)
+            except Failure as error:
+                if not done:
+                    raise
+                raise Failure(f'{error} ({len(done)} of {len(args.transfers)} items completed before '
+                              f'{source} failed: ' + ', '.join(item['source'] for item in done) + ')') from None
+            done.append({'source': source, 'destination': destination})
+        report = {'ok': True, 'cell': self.local['name'], 'operation': args.action, 'items': done}
+        if len(done) == 1:
+            report.update(done[0])
+        return report
 
     def run(self):
         args = self.args
@@ -350,6 +417,8 @@ class Management:
         if args.area == 'chat':
             self.cli('archive', self.config, '--chat', args.chat)
             return {'ok': True, 'cell': self.local['name'], 'archived': args.chat}
+        if getattr(args, 'transfers', None):
+            return self.transfer_items(args)
         words = [args.action, str(self.config)]
         if args.area == 'file':
             if getattr(args, 'paste', False):
@@ -402,6 +471,8 @@ def management_text(report):
             lines.append('  Enroll this cell with the configured GitHub broker.')
         if report.get('changed_fields'):
             lines.append('  Changed fields: ' + ', '.join(report['changed_fields']))
+        if report.get('removed_model_gateway'):
+            lines.append('  Removes the exe model gateway grant ('+', '.join(report['removed_model_gateway'])+'). Agents still using it need kuggis login CELL --agent AGENT; history is kept.')
         if report['restart'] == 'cell':
             lines.append('  Applying requires --restart and --bin LINUX_BINARY.')
         elif report['restart'] == 'proxy':
@@ -421,9 +492,13 @@ def management_text(report):
         return (f"Network access {report['action']}: {report['target']}. "
                 f"{'Verified' if report['ok'] else 'Saved, but connectivity verification failed'}. Restart: {report['restart']}.")
     if report.get('status') == 'applied':
-        return f"{report['cell']}: configuration applied. Restart: {report['restart']}."
+        note = ('\n  Removed the exe model gateway grant; sign agents in with kuggis login CELL --agent AGENT.'
+                if report.get('removed_model_gateway') else '')
+        return f"{report['cell']}: configuration applied. Restart: {report['restart']}.{note}"
     if 'archived' in report:
         return f"Archived {report['archived']} in {report['cell']}."
+    if len(report.get('items', [])) > 1:
+        return f"{report['operation']} completed for {report['cell']}: {len(report['items'])} items."
     return f"{report.get('operation', 'Operation')} completed for {report.get('cell', 'cell')}."
 
 

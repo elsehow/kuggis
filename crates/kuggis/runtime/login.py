@@ -21,12 +21,16 @@ except NameError:
     from github_common import Failure
 
 CODEX_LOGIN_HOSTS = ('auth.openai.com', 'chatgpt.com')
+# Claude Code's documented requirements: model API, claude.ai sign-in, and the
+# OAuth token exchange/refresh host.
+CLAUDE_LOGIN_HOSTS = ('api.anthropic.com', 'claude.ai', 'platform.claude.com')
+AGENT_NAMES = {'codex': 'Codex', 'claude': 'Claude Code'}
 
 
 def login_options(argv):
     parser = ManagementParser(prog='kuggis login', allow_abbrev=False)
     parser.add_argument('cell')
-    parser.add_argument('--agent', required=True, choices=('codex',))
+    parser.add_argument('--agent', required=True, choices=tuple(AGENT_NAMES))
     parser.add_argument('--no-open', action='store_true')
     parser.add_argument('--force', action='store_true')
     parser.add_argument('--status', action='store_true')
@@ -50,26 +54,28 @@ def guest_operation(payload, mode, request):
     return report
 
 
-def login_network(manager, plan=False, hosts=CODEX_LOGIN_HOSTS):
+def login_network(manager, plan=False, hosts=None, agent='codex'):
+    hosts = hosts or (CLAUDE_LOGIN_HOSTS if agent == 'claude' else CODEX_LOGIN_HOSTS)
     snapshot = manager.snapshot()
     workspace = snapshot['workspace']
     agents = workspace.get('agents', {})
-    if 'codex' not in agents and not any(word.endswith('/kuggis-codex') for word in workspace.get('launch', [])):
-        raise Failure('Codex is not configured in this cell; install the Codex recipe first')
+    if agent not in agents and not any(word.endswith('/kuggis-' + agent) for word in workspace.get('launch', [])):
+        raise Failure(AGENT_NAMES[agent] + ' is not configured in this cell; install its recipe first')
     candidate = copy.deepcopy(workspace)
     allowed = {(e['host'], e['port']) for r in candidate.get('resources', []) for e in r.get('endpoints', [])}
     missing = [] if candidate.get('egress') == 'internet' else [h for h in hosts if (h, 443) not in allowed]
     if missing:
-        resource = next((r for r in candidate.get('resources', []) if r['name'] == 'codex-login'), None)
+        resource = next((r for r in candidate.get('resources', []) if r['name'] == agent + '-login'), None)
         if resource is None:
-            resource = {'name': 'codex-login', 'endpoints': [], 'credentials': []}
+            resource = {'name': agent + '-login', 'endpoints': [], 'credentials': []}
             candidate.setdefault('resources', []).append(resource)
         resource.setdefault('endpoints', []).extend(endpoint(host + ':443') for host in missing)
     if plan:
-        return {'event': 'plan', 'ok': True, 'cell': workspace['name'], 'agent': 'codex',
+        return {'event': 'plan', 'ok': True, 'cell': workspace['name'], 'agent': agent,
                 'network_grants': [h + ':443' for h in missing],
                 'restart': 'proxy' if missing else 'none', 'cell_restart': False,
-                'authentication': 'shared with every Codex chat and shell', 'history': 'retained in place'}
+                'authentication': 'shared with every ' + AGENT_NAMES[agent] + ' chat and shell',
+                'history': 'retained in place'}
     if missing:
         manager.apply_network(snapshot, candidate)
     for host in hosts:
@@ -184,11 +190,34 @@ def login_browser(payload, args):
             thread.join(timeout=5)
 
 
+def claude_login(payload, args):
+    """Claude Code signs in inside its own terminal: it shows a link and takes
+    the pasted code, so no laptop callback needs relaying into the cell."""
+    if args.status:
+        report = guest_operation(payload, 'claude-status', {})
+        report.update(cell=args.cell, agent='claude', ok=True)
+        return report
+    manager = Management(payload, None)
+    with manager.config.with_name(manager.config.name + '.management.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.plan:
+            return login_network(manager, plan=True, agent='claude')
+        # Check the installation before changing outbound policy.
+        guest_operation(payload, 'claude-status', {})
+        missing = login_network(manager, agent='claude')
+        report = guest_operation(payload, 'claude-status', {})
+        report.update(event='ready', ok=True, cell=args.cell, agent='claude',
+                      network_grants=[h + ':443' for h in missing])
+        return report
+
+
 def login_main(payload):
     json_output = '--json' in payload['args']
     try:
         args = login_options(payload['args'])
-        if args.status:
+        if args.agent == 'claude':
+            report = claude_login(payload, args)
+        elif args.status:
             report = guest_operation(payload, 'status', {})
             report.update(cell=args.cell, agent=args.agent, ok=True)
         else:
@@ -218,9 +247,18 @@ def login_main(payload):
         if args.json:
             print(json.dumps(report), flush=True)
         elif report['event'] == 'plan':
-            print('Login plan for ' + args.cell + ': shared Codex account; existing history retained.\n'
+            print('Login plan for ' + args.cell + ': shared ' + AGENT_NAMES[args.agent] + ' account; existing history retained.\n'
                   '  Network grants: ' + (', '.join(report['network_grants']) or 'already configured') + '\n'
                   '  Restart: ' + report['restart'] + '; cell and chat processes stay running.')
+        elif args.agent == 'claude' and report['event'] == 'status':
+            print(args.cell + ': ' + ('signed in to Claude Code' if report['authenticated'] else 'not signed in to Claude Code')
+                  + '; method: ' + str(report['provider']))
+        elif report['event'] == 'ready':
+            print(args.cell + ': Claude Code can reach its sign-in and API endpoints; the cell and running chats stayed running.\n'
+                  + ('Already signed in. All Claude Code chats and shells share this login.' if report['authenticated'] and not args.force else
+                     'Finish in the cell: run  kuggis ' + args.cell + ' CHAT --agent claude  and follow Claude Code\'s sign-in\n'
+                     '(use /login to switch accounts). Open its link on your laptop, then paste the code it shows back\n'
+                     'into the chat. All Claude Code chats and shells in this cell share the login.'))
         elif report['event'] == 'status':
             print(args.cell + ': ' + ('signed in to ChatGPT' if report['authenticated'] else 'not signed in to ChatGPT')
                   + '; provider: ' + str(report['provider']))

@@ -34,9 +34,9 @@ collection of SSH targets is sufficient; multiple guests per host are deferred.
 The BigBrain trial showed that the manual setup below needs a complete operator
 entry point. The [onboarding proposal](onboarding.md) describes one create
 operation with interactive questions or unattended flags/JSON, built on the
-existing boundary and recipes. Exe creation with Pi or Codex is implemented,
-including saved agent selection per chat. Claude Code and native login profiles
-remain planned.
+existing boundary and recipes. Exe creation with Codex and Claude Code is
+implemented, including saved agent selection per chat. Agents authenticate only
+through their native logins; Kuggis grants provider endpoints at `kuggis login`.
 
 Deployment configuration is prepared before agents run. It selects an SSH target,
 resource access, credentials, initial tools, launch command, and private web
@@ -165,8 +165,8 @@ sets whose cross product grants extra access. DNS resolution must reject private
 and metadata addresses by default; explicit address pins permit deliberately
 configured private or IPv4 link-local platform endpoints. A TCP tunnel cannot
 restrict the guest's TLS/HTTP host headers; shared gateways must enforce their
-own authorization. The Pi recipe explicitly grants exe's already-attached LLM
-gateway through such a pin, with provider credentials retained by exe.
+own authorization. No built-in recipe uses such a pin: agents authenticate with
+their native logins, and `admin upgrade` removes the retired exe LLM gateway grant.
 Support SSH egress as well as HTTPS without
 granting a general route around the boundary. No implicit exe door exception.
 
