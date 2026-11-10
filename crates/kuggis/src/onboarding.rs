@@ -127,16 +127,7 @@ impl CreateRequest {
                 {"host":"api.github.com","port":443}
             ]}
         ]);
-        let agents = json!({
-            "codex": {
-                "launch":["/home/agent/.local/bin/kuggis-codex","default"],
-                "chat_launch":["/home/agent/.local/bin/kuggis-codex","{chat}"]
-            },
-            "claude": {
-                "launch":["/home/agent/.local/bin/kuggis-claude","default"],
-                "chat_launch":["/home/agent/.local/bin/kuggis-claude","{chat}"]
-            }
-        });
+        let agents = builtin_agents();
         let agent = match self.agent {
             Agent::Codex => "codex",
             Agent::Claude => "claude",
@@ -157,6 +148,40 @@ impl CreateRequest {
             .to_string(),
         )
     }
+}
+
+/// Launch recipes for the agents every new cell installs.
+pub fn builtin_agents() -> Value {
+    json!({
+        "codex": {
+            "launch":["/home/agent/.local/bin/kuggis-codex","default"],
+            "chat_launch":["/home/agent/.local/bin/kuggis-codex","{chat}"]
+        },
+        "claude": {
+            "launch":["/home/agent/.local/bin/kuggis-claude","default"],
+            "chat_launch":["/home/agent/.local/bin/kuggis-claude","{chat}"]
+        }
+    })
+}
+
+/// Pinned installer files for the built-in agents, embedded at build time.
+pub fn recipes() -> Value {
+    json!({
+        "codex": {
+            "install.py":include_str!("../../../recipes/codex/install.py"),
+            "release.json":include_str!("../../../recipes/codex/release.json"),
+            "config.toml":include_str!("../../../recipes/codex/config.toml"),
+            "launch.py":include_str!("../../../recipes/codex/launch.py"),
+            "smoke.py":include_str!("../../../recipes/codex/smoke.py")
+        },
+        "claude": {
+            "install.py":include_str!("../../../recipes/claude/install.py"),
+            "release.json":include_str!("../../../recipes/claude/release.json"),
+            "settings.json":include_str!("../../../recipes/claude/settings.json"),
+            "launch.py":include_str!("../../../recipes/claude/launch.py"),
+            "smoke.py":include_str!("../../../recipes/claude/smoke.py")
+        }
+    })
 }
 
 pub fn state_root() -> Result<PathBuf> {
@@ -363,22 +388,7 @@ pub fn create(args: &[String]) -> Result<()> {
                 .join("x86_64-unknown-linux-musl/release/kuggis")
         }
     });
-    let recipes = json!({
-        "codex": {
-            "install.py":include_str!("../../../recipes/codex/install.py"),
-            "release.json":include_str!("../../../recipes/codex/release.json"),
-            "config.toml":include_str!("../../../recipes/codex/config.toml"),
-            "launch.py":include_str!("../../../recipes/codex/launch.py"),
-            "smoke.py":include_str!("../../../recipes/codex/smoke.py")
-        },
-        "claude": {
-            "install.py":include_str!("../../../recipes/claude/install.py"),
-            "release.json":include_str!("../../../recipes/claude/release.json"),
-            "settings.json":include_str!("../../../recipes/claude/settings.json"),
-            "launch.py":include_str!("../../../recipes/claude/launch.py"),
-            "smoke.py":include_str!("../../../recipes/claude/smoke.py")
-        }
-    });
+    let recipes = recipes();
     let payload = json!({"request":request,"workspace":workspace,"directory":directory,
     "binary":binary,"cli":exe,"ssh_config":ssh_config,"json_output":json_output,
     "host_executor":crate::deploy::HOST_EXECUTOR,"recipes":recipes,"allow_restart":restart});

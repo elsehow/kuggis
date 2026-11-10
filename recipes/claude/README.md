@@ -52,7 +52,10 @@ Kuggis writes cell guidance to `~/AGENTS.md`. The installer creates
 
 ## Add to an existing cell
 
-`admin upgrade` does not install agent recipes. On the operator machine,
+`kuggis CELL --upgrade --bin LINUX_BINARY --restart` installs the pinned release and
+registers the agent on any cell that already has an `agents` section; check
+`--plan` first. The manual steps below are only for legacy cells without one,
+or for installing a release other than the pinned one. On the operator machine,
 download the URL in `release.json` and check its SHA-256, then:
 
 ```sh
@@ -87,15 +90,12 @@ Changing `agents` restarts the cell. Existing chats keep their saved agent.
 
 The pin follows Claude Code's `latest` channel, because new models can need a
 newer client than `stable` serves. Self-update is off, so a cell changes version
-only when the installer runs with a newer `release.json`. To move the pin, take
-the version from `https://downloads.claude.ai/claude-code-releases/latest` and
-the `linux-x64` checksum from that version's `manifest.json`.
+only when the installer runs with a newer `release.json`.
 
-To update an existing cell, follow [Add to an existing cell](#add-to-an-existing-cell)
-with the new binary and `release.json`, skipping the `agents` registration. No
-cell restart is needed and the login is kept. Running chats keep the old binary
-until Claude Code exits; reopen each chat to resume it on the new version. This
-update path has not been run on a live cell.
+`python3 scripts/check-agent-releases.py` reports whether the pin is stale, and
+`--update claude` rewrites it from upstream's signed manifest. To update a cell,
+install a Kuggis build with the newer pin and run `kuggis CELL --upgrade`. The
+restart ends running chats; reopening one resumes it on the new version.
 
 ## Test status
 
@@ -104,8 +104,8 @@ Exercised on a disposable exe cell on 2026-11-10: creation with
 session resume after detach and after exit, a Codex login and chat alongside,
 and multi-file `--put`/`--get`. The launcher's session binding, the login
 network grants and the creation sequence are also covered by unit tests with
-fake effects. Adding the recipe to an existing cell and the `admin upgrade`
-gateway removal have not been run live. After signing in, run the real model/tool check
+fake effects. Installing or updating agents through `admin upgrade`, and its
+gateway removal, are covered by unit tests but have not been run live. After signing in, run the real model/tool check
 inside the guest as `agent`:
 
 ```sh
