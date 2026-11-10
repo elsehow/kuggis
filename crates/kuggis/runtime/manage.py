@@ -73,7 +73,9 @@ def management_options(argv):
         parser.add_argument('--replace', action='store_true')
     if area == 'chat':
         parser.add_argument('chat')
-    result = parser.parse_args(argv[2:])
+    # Items and flags may interleave; before Python 3.13 plain parse_args
+    # rejects positionals that follow an option.
+    result = (parser.parse_intermixed_args if many else parser.parse_args)(argv[2:])
     result.area, result.action = area, action
     if many:
         items, names = result.items_list, result.save_as
