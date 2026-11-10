@@ -18,6 +18,7 @@ pub const HELP: &str = "Kuggis — cells for autonomous work
   kuggis CELL --web [PREVIEW] [--port PORT] [--no-open] [--plan]
   kuggis CELL --configure --file PATCH.json [--plan] [--restart --bin BIN]
   kuggis CELL --upgrade --bin BIN [--plan] [--restart] [--json]
+  kuggis CELL --delete [--yes] [--json]  show what deleting removes; --yes deletes
   kuggis CELL --access list|grant|revoke|check|configure [OPTIONS]
   kuggis CELL --grant repo OWNER/REPO --role read|develop [--plan] [--json]
   kuggis CELL --grant network HOST:PORT [--plan] [--json]
@@ -29,7 +30,7 @@ CELL accepts a saved name or workspace JSON path. Chat names are exact names.
 
 Compatible command groups:
   kuggis login CELL --agent codex|claude
-  kuggis cell    create, list, status, configure, shell, exec, web
+  kuggis cell    create, list, status, configure, delete, shell, exec, web
   kuggis chat    list, open, archive
   kuggis access  list, grant, revoke, check, configure
   kuggis file    put, get
@@ -132,7 +133,7 @@ fn positional(args: &[String]) -> Result<Route> {
         "--shell" | "--exec" | "--web" | "--login" => {
             Ok(Route::Legacy(words(&[&operation[2..], cell], rest)))
         }
-        "--status" | "--configure" => {
+        "--status" | "--configure" | "--delete" => {
             Ok(Route::Manage(words(&["cell", &operation[2..], cell], rest)))
         }
         "--check" => Ok(Route::Manage(words(
@@ -180,6 +181,7 @@ pub fn help(name: &str) -> &'static str {
                    [--ssh-config FILE] [--bin LINUX_BINARY] [--plan] [--json] [--restart]
 kuggis cell list [--json]
 kuggis cell status CELL [--check] [--json]
+kuggis cell delete CELL [--plan] [--yes] [--json]
 kuggis cell configure CELL --file PATCH.json [--plan] [--restart --bin LINUX_BINARY] [--json]
 kuggis cell shell CELL
 kuggis cell exec CELL -- PROGRAM [ARG...]
@@ -247,7 +249,7 @@ pub fn route(args: &[String]) -> Result<Route> {
     };
     match (area, action) {
         ("cell", "create" | "shell" | "exec" | "web") => Ok(legacy(action, &args[2..])),
-        ("cell", "list" | "status" | "configure")
+        ("cell", "list" | "status" | "configure" | "delete")
         | ("access", _)
         | ("file", "put" | "get")
         | ("chat", "archive")
