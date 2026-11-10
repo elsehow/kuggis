@@ -85,11 +85,13 @@ Changing `agents` restarts the cell. Existing chats keep their saved agent.
 
 ## Test status
 
-Not yet exercised on a live cell. The launcher's session binding, the login
-network grants and the creation sequence are covered by unit tests with fake
-effects. The download URL pattern, the first-run screens under
-`--dangerously-skip-permissions`, and the in-chat sign-in through tmux still
-need a live acceptance run. After signing in, run the real model/tool check
+Exercised on a disposable exe cell on 2026-11-10: creation with
+`--default-agent claude`, `kuggis login`, the in-chat sign-in through tmux,
+session resume after detach and after exit, a Codex login and chat alongside,
+and multi-file `--put`/`--get`. The launcher's session binding, the login
+network grants and the creation sequence are also covered by unit tests with
+fake effects. Adding the recipe to an existing cell and the `admin upgrade`
+gateway removal have not been run live. After signing in, run the real model/tool check
 inside the guest as `agent`:
 
 ```sh
