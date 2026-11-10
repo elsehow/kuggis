@@ -52,6 +52,7 @@ item with a positional destination.
 | App preview | `kuggis CELL --web [PREVIEW] [--port PORT] [--no-open] [--plan]` |
 | Configure | `kuggis CELL --configure --file PATCH.json [OPTIONS]` |
 | Upgrade | `kuggis CELL --upgrade --bin BIN [--plan] [--restart] [--json]` |
+| Delete | `kuggis CELL --delete [--yes] [--json]` |
 | Access | `kuggis CELL --access ACTION [OPTIONS]` |
 | Grant | `kuggis CELL --grant repo OWNER/REPO --role read\|develop [--plan] [--json]` |
 | Grant network | `kuggis CELL --grant network HOST:PORT [--plan] [--json]` |
@@ -103,6 +104,14 @@ An interrupted creation that needs to update an existing cell requires an
 explicit `cell create ... --restart` retry. Creating a fresh cell does not.
 
 `cell list` reads the operator's saved inventory; it does not probe every host.
+Creation saves a cell's local record before allocating anything, so a cancelled
+or failed creation stays listed. Each cell shows its setup record: `ready`, or
+`setup incomplete` with what creation recorded making, in order (host, GitHub
+enrollment, repository grant). `outcome unknown` marks a step that started
+without a confirmed result. `created: nothing` means no remote resource was
+recorded and the local directory is all there is. `--json` carries the same
+record as `setup`. It reflects creation only, not later grants or live state;
+use `cell status` and `access list` for those.
 `cell status` reads live service state. `--check` also runs the existing boundary
 checks. Chat, shell, file, and preview commands retain their existing behavior.
 
@@ -291,6 +300,29 @@ cell upgrade is not required just to use network management. New installer code
 is embedded in the updated operator, so even the legacy `setup` spelling refuses
 to update an existing cell without `--restart`. Older operator binaries cannot
 enforce this new guard; use the updated packaged client.
+
+## Deleting a cell
+
+```sh
+kuggis fri --delete          # show what would be removed; changes nothing
+kuggis fri --delete --yes    # delete
+```
+
+Delete undoes creation in reverse. It revokes every repository grant the cell
+holds at the broker, deletes the exe.dev host, then removes the cell's local
+record. Without `--yes` it only reports those steps. Deleting the host is
+permanent: workspace files, chat history and agent logins go with it, so `--get`
+anything worth keeping first. Sessions are not signed out at the model provider.
+
+The host is deleted only when the provider inventory shows the one this cell's
+creation made. A host with the same name from elsewhere stops the command with
+nothing removed; a host that is already gone is skipped. Cells that were not made
+by `create` have their host left running and reported as such. The broker keeps
+the cell's enrollment record, which authorizes nothing once its grants are gone.
+
+A failed step leaves the local record in place, so the same command can be
+rerun. A cancelled creation that made nothing remote is removed without
+contacting the provider. Delete takes a saved cell name, not a workspace path.
 
 ## Automation and compatibility
 

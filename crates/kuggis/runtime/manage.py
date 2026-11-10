@@ -8,6 +8,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,7 +28,7 @@ class ManagementParser(argparse.ArgumentParser):
 def management_options(argv):
     parser = ManagementParser(prog='kuggis ' + ' '.join(argv[:2]), allow_abbrev=False)
     area, action = argv[:2]
-    if (area, action) not in {('cell', a) for a in ('list', 'status', 'configure')} | {
+    if (area, action) not in {('cell', a) for a in ('list', 'status', 'configure', 'delete')} | {
             ('access', a) for a in ('list', 'grant', 'revoke', 'check', 'configure')} | {
             ('file', 'put'), ('file', 'get'), ('chat', 'archive'), ('admin', 'upgrade')}:
         raise Failure('unknown command; run kuggis ' + area + ' --help')
@@ -46,6 +48,9 @@ def management_options(argv):
             parser.add_argument('--merge', action='store_true')
     if (area, action) == ('cell', 'status'):
         parser.add_argument('--check', action='store_true')
+    if (area, action) == ('cell', 'delete'):
+        parser.add_argument('--plan', action='store_true')
+        parser.add_argument('--yes', action='store_true')
     if (area, action) in (('cell', 'configure'), ('admin', 'upgrade')):
         if area == 'cell':
             parser.add_argument('--file', required=True)
@@ -221,6 +226,37 @@ def read_json(path):
     return json.loads(data)
 
 
+STEP_NAMES = {'host': 'host', 'github_enrollment': 'GitHub enrollment',
+              'repository_grant': 'repository grant', 'local_record': 'local record'}
+
+
+def host_name(receipt, workspace):
+    return receipt.get('vm') or workspace['ssh'].removesuffix('.exe.xyz')
+
+
+def setup_record(config, workspace):
+    """What creation recorded locally, in the order it made it. Nothing is probed,
+    and grants changed after creation are not reflected; removal undoes it in reverse."""
+    receipt = config.with_name('receipt.json')
+    if not receipt.exists():
+        return {'state': 'not_recorded', 'created': []}
+    record = read_json(receipt)
+    created = []
+    if record.get('created_at') or record.get('creation_started'):
+        # A started creation without an observed host may or may not have allocated one.
+        created.append({'kind': 'host', 'name': host_name(record, workspace),
+                        'state': 'created' if record.get('created_at') else 'unknown'})
+    if config.with_name(config.name + '.github.json').exists():
+        created.append({'kind': 'github_enrollment', 'state': 'created'})
+    elif config.with_name(config.name + '.github-enrollment.json').exists():
+        created.append({'kind': 'github_enrollment', 'state': 'unknown'})
+    if record.get('github_initialized'):
+        request = config.with_name('setup.json')
+        created.append({'kind': 'repository_grant', 'state': 'created',
+                        'name': read_json(request).get('repo') if request.exists() else None})
+    return {'state': 'ready' if record.get('status') == 'ready' else 'incomplete', 'created': created}
+
+
 class Management:
     def __init__(self, payload, args):
         self.p, self.args = payload, args
@@ -267,6 +303,69 @@ class Management:
 
     def snapshot(self):
         return self.remote('inspect')
+
+    def provider(self, receipt, *words, allow_failure=False):
+        argv = ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ForwardAgent=no',
+                '-o', 'ForwardX11=no', '-o', 'ClearAllForwardings=yes', '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
+                '-o', 'PermitLocalCommand=no', '-o', 'ConnectTimeout=15']
+        if receipt.get('ssh_config'):
+            argv += ['-F', str(receipt['ssh_config'])]
+        result = subprocess.run([*argv, 'exe.dev', shlex.join(words)], stdin=subprocess.DEVNULL,
+                                capture_output=True, timeout=120)
+        if result.returncode and not allow_failure:
+            raise Failure('exe.dev ' + words[0] + ' failed; check provider access and retry')
+        return result.stdout
+
+    def owned_host(self, receipt, name):
+        """The provider host this cell's creation made, or None when it is gone."""
+        try:
+            vms = json.loads(self.provider(receipt, 'ls', '--json'))['vms']
+            matches = [vm for vm in vms if vm.get('vm_name') == name]
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise Failure('exe.dev returned an invalid host inventory') from None
+        if not matches:
+            return None
+        if (len(matches) != 1 or not receipt.get('marker') or matches[0].get('comment') != receipt['marker']
+                or receipt.get('created_at') not in (None, matches[0].get('created_at'))):
+            raise Failure(f'a host named {name} exists but is not the one this cell created; it was not deleted')
+        return matches[0]
+
+    def delete(self):
+        """Undo creation in reverse: repository grants, then the host, then the local record."""
+        directory = self.config.parent
+        if self.config.name != 'workspace.json' or directory.parent.resolve() != Path(self.p['state_root']).resolve():
+            raise Failure('delete takes a saved cell name; this workspace file is outside the Kuggis state directory')
+        receipt = directory/'receipt.json'
+        receipt = read_json(receipt) if receipt.exists() else {}
+        apply = self.args.yes and not self.args.plan
+        steps = []
+        binding = self.binding()
+        repos = [grant['repo'] for grant in self.repositories().get('repositories', [])]
+        for repo in repos:
+            if apply:
+                self.operator.api('/admin/repos/remove', {'cell': binding['cell'], 'repo': repo})
+            steps.append({'kind': 'repository_grant', 'name': repo, 'result': 'revoked' if apply else 'revoke'})
+        if binding or self.config.with_name(self.config.name + '.github-enrollment.json').exists():
+            # The broker has no cell removal; without grants the enrollment authorizes nothing.
+            steps.append({'kind': 'github_enrollment', 'result': 'retained'})
+        if receipt.get('created_at') or receipt.get('creation_started'):
+            name = host_name(receipt, self.local)
+            if self.owned_host(receipt, name) is None:
+                steps.append({'kind': 'host', 'name': name, 'result': 'absent'})
+            elif apply:
+                # The provider's output format is not documented; trust only the inventory.
+                self.provider(receipt, 'rm', name, allow_failure=True)
+                if self.owned_host(receipt, name) is not None:
+                    raise Failure(f'exe.dev did not delete {name}; run ssh exe.dev rm {name}, then retry')
+                steps.append({'kind': 'host', 'name': name, 'result': 'deleted'})
+            else:
+                steps.append({'kind': 'host', 'name': name, 'result': 'delete'})
+        elif not receipt:
+            steps.append({'kind': 'host', 'name': self.local['ssh'], 'result': 'not_managed'})
+        if apply:
+            shutil.rmtree(directory)
+        steps.append({'kind': 'local_record', 'name': str(directory), 'result': 'removed' if apply else 'remove'})
+        return {'ok': True, 'cell': directory.name, 'deleted': apply, 'steps': steps}
 
     def binding(self, attach=False):
         receipt = self.config.with_name(self.config.name + '.github.json')
@@ -509,10 +608,12 @@ class Management:
             for path in sorted(Path(self.p['state_root']).glob('*/workspace.json')):
                 workspace = read_json(path)
                 cells.append({'name': path.parent.name, 'cell_name': workspace['name'], 'ssh': workspace['ssh'], 'config': str(path),
-                              'status': 'not_checked'})
+                              'status': 'not_checked', 'setup': setup_record(path, workspace)})
             return {'ok': True, 'cells': cells}
         if args.area == 'access' and args.action != 'list':
             return self.repo() if args.kind == 'repo' else self.network()
+        if (args.area, args.action) == ('cell', 'delete'):
+            return self.delete()
         if (args.area, args.action) == ('cell', 'configure') or args.area == 'admin':
             return self.configure()
         if args.area == 'access':
@@ -563,8 +664,26 @@ class Management:
 
 def management_text(report):
     if 'cells' in report:
-        return '\n'.join(['Saved cells (live status not checked):', *[
-            f"  {cell['name']:<24} {cell['ssh']}" for cell in report['cells']]])
+        def setup(record):
+            if record['state'] != 'incomplete':
+                return {'ready': 'ready', 'not_recorded': 'no setup record'}[record['state']]
+            made = [STEP_NAMES[item['kind']] + (' (outcome unknown)' if item['state'] == 'unknown' else '')
+                    for item in record['created']]
+            return 'setup incomplete; created: ' + (', '.join(made) or 'nothing')
+        return '\n'.join(['Saved cells (from local setup records; live status not checked):', *[
+            f"  {cell['name']:<24} {cell['ssh']:<32} {setup(cell['setup'])}" for cell in report['cells']]])
+    if 'steps' in report:
+        done = report['deleted']
+        wording = {'revoke': 'revoke', 'revoked': 'revoked', 'delete': 'delete (permanent: files, chats and agent logins)',
+                   'deleted': 'deleted', 'absent': 'already gone', 'remove': 'remove', 'removed': 'removed',
+                   'retained': 'kept at the broker; it authorizes nothing without grants',
+                   'not_managed': 'not created by Kuggis; left running'}
+        lines = [f"{'Deleted' if done else 'Plan: delete'} {report['cell']}", *[
+            f"  {STEP_NAMES[step['kind']]}{' ' + step['name'] if step.get('name') else ''}: {wording[step['result']]}"
+            for step in report['steps']]]
+        lines.append('  Agent sessions are not signed out at the provider.' if done else
+                     f"Nothing was deleted. To delete: kuggis {report['cell']} --delete --yes")
+        return '\n'.join(lines)
     if 'network' in report:
         lines = [f"Access for {report['cell']} (egress: {report['egress']}):"]
         for grant in report['github'].get('repositories', []):
@@ -647,6 +766,13 @@ def management_main(payload):
             with manager.config.with_name(manager.config.name + '.management.lock').open('a') as lock:
                 fcntl.flock(lock, (fcntl.LOCK_SH if args.action in ('list', 'check') else fcntl.LOCK_EX) | fcntl.LOCK_NB)
                 report = manager.run()
+        elif args.action == 'delete':
+            # Exclude a running create or another management change for this cell.
+            with manager.config.with_name('create.lock').open('a') as creating:
+                with manager.config.with_name(manager.config.name + '.management.lock').open('a') as managing:
+                    for lock in (creating, managing):
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    report = manager.run()
         else:
             report = manager.run()
         if json_output:
