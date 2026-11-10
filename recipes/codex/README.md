@@ -54,6 +54,8 @@ The old launcher and shared configuration are backed up before replacement.
 The recipe ships no model catalog: Codex uses its bundled catalog and the
 signed-in account's own model availability.
 
+## Add to an existing cell
+
 For an existing SSH cell, install the recipe as `agent` inside the guest, using
 the package specified in `release.json`. Register this recipe in the
 workspace declaration, preserving any existing recipes exactly:
