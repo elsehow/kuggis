@@ -262,9 +262,23 @@ kuggis admin upgrade fri --bin ./kuggis-linux-x86_64 --restart
 
 `admin upgrade` also removes the retired exe model gateway grant from the cell
 and says so in its plan. Agents that were still using it need `kuggis login`
-afterwards; their history is kept. The upgrade does not install new agent
-recipes: see the [Claude Code recipe](../recipes/claude/README.md) to add it to
-an existing cell.
+afterwards; their history is kept.
+
+Upgrade brings the cell's built-in agents (Codex and Claude Code) to the
+releases pinned in this build. The plan lists each agent's installed and pinned
+version. Applying downloads any needed release to the operator machine first,
+upgrades and restarts the cell, then installs the release as the guest agent
+user and registers agents the cell did not have yet. This is also how to update
+an agent on a cell: install a Kuggis build with a newer pin and run upgrade.
+Agent logins and chat history are kept; a newly registered agent needs
+`kuggis login`. If the agent install fails after the restart, the runtime is
+already upgraded; rerun the same command. Cells without an `agents` section
+(legacy launch-only configurations) are reported as unmanaged and their agents
+are left alone. Pi is never installed or changed by upgrade.
+
+`python3 scripts/check-agent-releases.py` compares the pinned releases with
+upstream and exits 1 when a pin is stale; a weekly CI job runs it for the
+built-in agents. `--update` rewrites stale pins, which then need a live test.
 
 Full installation is disruptive: running agent processes stop. It checks the
 expected host revision under the installer lock before stopping anything. An

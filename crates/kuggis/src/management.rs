@@ -12,6 +12,11 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut payload = json!({"args": args, "binary": std::env::current_exe()?,
         "state_root": onboarding::state_root()?,
         "settings": onboarding::state_root()?.join("github-operator.json")});
+    if args.first().map(String::as_str) == Some("admin") {
+        // Upgrade brings a cell's built-in agents to the pinned releases.
+        payload["recipes"] = onboarding::recipes();
+        payload["agents"] = onboarding::builtin_agents();
+    }
     if args.get(1).map(String::as_str) != Some("list") || args[0] != "cell" {
         let target = args.get(2).ok_or_else(|| Error("expected CELL".into()))?;
         let path = onboarding::config_path(target)?;

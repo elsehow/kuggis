@@ -60,9 +60,9 @@ def login_network(manager, plan=False, hosts=None, agent='codex'):
     workspace = snapshot['workspace']
     agents = workspace.get('agents', {})
     if agent not in agents and not any(word.endswith('/kuggis-' + agent) for word in workspace.get('launch', [])):
-        raise Failure(AGENT_NAMES[agent] + ' is not configured in this cell. New cells get it at creation; to add it to this '
-                      'one, follow "Add to an existing cell" in recipes/' + agent + '/README.md in the Kuggis repository '
-                      '(install the pinned release in the guest, then register it under "agents" with kuggis CELL --configure).')
+        raise Failure(AGENT_NAMES[agent] + ' is not configured in this cell. Install and register it with '
+                      'kuggis ' + workspace['name'] + ' --upgrade --bin LINUX_BINARY --plan, then the same with --restart. '
+                      'A cell with no "agents" section needs the manual steps in recipes/' + agent + '/README.md.')
     candidate = copy.deepcopy(workspace)
     allowed = {(e['host'], e['port']) for r in candidate.get('resources', []) for e in r.get('endpoints', [])}
     missing = [] if candidate.get('egress') == 'internet' else [h for h in hosts if (h, 443) not in allowed]

@@ -42,7 +42,15 @@ cargo test --locked
 cargo install --path crates/kuggis --locked
 ```
 
-To package the local client with its matching Linux helper:
+To build and install the client together with its matching Linux helper:
+
+```sh
+sh scripts/install.sh            # reinstalls where kuggis already is, else ~/.config/kuggis/bin
+sh scripts/install.sh ~/bin      # or name a directory
+```
+
+`cargo install` alone builds only the local client; creating and upgrading cells
+also need the Linux helper beside it. To package the pair without installing:
 
 ```sh
 sh scripts/package.sh dist

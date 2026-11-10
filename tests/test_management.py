@@ -124,6 +124,27 @@ class ManagementCLI(unittest.TestCase):
         self.assertEqual(json.loads(self.config.read_text())['resources'], [
             {'name': 'existing', 'endpoints': [{'host': 'example.com', 'port': 443, 'destination': {'kind': 'public'}}], 'credentials': []}])
 
+    def test_upgrade_plan_reports_agent_installs_and_registration_without_effects(self):
+        linux = self.root / 'linux'
+        linux.write_bytes(b'\x7fELF\x02\x01' + b'\0' * 32)
+        legacy = self.cli('admin', 'upgrade', 'fri', '--bin', str(linux), '--plan')
+        self.assertIn('no agents section', legacy['agents_unmanaged'])
+        self.assertNotIn('agents', legacy)
+        codex = {'launch': ['/home/agent/.local/bin/kuggis-codex', 'default'],
+                 'chat_launch': ['/home/agent/.local/bin/kuggis-codex', '{chat}']}
+        live = {**self.workspace, 'launch': codex['launch'], 'chat_launch': codex['chat_launch'],
+                'default_agent': 'codex', 'agents': {'codex': codex}}
+        for path in (self.config, self.remote / 'workspace.json'):
+            path.write_text(json.dumps(live))
+        plan = self.cli('admin', 'upgrade', 'fri', '--bin', str(linux), '--plan')
+        pinned = json.loads((ROOT / 'recipes/claude/release.json').read_text())['version']
+        self.assertEqual(plan['registered_agents'], ['claude'])
+        self.assertEqual(plan['agents']['claude'], {'installed': None, 'pinned': pinned, 'action': 'install'})
+        self.assertEqual(plan['agents']['codex']['action'], 'install')
+        self.assertEqual((plan['restart'], self.calls()), ('cell', []))
+        self.assertEqual(json.loads(self.config.read_text()), live)
+        self.assertFalse(list(self.state.glob('fri/*.pkg*')))
+
     def test_network_only_configure_does_not_restart_cell_and_identity_cannot_change(self):
         patchfile = self.root / 'patch.json'
         resources = copy.deepcopy(self.workspace['resources'])

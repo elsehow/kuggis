@@ -2,6 +2,7 @@
 import argparse
 import copy
 import fcntl
+import hashlib
 import ipaddress
 import json
 import os
@@ -144,6 +145,65 @@ def without_gateway(workspace):
     if removed:
         candidate['resources'] = [r for r in candidate['resources'] if r['name'] not in removed]
     return candidate, removed
+
+
+AGENT_STAGE = '/home/agent/.local/share/kuggis/setup/agents'
+# Installed release per agent: the version directory its executable links into,
+# and a digest of the Kuggis launcher beside it.
+AGENT_PROBE = '''import hashlib,json,os,sys
+from pathlib import Path
+home=Path.home();out={}
+for agent in sys.argv[1:]:
+    lib=Path(os.path.realpath(home/'.local/lib'/agent));target=Path(os.path.realpath(home/'.local/bin'/agent))
+    launcher=home/'.local/bin'/('kuggis-'+agent)
+    out[agent]={'version':target.relative_to(lib).parts[0] if target.is_file() and lib in target.parents else None,
+                'launcher':hashlib.sha256(launcher.read_bytes()).hexdigest() if launcher.is_file() else None}
+print(json.dumps(out))
+'''
+# Stage through the workspace (uploads are workspace-relative) without leaving
+# installer files in the project: a link to private guest state, removed after.
+AGENT_PREPARE = '''import sys
+from pathlib import Path
+stage=Path(sys.argv[1]);(stage/sys.argv[2]).mkdir(parents=True,exist_ok=True)
+link=Path('/home/agent/workspace/.kuggis-setup')
+if link.is_symlink():
+    assert link.readlink()==stage, 'setup staging link belongs to another target'
+elif link.exists():
+    raise RuntimeError('project uses reserved setup staging path .kuggis-setup')
+else:link.symlink_to(stage,target_is_directory=True)
+'''
+AGENT_CLEAN = '''import sys
+from pathlib import Path
+link=Path('/home/agent/workspace/.kuggis-setup')
+if link.is_symlink() and link.readlink()==Path(sys.argv[1]):link.unlink()
+'''
+
+
+def with_builtin_agents(workspace, builtin):
+    """Register built-in agents on a cell that already selects agents per chat.
+
+    Existing entries, the default agent and legacy launch-only cells are left
+    alone: binding a legacy default chat to a recipe is an explicit migration."""
+    candidate = copy.deepcopy(workspace)
+    if not candidate.get('agents'):
+        return candidate, []
+    added = [name for name in builtin if name not in candidate['agents']]
+    for name in added:
+        candidate['agents'][name] = copy.deepcopy(builtin[name])
+    return candidate, added
+
+
+def agent_plan(recipes, installed):
+    """What upgrade does to each built-in agent, from the guest's installed state."""
+    plan = {}
+    for agent, files in recipes.items():
+        version = json.loads(files['release.json'])['version']
+        found = installed.get(agent) or {}
+        launcher = hashlib.sha256(files['launch.py'].encode()).hexdigest() if 'launch.py' in files else None
+        current = found.get('version') == version and found.get('launcher') == launcher
+        plan[agent] = {'installed': found.get('version'), 'pinned': version,
+                       'action': 'none' if current else 'install'}
+    return plan
 
 
 def non_network(workspace):
@@ -322,6 +382,48 @@ class Management:
                 'kind': 'network', 'target': args.target, 'action': args.action,
                 'changed': report['changed'], 'restart': report['restart'], 'verification': verification}
 
+    def installed_agents(self, agents):
+        try:
+            return json.loads(self.cli('exec', self.config, '--', '/usr/bin/python3', '-c', AGENT_PROBE, *agents))
+        except (Failure, ValueError, subprocess.TimeoutExpired):
+            return {}  # Unreachable or unreadable: install rather than assume current.
+
+    def download_agent(self, agent, files):
+        spec = json.loads(files['release.json'])['archives']['x86_64']
+        package = self.config.with_name(agent + '.pkg')
+        def digest(path):
+            with path.open('rb') as stream:
+                return hashlib.file_digest(stream, 'sha256').hexdigest()
+        if not package.exists() or digest(package) != spec['sha256']:
+            partial = package.with_suffix('.pkg.partial')
+            result = subprocess.run(['curl', '--fail', '--location', '--silent', '--show-error', '--retry', '2',
+                                     '--connect-timeout', '20', '--max-time', '900', spec['url'], '--output', str(partial)],
+                                    capture_output=True, timeout=1860)
+            if result.returncode:
+                raise Failure('could not download the pinned ' + agent + ' release: '
+                              + result.stderr.decode(errors='replace').strip()[-500:])
+            if digest(partial) != spec['sha256']:
+                partial.unlink()
+                raise Failure(agent + ' release checksum does not match the pinned release')
+            os.replace(partial, package)
+        return package
+
+    def install_agents(self, packages):
+        """Upload and run each pinned recipe as the guest agent user."""
+        guest = lambda *argv, timeout=120: self.cli('exec', self.config, '--', '/usr/bin/python3', *argv, timeout=timeout)
+        try:
+            for agent, package in packages.items():
+                guest('-c', AGENT_PREPARE, AGENT_STAGE, agent)
+                local = self.config.with_name('recipes') / agent
+                local.mkdir(parents=True, exist_ok=True)
+                for name, content in self.p['recipes'][agent].items():
+                    (local / name).write_text(content)
+                    self.cli('put', self.config, local / name, '.kuggis-setup/' + agent + '/' + name, '--replace')
+                self.cli('put', self.config, package, '.kuggis-setup/' + agent + '/agent.pkg', '--replace', timeout=1800)
+                guest(AGENT_STAGE + '/' + agent + '/install.py', AGENT_STAGE + '/' + agent + '/agent.pkg', timeout=300)
+        finally:
+            self.cli('exec', self.config, '--', '/usr/bin/python3', '-c', AGENT_CLEAN, AGENT_STAGE, allow_failure=True)
+
     def configure(self):
         snapshot = self.snapshot()
         current = snapshot['workspace']
@@ -330,9 +432,13 @@ class Management:
         if not isinstance(patch, dict):
             raise Failure('configuration patch must be a JSON object')
         candidate = merge_patch(current, patch)
-        retired = []
+        retired, registered, agents = [], [], {}
         if upgrade:
             candidate, retired = without_gateway(candidate)
+            candidate, registered = with_builtin_agents(candidate, self.p.get('agents', {}))
+            # Only cells that select agents per chat have their agents managed.
+            if candidate.get('agents') and self.p.get('recipes'):
+                agents = agent_plan(self.p['recipes'], self.installed_agents(list(self.p['recipes'])))
         for key in ('version', 'name', 'ssh', 'ssh_config'):
             if candidate.get(key) != current.get(key):
                 raise Failure('configure cannot change cell identity or SSH routing')
@@ -344,6 +450,12 @@ class Management:
                                                             if current.get(k) != candidate.get(k))}
         if retired:
             plan['removed_model_gateway'] = retired
+        if registered:
+            plan['registered_agents'] = registered
+        if agents:
+            plan['agents'] = agents
+        elif upgrade:
+            plan['agents_unmanaged'] = 'cell has no agents section; agent recipes were not installed'
         if self.args.plan:
             return plan
         if restart == 'cell':
@@ -351,6 +463,9 @@ class Management:
                 raise Failure('this change restarts the cell; review --plan, then pass --restart and --bin LINUX_BINARY')
             if not self.args.bin:
                 raise Failure('a cell restart requires --bin LINUX_BINARY')
+            # Fetch before stopping anything: a failed download changes nothing.
+            packages = {agent: self.download_agent(agent, self.p['recipes'][agent])
+                        for agent, entry in agents.items() if entry['action'] == 'install'}
             with tempfile.TemporaryDirectory(prefix='.configure-', dir=self.config.parent) as directory:
                 staged = Path(directory) / 'workspace.json'
                 atomic_json(staged, candidate)
@@ -358,6 +473,12 @@ class Management:
                          '--expect-revision', snapshot['revision'], timeout=1800)
             observed = self.snapshot()
             self.publish(observed['workspace'])
+            if packages:
+                try:
+                    self.install_agents(packages)
+                except Failure as error:
+                    raise Failure('the cell runtime was upgraded and restarted, but installing ' + ', '.join(packages)
+                                  + ' failed; rerun the same upgrade to retry. ' + str(error)) from None
         else:
             self.apply_network(snapshot, candidate)
         return {**plan, 'status': 'applied'}
@@ -471,6 +592,14 @@ def management_text(report):
             lines.append('  Enroll this cell with the configured GitHub broker.')
         if report.get('changed_fields'):
             lines.append('  Changed fields: ' + ', '.join(report['changed_fields']))
+        for agent, entry in report.get('agents', {}).items():
+            lines.append(f"  {agent}: " + (f"{entry['pinned']} already installed" if entry['action'] == 'none' else
+                         f"install {entry['pinned']} (currently {entry['installed'] or 'not installed'})"))
+        if report.get('registered_agents'):
+            lines.append('  Registers agents: ' + ', '.join(report['registered_agents'])
+                         + '. Sign each in with kuggis login CELL --agent AGENT.')
+        if report.get('agents_unmanaged'):
+            lines.append('  Agents: ' + report['agents_unmanaged'] + '.')
         if report.get('removed_model_gateway'):
             lines.append('  Removes the exe model gateway grant ('+', '.join(report['removed_model_gateway'])+'). Agents still using it need kuggis login CELL --agent AGENT; history is kept.')
         if report['restart'] == 'cell':
@@ -494,6 +623,13 @@ def management_text(report):
     if report.get('status') == 'applied':
         note = ('\n  Removed the exe model gateway grant; sign agents in with kuggis login CELL --agent AGENT.'
                 if report.get('removed_model_gateway') else '')
+        installed = [f"{agent} {entry['pinned']}" for agent, entry in report.get('agents', {}).items()
+                     if entry['action'] == 'install']
+        if installed:
+            note += '\n  Installed ' + ', '.join(installed) + '.'
+        if report.get('registered_agents'):
+            note += ('\n  Registered ' + ', '.join(report['registered_agents'])
+                     + '; sign in with kuggis login CELL --agent AGENT.')
         return f"{report['cell']}: configuration applied. Restart: {report['restart']}.{note}"
     if 'archived' in report:
         return f"Archived {report['archived']} in {report['cell']}."
