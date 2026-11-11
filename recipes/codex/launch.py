@@ -175,6 +175,11 @@ def main():
         return
     if len(sys.argv) != 2:
         raise SystemExit('usage: kuggis-codex CHAT')
+    # Serialize startup with legacy package cleanup. Close on exec, so a chat
+    # already running the shared binary does not prevent cleanup from that chat.
+    common = shared_home(home)
+    runtime_lock = (common / '.kuggis-runtime.lock').open('a')
+    fcntl.flock(runtime_lock, fcntl.LOCK_SH)
     state = prepare(home, sys.argv[1])
     lock = (state / '.kuggis-launch.lock').open('a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

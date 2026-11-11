@@ -197,6 +197,13 @@ fn positional_routes_select_scope_and_preserve_arguments() {
             true,
         ),
         (
+            vec!["fri", "--paste", "--chat", "vt", "--json"],
+            vec![
+                "file", "put", "fri", "--items", "--paste", "--chat", "vt", "--json",
+            ],
+            true,
+        ),
+        (
             vec!["fri", "--get", "out.pdf", "--save-as", "local.pdf"],
             vec![
                 "file",

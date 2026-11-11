@@ -236,7 +236,8 @@ def verify_bundle(bundle):
         raise ValueError('invalid workspace name')
     # Artifacts are compiler output; only these paths belong to this installer.
     fixed = {'/usr/local/libexec/kuggis-host', str(RUNTIME / 'guest.py'), '/etc/kuggis/wall.nft',
-             *(str(RUNTIME / name) for name in ('host.py', 'github_common.py', 'github_host.py', 'github_guest.py',
+             *(str(RUNTIME / name) for name in ('host.py', 'cleanup_codex.py', 'codex-launch.py',
+                                               'github_common.py', 'github_host.py', 'github_guest.py',
                                                'github_wire.py', 'github_git.py', 'github_collab.py')),
              '/etc/systemd/network/00-kuggis-v2.network',
              *('/etc/systemd/system/' + unit for unit in BASE_UNITS)}

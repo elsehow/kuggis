@@ -13,7 +13,7 @@ kuggis fri research --agent codex    # create/open a terminal chat
 kuggis fri research                  # resume the same chat
 kuggis fri research archive --json   # stop and hide it, retaining history
 kuggis fri --put ./image.png ./notes.md   # upload one or more files
-kuggis fri --put --paste --chat research
+kuggis fri --paste --chat research
 kuggis fri --get output.pdf --save-as ./report.pdf
 ```
 
@@ -32,8 +32,11 @@ Cell operations use the flag immediately after CELL:
 | List cells | `kuggis --list [--json]` |
 | List chats | `kuggis CELL --list [--json]` |
 | Upload | `kuggis CELL --put LOCAL... [--save-as REMOTE...] [--chat CHAT] [--replace] [--json]` |
-| Clipboard upload | `kuggis CELL --put --paste [--chat CHAT] [--json]` |
+| Clipboard upload | `kuggis CELL --paste [--chat CHAT] [--json]` |
 | Download | `kuggis CELL --get REMOTE... [--save-as LOCAL...] [--replace] [--json]` |
+
+`--paste` reports the uploaded filename (the full guest path); `--json` returns
+it as `destination`. `--put --paste` remains supported as an alias.
 
 `--put` and `--get` take any number of items; every path after the flag is an
 item, not a destination. Without `--save-as`, each item keeps its file name:
@@ -300,6 +303,44 @@ cell upgrade is not required just to use network management. New installer code
 is embedded in the updated operator, so even the legacy `setup` spelling refuses
 to update an existing cell without `--restart`. Older operator binaries cannot
 enforce this new guard; use the updated packaged client.
+
+## Cleaning legacy Codex packages
+
+Chats share one Codex installation; opening another chat adds private state,
+not another harness. Older daemon-based launches left full package copies under
+`~/.codex/packages/app-server-daemon/releases/` and
+`~/.kuggis/agents/codex/CHAT/packages/app-server-daemon/releases/`.
+
+After upgrading the cell runtime and Codex launcher, run this explicit migration
+from any agent or shell **inside the cell**:
+
+```sh
+python3 /run/kuggis-runtime/cleanup_codex.py --plan
+python3 /run/kuggis-runtime/cleanup_codex.py --apply
+```
+
+Omitting the flag previews only. The JSON report lists candidates, skipped
+releases, blockers, and allocated bytes (an upper bound, not a guarantee of
+reclaimed filesystem space). Preview creates only a coordination lock. Cleanup
+is not automatically run by upgrade or chat startup.
+
+Only complete copies matching the selected shared version and package contents
+are eligible. Different versions, modified packages, hard-linked files, and
+symlinked release paths are retained for review. The shared installation,
+installer archives, credentials, chat history, configuration, and research data
+are never pruned. Legacy selection symlinks are left in place; obsolete daemon
+launchers must not be used for rollback after their releases are removed.
+
+The command verifies the current shared launcher and checks process executables,
+arguments, memory mappings, working directories, and open files. Any reference
+to an eligible release, Codex running without `--no-daemon`, or incomplete
+process visibility blocks all deletion.
+If permissions prevent inspection, an administrator must run it with sufficient
+process visibility **inside the cell**; do not bypass the checks or run it
+against the rootfs from the host. Do not concurrently run legacy launchers,
+installers, or manually modify packages. A lock coordinates this command with
+other cleanup runs and current Kuggis chat startup; existing shared chats may
+continue running. Repeating cleanup after success is harmless.
 
 ## Deleting a cell
 

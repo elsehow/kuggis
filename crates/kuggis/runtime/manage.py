@@ -657,6 +657,10 @@ class Management:
                 words.extend(['--chat', args.chat])
             if args.replace:
                 words.append('--replace')
+        if args.area == 'file' and getattr(args, 'paste', False):
+            uploaded = json.loads(self.cli(*words, '--json'))
+            return {'ok': True, 'cell': self.local['name'], 'operation': args.action,
+                    'source': None, 'destination': uploaded['destination'], 'chat': uploaded.get('chat')}
         self.cli(*words)
         return {'ok': True, 'cell': self.local['name'], 'operation': args.action,
                 'source': args.source, 'destination': args.destination}
@@ -752,6 +756,9 @@ def management_text(report):
         return f"{report['cell']}: configuration applied. Restart: {report['restart']}.{note}"
     if 'archived' in report:
         return f"Archived {report['archived']} in {report['cell']}."
+    if report.get('operation') == 'put' and report.get('destination'):
+        note = (f"\nReference inserted into {report['chat']} (not submitted)." if report.get('chat') else '')
+        return f"Uploaded: {report['destination']}" + note
     if len(report.get('items', [])) > 1:
         return f"{report['operation']} completed for {report['cell']}: {len(report['items'])} items."
     return f"{report.get('operation', 'Operation')} completed for {report.get('cell', 'cell')}."

@@ -26,6 +26,7 @@ pub struct Options {
     pub source: Source,
     pub chat: Option<Name>,
     pub replace: bool,
+    pub json: bool,
 }
 
 impl Options {
@@ -33,10 +34,12 @@ impl Options {
         let (mut paste, mut replace, mut chat, mut positional, mut literal) =
             (false, false, None, Vec::new(), false);
         let mut args = args.iter();
+        let mut json = false;
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--" if !literal => literal = true,
                 "--paste" if !literal && !paste => paste = true,
+                "--json" if !literal && !json => json = true,
                 "--replace" if !literal && !replace => replace = true,
                 "--chat" if !literal && chat.is_none() => {
                     chat = Some(Name::try_from(
@@ -61,6 +64,7 @@ impl Options {
             source,
             chat,
             replace,
+            json,
         })
     }
 }
@@ -150,9 +154,17 @@ pub fn run(workspace: &Workspace, options: Options) -> Result<()> {
         options.replace,
         options.chat.clone(),
     )?;
-    println!("Uploaded: {display}");
-    if let Some(chat) = options.chat {
-        println!("Reference inserted into {} (not submitted).", chat.as_str());
+    if options.json {
+        println!(
+            "{}",
+            serde_json::json!({"destination": display,
+                "chat": options.chat.as_ref().map(|chat| chat.as_str())})
+        );
+    } else {
+        println!("Uploaded: {display}");
+        if let Some(chat) = options.chat {
+            println!("Reference inserted into {} (not submitted).", chat.as_str());
+        }
     }
     Ok(())
 }

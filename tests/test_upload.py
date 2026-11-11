@@ -1,4 +1,5 @@
 import io
+import json
 from pathlib import Path
 import shlex
 import subprocess
@@ -8,9 +9,26 @@ import tempfile
 import unittest
 import zlib
 from unittest.mock import patch
-from test_runtime import g, h, module, frame
+from test_runtime import g, h, module, frame, ROOT
 
 c = module('clipboard')
+
+
+class ClipboardReport(unittest.TestCase):
+    def test_generated_destination_survives_management_wrapper(self):
+        with patch.object(sys, 'path', [str(ROOT / 'crates/kuggis/runtime'), *sys.path]):
+            m = module('manage')
+        manager = m.Management.__new__(m.Management)
+        manager.args = m.management_options(['file', 'put', 'fri', '--items', '--paste', '--chat', 'vt'])
+        manager.config = Path('/fixture/workspace.json')
+        manager.local = {'name': 'fri'}
+        destination = '/home/agent/workspace/.kuggis/uploads/clipboard-123.png'
+        with patch.object(manager, 'cli', return_value=json.dumps({'destination': destination, 'chat': 'vt'}).encode()) as cli:
+            report = manager.run()
+        cli.assert_called_once_with('put', str(manager.config), '--paste', '--chat', 'vt', '--json')
+        self.assertEqual(report['destination'], destination)
+        self.assertIn('Uploaded: ' + destination, m.management_text(report))
+        self.assertIn('Reference inserted into vt', m.management_text(report))
 
 
 class ChatUploads(unittest.TestCase):

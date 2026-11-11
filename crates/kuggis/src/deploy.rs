@@ -81,6 +81,11 @@ impl<'a> Bundle<'a> {
         add(&format!("{RUNTIME}/guest.py"), 0o644, GUEST_EXECUTOR.into());
         for (name, source) in [
             ("host.py", HOST_EXECUTOR),
+            ("cleanup_codex.py", include_str!("../runtime/cleanup_codex.py")),
+            (
+                "codex-launch.py",
+                include_str!("../../../recipes/codex/launch.py"),
+            ),
             ("github_common.py", crate::github::COMMON),
             ("github_host.py", crate::github::HOST),
             ("github_guest.py", crate::github::GUEST),

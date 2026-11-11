@@ -28,8 +28,9 @@ fn basename_explicit_destination_and_options_in_any_order() {
     assert!(
         matches!(input.source, Source::File { destination, .. } if destination.as_str() == "-file.png")
     );
-    let input = parse(&["--chat", "vt", "--paste"]).unwrap();
+    let input = parse(&["--chat", "vt", "--paste", "--json"]).unwrap();
     assert_eq!(input.source, Source::Clipboard);
+    assert!(input.json);
 }
 
 #[test]
