@@ -18,8 +18,26 @@ kuggis fri --get output.pdf --save-as ./report.pdf
 ```
 
 Chat names are exact validated names, not titles or fuzzy matches. Opening a new
-name creates a chat using `--agent` or the cell's configured default. Opening an
-archived name restores it. `open` is also accepted as an explicit trailing verb.
+name creates a chat using `--agent` or the cell's configured default. Archiving
+stops the chat and releases its name. Opening that name again creates a fresh
+conversation, which can use a different agent:
+
+```sh
+kuggis fri eeai-dashboard archive
+kuggis fri eeai-dashboard --agent claude
+```
+
+The old chat keeps its agent and history under a stable `NAME@EPOCH` archive ID
+(the epoch is in nanoseconds), printed by archive and shown in the cell's chat
+list. Archived history stays in place; the replacement gets a separate internal
+history ID, even when using the same agent. The archive manifest in
+`~/.kuggis/archives/ID.json` records the original binding and history ID.
+Archive IDs identify retained records; opening or restoring them is not yet a
+CLI operation. Existing archive markers are converted when their names are
+reused. An active chat's agent remains fixed; archive it before reusing its name
+with another agent.
+
+`open` is also accepted as an explicit trailing verb.
 Supported chat verbs are `open` and `archive`; unknown verbs, including `delete`
 and `rename`, fail without attaching or changing a chat. Permanent history
 deletion is not implemented. Listing never starts an agent.

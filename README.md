@@ -197,19 +197,23 @@ hyphens, starting with a letter and ending with a letter or digit.
 When `agents` is configured, every chat saves its agent on first connection.
 `--agent codex` selects an installed recipe for a new chat. Subsequent connects
 remember it; omitting the flag never changes an existing chat's agent. Supplying
-a different agent for an existing name fails with a migration explanation.
+a different agent for an active name fails with an explanation to archive it first.
 New chats without `--agent` use `default_agent`. Changing that default affects
 only new chats. `--agent` requires a selected chat; there is no implicit default chat.
 
-Archive a chat without deleting its binding or agent history:
+Archive a chat to preserve its agent history and release its name:
 
 ```sh
 kuggis my-workspace research archive
 ```
 
-This stops its agent (disconnecting any attached terminals) and hides it from
-`chat list`, including `--json`. Repeating the command is safe. Explicitly opening
-`kuggis chat open my-workspace research` restores the same chat and history.
+This stops its agent (disconnecting any attached terminals) and records it under
+a stable `research@EPOCH` ID, printed by archive and shown in `chat list`.
+Opening `research` again creates a fresh chat; `--agent claude` can select a
+different agent. The archived binding and history remain separate from the
+replacement, even when it uses the same agent. Repeating archive without first
+creating a replacement reports an unknown active chat. Archive IDs identify
+retained records; there is currently no CLI operation to open an archive.
 Other chats and workspace files are preserved. Updated host/guest helpers must
 be installed with `admin upgrade CELL --bin LINUX_BINARY --restart` before using
 this command on an existing cell that lacks archive support.

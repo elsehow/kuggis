@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 
 HOME = Path('/home/agent')
@@ -116,10 +117,11 @@ def launch(name):
     if config.get('agents'):
         agent = select_chat(name)
         recipe = config['agents'][agent]
-        argv = launch_argv(recipe['launch'], recipe['chat_launch'], name)
+        argv = launch_argv(recipe['launch'], recipe['chat_launch'], state_name(name))
     else:
+        prepare_legacy_chat(name)
         argv = launch_argv(json.loads(Path('/etc/kuggis/launch.json').read_text()),
-                           json.loads(Path('/etc/kuggis/chat-launch.json').read_text()), name)
+                           json.loads(Path('/etc/kuggis/chat-launch.json').read_text()), state_name(name))
     os.chdir(WORK)
     os.execvpe(argv[0], argv, {**os.environ, 'KUGGIS_CHAT': name})
 
@@ -140,15 +142,17 @@ def revive_chat(name):
 
 
 def choose_agent(config, saved, requested):
-    """A saved binding wins; an explicit mismatch is a migration, never a switch."""
-    if saved is not None and (set(saved) != {'version', 'agent'} or saved['version'] != 1):
+    """An active chat keeps its agent until it is archived."""
+    if saved is not None and not (
+            (set(saved) == {'version', 'agent'} and saved['version'] == 1) or
+            (set(saved) == {'version', 'agent', 'state_name'} and saved['version'] == 2)):
         raise ValueError('invalid saved chat binding')
     selected = saved['agent'] if saved else requested or config.get('default_agent')
     if not isinstance(selected, str) or selected not in config.get('agents', {}):
         raise ValueError('chat agent is not configured; install its recipe before connecting')
     chat_name(selected)
     if requested and requested != selected:
-        raise ValueError(f'chat belongs to {selected}, not {requested}; use a new chat name or explicitly migrate it')
+        raise ValueError(f'chat belongs to {selected}, not {requested}; archive it first to reuse this name with another agent')
     return selected
 
 
@@ -157,29 +161,91 @@ def chat_names(config):
     if not config.get('agents'):
         names.add('default')
         names.update(p.name for p in (HOME / '.kuggis/chats').glob('*') if p.is_dir())
-    return names
+        # Recipe history directories for replacement identities are not names.
+        internal = set()
+        for path in (HOME / '.kuggis/chat-bindings').glob('*.json'):
+            saved = json.loads(path.read_text())
+            if saved.get('state_name', path.stem) != path.stem:
+                internal.add(saved['state_name'])
+        for path in (HOME / '.kuggis/archives').glob('*.json'):
+            record = json.loads(path.read_text())
+            if record['state_name'] != record['name']:
+                internal.add(record['state_name'])
+        names.difference_update(internal)
+    retired = HOME / '.kuggis/chat-retired'
+    bindings = HOME / '.kuggis/chat-bindings'
+    return {name for name in names if not (retired / name).exists() or (bindings / (name + '.json')).exists()}
 
 
-def archive_chat(name):
-    """Stop this chat without changing its binding or recipe-owned history."""
+def state_name(name):
+    """History paths are immutable identities, independent of reusable names."""
+    path = HOME / '.kuggis/chat-bindings' / (name + '.json')
+    saved = json.loads(path.read_text()) if path.exists() else {}
+    return chat_name(saved.get('state_name', name))
+
+
+def finish_archive(name):
+    """Complete an interrupted archive before allowing the name to be reused."""
+    pending = HOME / '.kuggis/chat-archive-pending' / (name + '.json')
+    if not pending.exists():
+        return
+    record = json.loads(pending.read_text())
+    install_file(HOME / '.kuggis/archives' / (record['id'] + '.json'), pending.read_bytes(), 0o600)
+    (HOME / '.kuggis/chat-bindings' / (name + '.json')).unlink(missing_ok=True)
+    # Keep a fresh identity ready for the replacement, even for legacy recipes.
+    install_file(HOME / '.kuggis/chat-retired' / name, record['next_state_name'].encode(), 0o600)
+    (HOME / '.kuggis/archived-chats' / name).unlink(missing_ok=True)
+    pending.unlink()
+
+
+def archive_locked(name):
+    binding = HOME / '.kuggis/chat-bindings' / (name + '.json')
+    saved = json.loads(binding.read_text()) if binding.exists() else None
+    marker = HOME / '.kuggis/archived-chats' / name
+    epoch = marker.stat().st_mtime_ns if marker.exists() else time.time_ns()
+    while (HOME / '.kuggis/archives' / f'{name}@{epoch}.json').exists():
+        epoch += 1
+    record = {'id': f'{name}@{epoch}', 'name': name, 'archived_at': epoch,
+              'agent': saved['agent'] if saved else None, 'state_name': state_name(name),
+              'binding': saved, 'next_state_name': 'c' + uuid.uuid4().hex}
+    install_file(HOME / '.kuggis/chat-archive-pending' / (name + '.json'),
+                 (json.dumps(record) + '\n').encode(), 0o600)
+    finish_archive(name)
+    return record['id']
+
+
+def prepare_legacy_chat(name):
+    """Convert old archive markers and bind legacy replacements to fresh history."""
     chat_name(name)
-    config = json.loads(AGENTS.read_text()) if AGENTS.exists() else {}
-    if name not in chat_names(config):
-        raise ValueError('unknown chat: ' + name)
     locks = HOME / '.kuggis/chat-locks'
     locks.mkdir(parents=True, exist_ok=True)
     with (locks / (name + '.lock')).open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        finish_archive(name)
+        if (HOME / '.kuggis/archived-chats' / name).exists():
+            archive_locked(name)
+        retired = HOME / '.kuggis/chat-retired' / name
+        binding = HOME / '.kuggis/chat-bindings' / (name + '.json')
+        if retired.exists() and not binding.exists():
+            identity = chat_name(retired.read_text())
+            launch_argv([], json.loads(Path('/etc/kuggis/chat-launch.json').read_text()), identity)
+            install_file(binding, (json.dumps({'version': 2, 'agent': None, 'state_name': identity}) + '\n').encode(), 0o600)
+
+
+def archive_chat(name):
+    """Retire this identity and release its active name, leaving history in place."""
+    chat_name(name)
+    config = json.loads(AGENTS.read_text()) if AGENTS.exists() else {}
+    locks = HOME / '.kuggis/chat-locks'
+    locks.mkdir(parents=True, exist_ok=True)
+    with (locks / (name + '.lock')).open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        finish_archive(name)
+        if name not in chat_names(config):
+            raise ValueError('unknown chat: ' + name)
         unit = 'kuggis-terminal.service' if name == 'default' else 'kuggis-chat@' + name + '.service'
         subprocess.run(['/usr/bin/sudo', '-n', '/usr/bin/systemctl', 'stop', unit], check=True)
-        archived = HOME / '.kuggis/archived-chats'
-        archived.mkdir(parents=True, exist_ok=True)
-        (archived / name).touch(mode=0o600)
-
-
-def restore_chat(name):
-    chat_name(name)
-    (HOME / '.kuggis/archived-chats' / name).unlink(missing_ok=True)
+        return archive_locked(name)
 
 
 def list_chats():
@@ -193,11 +259,15 @@ def list_chats():
         if (HOME / '.kuggis/archived-chats' / name).exists():
             continue
         path = bindings / (name + '.json')
-        agent = choose_agent(config, json.loads(path.read_text()), None) if path.exists() else None
+        agent = choose_agent(config, json.loads(path.read_text()), None) if path.exists() and config.get('agents') else None
         socket = 'kuggis' if name == 'default' else 'kuggis-chat-' + name
         pane = subprocess.run(['/usr/bin/tmux','-L',socket,'list-panes','-t','=workspace','-F','#{pane_dead}'], capture_output=True)
         chats.append({'name':name, 'agent':agent, 'running':pane.returncode == 0 and b'0' in pane.stdout.splitlines()})
-    return {'chats':chats, 'agents':sorted(config.get('agents',{})), 'default_agent':config.get('default_agent')}
+    archives = [{key: record[key] for key in ('id', 'name', 'agent', 'archived_at', 'state_name')}
+                for path in sorted((HOME / '.kuggis/archives').glob('*.json'))
+                for record in [json.loads(path.read_text())]]
+    return {'chats':chats, 'agents':sorted(config.get('agents',{})),
+            'default_agent':config.get('default_agent'), 'archives':archives}
 
 
 def select_chat(name, requested=None):
@@ -211,14 +281,22 @@ def select_chat(name, requested=None):
     path = bindings / (name + '.json')
     with (locks / (name + '.lock')).open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        finish_archive(name)
+        if (HOME / '.kuggis/archived-chats' / name).exists():
+            archive_locked(name)
         saved = json.loads(path.read_text()) if path.exists() else None
         agent = choose_agent(config, saved, requested)
         recipe = config['agents'][agent]
-        argv = launch_argv(recipe['launch'], recipe['chat_launch'], name)
+        retired = HOME / '.kuggis/chat-retired' / name
+        identity = (saved or {}).get('state_name', name)
+        if not saved and retired.exists():
+            identity = chat_name(retired.read_text())
+        argv = launch_argv(recipe['launch'], recipe['chat_launch'], identity)
         if not shutil.which(argv[0]):
             raise ValueError(f'agent {agent} executable is not installed')
         if not saved:
-            install_file(path, (json.dumps({'version':1, 'agent':agent}) + '\n').encode(), 0o600)
+            binding = {'version':1, 'agent':agent} if identity == name else {'version':2, 'agent':agent, 'state_name':identity}
+            install_file(path, (json.dumps(binding) + '\n').encode(), 0o600)
         return agent
 
 
@@ -239,7 +317,7 @@ def configure_agents(payload):
     if config['agents'] and not old.get('agents') and old_launch.exists():
         previous = legacy_agent(config['agents'], json.loads(old_launch.read_text()),
                                 json.loads(old_named.read_text()) if old_named.exists() else None)
-        names = ['default'] + [p.name for p in (HOME / '.kuggis/chats').glob('*') if p.is_dir()]
+        names = sorted(chat_names(old))
         bindings = HOME / '.kuggis/chat-bindings'
         bindings.mkdir(parents=True, exist_ok=True)
         os.chown(bindings.parent, 1000, 1000)
@@ -250,6 +328,12 @@ def configure_agents(payload):
             if not path.exists():
                 install_file(path, (json.dumps({'version':1,'agent':previous})+'\n').encode(), 0o600)
                 os.chown(path, 1000, 1000)
+            else:
+                saved = json.loads(path.read_text())
+                if saved.get('agent') is None:
+                    saved['agent'] = previous
+                    install_file(path, (json.dumps(saved) + '\n').encode(), 0o600)
+                    os.chown(path, 1000, 1000)
     install_file(AGENTS, (json.dumps(config, indent=2)+'\n').encode())
 
 
@@ -461,9 +545,7 @@ def main(args):
     elif args == ['list-chats']:
         print(json.dumps(list_chats()))
     elif len(args) == 2 and args[0] == 'archive-chat':
-        archive_chat(args[1])
-    elif len(args) == 2 and args[0] == 'restore-chat':
-        restore_chat(args[1])
+        print(json.dumps({'archive_id': archive_chat(args[1])}))
     elif len(args) in (2, 3) and args[0] == 'select-chat':
         print(json.dumps({'agent':select_chat(args[1], args[2] if len(args) == 3 else None)}))
     elif len(args) == 2 and args[0] == 'get':

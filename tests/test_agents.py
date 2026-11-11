@@ -30,7 +30,7 @@ class Agents(unittest.TestCase):
         self.assertEqual(g.choose_agent(configuration('codex'), saved, None), 'pi')
         self.assertEqual(g.choose_agent(configuration('codex'), None, None), 'codex')
         self.assertEqual(g.choose_agent(configuration(), None, 'codex'), 'codex')
-        with self.assertRaisesRegex(ValueError, 'explicitly migrate'):
+        with self.assertRaisesRegex(ValueError, 'archive it first'):
             g.choose_agent(configuration(), saved, 'codex')
         for saved in ({'version':2,'agent':'pi'}, {'version':1,'agent':'missing'}):
             with self.assertRaises(ValueError):
@@ -45,7 +45,7 @@ class Agents(unittest.TestCase):
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     self.assertEqual(list(pool.map(lambda _:g.select_chat('research','codex'), range(4))), ['codex']*4)
                 self.assertEqual(g.select_chat('research'), 'codex')
-                with self.assertRaisesRegex(ValueError, 'explicitly migrate'):
+                with self.assertRaisesRegex(ValueError, 'archive it first'):
                     g.select_chat('research','pi')
                 self.assertFalse((home/'.kuggis/chats').exists())
                 binding = home/'.kuggis/chat-bindings/research.json'

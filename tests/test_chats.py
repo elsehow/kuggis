@@ -1,5 +1,6 @@
 """Chat selection, legacy continuity, and concurrent reconnect behavior."""
 import subprocess
+import json
 import tempfile
 from pathlib import Path
 import unittest
@@ -8,7 +9,127 @@ from test_runtime import g, h
 
 
 class Chats(unittest.TestCase):
-    def test_archive_preserves_binding_and_history_and_can_be_restored(self):
+    def test_old_markers_and_interrupted_archives_release_the_name(self):
+        from test_agents import configuration
+        for interrupted in (False, True):
+            with self.subTest(interrupted=interrupted), tempfile.TemporaryDirectory() as directory, \
+                 patch.object(g, 'HOME', Path(directory)):
+                home = Path(directory)
+                config = home / 'agents.json'
+                config.write_text(json.dumps(configuration()))
+                with patch.object(g, 'AGENTS', config), patch.object(g.shutil, 'which', return_value='/bin/sh'), \
+                     patch.object(g.subprocess, 'run'):
+                    g.select_chat('research', 'codex')
+                    if interrupted:
+                        with patch.object(g, 'finish_archive', side_effect=[None, OSError('interrupted')]):
+                            with self.assertRaises(OSError):
+                                g.archive_chat('research')
+                    else:
+                        marker = home / '.kuggis/archived-chats/research'
+                        marker.parent.mkdir(parents=True)
+                        marker.touch()
+                    self.assertEqual(g.select_chat('research', 'pi'), 'pi')
+                    self.assertNotEqual(g.state_name('research'), 'research')
+                    self.assertEqual(g.list_chats()['archives'][0]['agent'], 'codex')
+                    self.assertFalse((home / '.kuggis/archived-chats/research').exists())
+
+    def test_default_name_gets_fresh_history_and_archive_ids_do_not_collide(self):
+        from test_agents import configuration
+        with tempfile.TemporaryDirectory() as directory, patch.object(g, 'HOME', Path(directory)):
+            home = Path(directory)
+            config = home / 'agents.json'
+            config.write_text(json.dumps(configuration()))
+            with patch.object(g, 'AGENTS', config), patch.object(g.shutil, 'which', return_value='/bin/sh'), \
+                 patch.object(g.subprocess, 'run'), patch.object(g.time, 'time_ns', return_value=123):
+                g.select_chat('default', 'codex')
+                self.assertEqual(g.archive_chat('default'), 'default@123')
+                g.select_chat('default', 'codex')
+                self.assertNotEqual(g.state_name('default'), 'default')
+                self.assertEqual(g.archive_chat('default'), 'default@124')
+
+    def test_launch_uses_replacement_identity_for_recipe_history(self):
+        from test_agents import configuration
+        with tempfile.TemporaryDirectory() as directory, patch.object(g, 'HOME', Path(directory)):
+            home = Path(directory)
+            config = home / 'agents.json'
+            config.write_text(json.dumps(configuration()))
+            with patch.object(g, 'AGENTS', config), patch.object(g.shutil, 'which', return_value='/bin/sh'), \
+                 patch.object(g.subprocess, 'run'), patch.object(g.os, 'chdir'), patch.object(g.os, 'execvpe') as execute:
+                g.select_chat('research', 'codex')
+                g.archive_chat('research')
+                g.select_chat('research', 'codex')
+                identity = g.state_name('research')
+                g.launch('research')
+                self.assertEqual(execute.call_args.args[1], ['/bin/sh', identity])
+                self.assertEqual(execute.call_args.args[2]['KUGGIS_CHAT'], 'research')
+
+    def test_legacy_replacements_do_not_expose_internal_history_ids_as_chat_names(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(g, 'HOME', Path(directory)):
+            home = Path(directory)
+            config = home / 'agents.json'
+            config.write_text('{}')
+            history = home / '.kuggis/chats/research'
+            history.mkdir(parents=True)
+            recipe = home / 'chat-launch.json'
+            recipe.write_text('["pi", "--session-dir", "{chat}"]')
+            original_path = g.Path
+            def path(value):
+                return recipe if value == '/etc/kuggis/chat-launch.json' else original_path(value)
+            with patch.object(g, 'AGENTS', config), patch.object(g.subprocess, 'run'), patch.object(g, 'Path', side_effect=path):
+                g.archive_chat('research')
+                g.prepare_legacy_chat('research')
+                identity = g.state_name('research')
+                self.assertNotEqual(identity, 'research')
+                (history.parent / identity).mkdir()
+                self.assertEqual(g.chat_names({}), {'research', 'default'})
+                g.archive_chat('research')
+                self.assertEqual(g.chat_names({}), {'default'})
+
+    def test_archived_chat_releases_name_and_preserves_original_history(self):
+        import json
+        from test_agents import configuration
+        with tempfile.TemporaryDirectory() as directory, patch.object(g, 'HOME', Path(directory)):
+            home = Path(directory)
+            config = home / 'agents.json'
+            config.write_text(json.dumps(configuration()))
+            with patch.object(g, 'AGENTS', config), patch.object(g.shutil, 'which', return_value='/bin/sh'), \
+                 patch.object(g.subprocess, 'run'):
+                g.select_chat('research', 'codex')
+                binding = home / '.kuggis/chat-bindings/research.json'
+                before = binding.read_bytes()
+                history = home / '.kuggis/agents/codex/research/kuggis-session.json'
+                history.parent.mkdir(parents=True)
+                history.write_text('original session')
+                first = g.archive_chat('research')
+                self.assertFalse(binding.exists())
+                record = json.loads((home / '.kuggis/archives' / (first + '.json')).read_text())
+                self.assertEqual(record['binding'], json.loads(before))
+                self.assertEqual(record['state_name'], 'research')
+                self.assertEqual(g.select_chat('research', 'pi'), 'pi')
+                identity = g.state_name('research')
+                self.assertNotEqual(identity, 'research')
+                with self.assertRaisesRegex(ValueError, 'archive it first'):
+                    g.select_chat('research', 'codex')
+                second = g.archive_chat('research')
+                self.assertNotEqual(first, second)
+                self.assertEqual(g.select_chat('research', 'codex'), 'codex')
+                self.assertNotIn(g.state_name('research'), ('research', identity))
+                self.assertEqual(history.read_text(), 'original session')
+                self.assertEqual({r['id'] for r in g.list_chats()['archives']}, {first, second})
+
+    def test_guest_failure_preserves_diagnostic_and_handles_empty_stderr(self):
+        for stderr, expected in [
+            (b'kuggis guest: ValueError: chat belongs to codex, not claude\n',
+             'chat belongs to codex, not claude'),
+            (b'', 'guest operation failed with exit status 1'),
+        ]:
+            with self.subTest(stderr=stderr), patch.object(h, 'run', return_value=
+                    subprocess.CompletedProcess([], 1, b'', stderr)):
+                with self.assertRaisesRegex(RuntimeError, expected):
+                    h.guest('/usr/bin/python3', '/run/kuggis-runtime/guest.py',
+                            'select-chat', 'research', 'claude')
+
+    def test_archive_preserves_legacy_binding_and_history(self):
         for configured in (False, True):
             with tempfile.TemporaryDirectory() as directory, patch.object(g, 'HOME', Path(directory)):
                 home = Path(directory)
@@ -23,19 +144,16 @@ class Chats(unittest.TestCase):
                 history.parent.mkdir(parents=True)
                 history.write_text('history to retain')
                 with patch.object(g, 'AGENTS', config), patch.object(g.subprocess, 'run') as run:
-                    for _ in range(2):
-                        g.archive_chat('research')
+                    identity = g.archive_chat('research')
                     self.assertEqual(run.call_args.args[0], ['/usr/bin/sudo', '-n', '/usr/bin/systemctl', 'stop', 'kuggis-chat@research.service'])
                     self.assertNotIn('research', [c['name'] for c in g.list_chats()['chats']])
-                    if configured:
-                        self.assertEqual(binding.read_text(), '{"version":1,"agent":"codex"}')
-                    else:
-                        self.assertFalse(binding.exists())
+                    self.assertFalse(binding.exists())
+                    record = json.loads((home / '.kuggis/archives' / (identity + '.json')).read_text())
+                    self.assertEqual(record['state_name'], 'research')
+                    self.assertEqual(record['binding'], {'version':1, 'agent':'codex'} if configured else None)
                     self.assertEqual(history.read_text(), 'history to retain')
-                    g.restore_chat('research')
-                    self.assertFalse((home / '.kuggis/archived-chats/research').exists())
-                    restored = next(c for c in g.list_chats()['chats'] if c['name'] == 'research')
-                    self.assertEqual(restored['agent'], 'codex' if configured else None)
+                    with self.assertRaisesRegex(ValueError, 'unknown chat'):
+                        g.archive_chat('research')
 
     def test_archive_unknown_invalid_and_stop_failure_leave_no_marker(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(g, 'HOME', Path(directory)), \
@@ -54,7 +172,7 @@ class Chats(unittest.TestCase):
     def test_host_archive_validates_and_delegates_without_attaching(self):
         with patch.object(h.sys, 'platform', 'linux'), patch.object(h.os, 'geteuid', return_value=0), \
              patch.object(h, 'load', return_value={'name':'demo'}), patch.object(h, 'guard'), \
-             patch.object(h, 'guest') as guest, patch.object(h.os, 'execv') as execv:
+             patch.object(h, 'guest', return_value=subprocess.CompletedProcess([], 0, b'')) as guest, patch.object(h.os, 'execv') as execv:
             for rest in ([], ['--chat', '../bad'], ['--chat', 'vt', '--agent', 'pi']):
                 with self.assertRaises(ValueError):
                     h.dispatch(['archive', 'demo', *rest])
@@ -127,7 +245,6 @@ class Chats(unittest.TestCase):
                 expected = 'kuggis-terminal.service' if name == 'default' else 'kuggis-chat@research.service'
                 self.assertEqual(calls[0].args, ('systemctl','start',expected))
                 self.assertEqual(calls[0].kwargs, {'user':'root'})
-                self.assertEqual(calls[-1].args, ('/usr/bin/python3', '/run/kuggis-runtime/guest.py', 'restore-chat', name))
                 argv = execv.call_args.args[1]
                 self.assertIn('--uid=agent', argv)
                 self.assertIn('kuggis' if name == 'default' else 'kuggis-chat-research', argv)

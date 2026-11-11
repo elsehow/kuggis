@@ -153,6 +153,7 @@ fn cli_validates_chat_names_and_renders_without_programs() {
     let archive: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(archive["args"][0], "-T");
     assert_eq!(archive["stdin"], "closed");
+    assert_eq!(archive["stdout"], "json_report");
     assert!(archive["args"]
         .as_array()
         .unwrap()

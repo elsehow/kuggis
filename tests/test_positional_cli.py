@@ -30,7 +30,9 @@ class PositionalCLI(unittest.TestCase):
 from pathlib import Path
 Path(os.environ['SSH_LOG']).write_text(json.dumps(sys.argv[1:]))
 if shlex.split(sys.argv[-1])[4] == 'chats':
-    print(json.dumps({'chats': [], 'agents': ['codex'], 'default_agent': 'codex'}))
+    print(os.environ.get('SSH_CHATS', json.dumps({'chats': [], 'agents': ['codex'], 'default_agent': 'codex'})))
+elif shlex.split(sys.argv[-1])[4] == 'archive' and os.environ.get('SSH_ARCHIVE_ID'):
+    print(json.dumps({'archive_id': os.environ['SSH_ARCHIVE_ID']}))
 sys.exit(int(os.environ.get('SSH_STATUS', '0')))
 ''')
         ssh.chmod(0o755)
@@ -88,6 +90,23 @@ sys.exit(int(os.environ.get('SSH_STATUS', '0')))
         invocation = json.loads(self.log.read_text())
         self.assertEqual(invocation[0], '-T')
         self.assertTrue(invocation[-1].endswith("'archive' 'fri' '--chat' 'research'"))
+
+    def test_archive_identity_reaches_operator_and_chat_inventory(self):
+        self.env['SSH_ARCHIVE_ID'] = 'research@123'
+        result = self.cli('fri', 'research', 'archive', '--json')
+        self.assertEqual(json.loads(result.stdout)['archive_id'], 'research@123')
+        self.assertIn(b'as research@123', self.cli('fri', 'research', 'archive').stdout)
+        self.env['SSH_CHATS'] = json.dumps({
+            'chats': [{'name': 'research', 'agent': 'claude', 'running': True}],
+            'agents': ['codex', 'claude'], 'default_agent': 'codex',
+            'archives': [{'id': 'research@123', 'name': 'research', 'agent': 'codex',
+                          'archived_at': 123, 'state_name': 'research'}],
+        })
+        report = json.loads(self.cli('fri', '--json').stdout)
+        self.assertEqual(report['chats'][0]['agent'], 'claude')
+        self.assertEqual(report['archives'][0]['id'], 'research@123')
+        self.assertIn(b'research@123', self.cli('fri').stdout)
+        self.assertEqual(json.loads(self.log.read_text())[0], '-T')
 
     def test_login_help_and_create_plan_do_not_connect(self):
         result = self.cli('fri', '--login', '--help')

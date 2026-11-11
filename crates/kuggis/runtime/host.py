@@ -5,6 +5,7 @@ Never traverse a mutable guest rootfs from the host. The only chroot/write into
 that tree occurs during the initial trusted debootstrap, before its first boot.
 """
 import base64
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
@@ -117,7 +118,11 @@ def guest_command(argv, user='agent', terminal=False):
 
 
 def guest(*args, user='agent', data=None, timeout=180):
-    return run(*guest_command(args, user=user), data=data, timeout=timeout)
+    result = run(*guest_command(args, user=user), data=data, timeout=timeout, check=False)
+    if result.returncode:
+        detail = result.stderr.decode('utf-8', errors='replace').strip()
+        raise RuntimeError(detail or f'guest operation failed with exit status {result.returncode}')
+    return result
 
 
 def ready():
@@ -431,6 +436,20 @@ def connect_chat(args):
     return connect_options(args)[0]
 
 
+@contextmanager
+def chat_operation(args):
+    """Serialize selection/start with archival, including across SSH sessions."""
+    if len(args) >= 3 and args[0] in ('connect', 'archive'):
+        name = connect_chat(args[2:])
+        directory = Path('/run/kuggis-chat-operations')
+        safe_directory(directory, 0o700)
+        with (directory / name).open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+    else:
+        yield
+
+
 def connect_options(args):
     values = {}
     if len(args) % 2:
@@ -482,7 +501,8 @@ def dispatch(args):
         if len(rest) != 2 or rest[0] != '--chat':
             raise ValueError('expected archive --chat NAME')
         name = connect_chat(rest)
-        guest('/usr/bin/python3', '/run/kuggis-runtime/guest.py', 'archive-chat', name)
+        result = guest('/usr/bin/python3', '/run/kuggis-runtime/guest.py', 'archive-chat', name)
+        sys.stdout.buffer.write(result.stdout)
         return
     if verb == 'connect':
         name, agent = connect_options(rest)
@@ -506,7 +526,6 @@ def dispatch(args):
             if workspace.get('agents'):
                 guest('/usr/bin/python3', '/run/kuggis-runtime/guest.py', 'revive-chat', name)
             command = guest_command(['/usr/bin/tmux', '-L', 'kuggis', 'attach-session', '-t', 'workspace'], terminal=True)
-        guest('/usr/bin/python3', '/run/kuggis-runtime/guest.py', 'restore-chat', name)
     elif verb == 'shell' and not rest:
         command = guest_command(['/bin/bash', '-l'], terminal=True)
     elif verb == 'exec' and len(rest) >= 2 and rest[0] == '--':
@@ -535,7 +554,8 @@ def dispatch(args):
 
 if __name__ == '__main__':
     try:
-        dispatch(sys.argv[1:])
+        with chat_operation(sys.argv[1:]):
+            dispatch(sys.argv[1:])
     except Exception as error:
         print(f'kuggis host: {type(error).__name__}: {error}', file=sys.stderr)
         sys.exit(1)

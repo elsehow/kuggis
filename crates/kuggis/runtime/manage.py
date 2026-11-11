@@ -637,8 +637,11 @@ class Management:
                 report['ok'] = report['ok'] and report['checks']['ok']
             return report
         if args.area == 'chat':
-            self.cli('archive', self.config, '--chat', args.chat)
-            return {'ok': True, 'cell': self.local['name'], 'archived': args.chat}
+            output = self.cli('archive', self.config, '--chat', args.chat)
+            report = {'ok': True, 'cell': self.local['name'], 'archived': args.chat}
+            if output.strip():
+                report.update(json.loads(output))
+            return report
         if getattr(args, 'transfers', None):
             return self.transfer_items(args)
         words = [args.action, str(self.config)]
@@ -755,7 +758,8 @@ def management_text(report):
                      + '; sign in with kuggis login CELL --agent AGENT.')
         return f"{report['cell']}: configuration applied. Restart: {report['restart']}.{note}"
     if 'archived' in report:
-        return f"Archived {report['archived']} in {report['cell']}."
+        identity = f" as {report['archive_id']}" if report.get('archive_id') else ''
+        return f"Archived {report['archived']} in {report['cell']}{identity}."
     if report.get('operation') == 'put' and report.get('destination'):
         note = (f"\nReference inserted into {report['chat']} (not submitted)." if report.get('chat') else '')
         return f"Uploaded: {report['destination']}" + note

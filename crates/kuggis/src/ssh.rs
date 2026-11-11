@@ -158,7 +158,7 @@ impl Invocation {
                 ("connect", true, Stream::Terminal, Stream::Terminal)
             }
             Request::Chats => ("chats", false, Stream::Closed, Stream::JsonReport),
-            Request::ArchiveChat(_) => ("archive", false, Stream::Closed, Stream::Empty),
+            Request::ArchiveChat(_) => ("archive", false, Stream::Closed, Stream::JsonReport),
             Request::Shell => ("shell", true, Stream::Terminal, Stream::Terminal),
             Request::Check => ("check", false, Stream::Closed, Stream::JsonReport),
             Request::Exec(_) => ("exec", false, Stream::Terminal, Stream::Terminal),

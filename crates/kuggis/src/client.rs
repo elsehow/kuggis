@@ -45,6 +45,18 @@ pub struct ChatIndex {
     pub chats: Vec<Chat>,
     pub agents: Vec<Name>,
     pub default_agent: Option<Name>,
+    #[serde(default)]
+    pub archives: Vec<ArchivedChat>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArchivedChat {
+    pub id: String,
+    pub name: Name,
+    pub agent: Option<Name>,
+    pub archived_at: u64,
+    pub state_name: Name,
 }
 
 pub fn chats(workspace: &Workspace, target: &str, json: bool) -> Result<()> {
@@ -95,6 +107,16 @@ pub fn chats(workspace: &Workspace, target: &str, json: bool) -> Result<()> {
                 chat.agent.as_ref().map(Name::as_str).unwrap_or("legacy"),
                 if chat.running { "running" } else { "stopped" }
             );
+        }
+        if !index.archives.is_empty() {
+            println!("\nArchived chats:");
+            for chat in &index.archives {
+                println!(
+                    "  {}  {}",
+                    chat.id,
+                    chat.agent.as_ref().map(Name::as_str).unwrap_or("legacy")
+                );
+            }
         }
         println!("\nOpen a chat: {opener} {target} NAME");
         println!(
